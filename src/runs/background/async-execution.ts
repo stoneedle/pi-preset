@@ -330,7 +330,8 @@ interface AsyncSingleParams {
 	parentWorkflowRunId?: string;
 	workflowKey?: string;
 	lane?: WorkflowLaneMetadata;
-	workflowAwaitAsync?: boolean;
+	/** The launching caller consumes completion; ordinary background delivery must not see it. */
+	awaitResult?: boolean;
 	activeAsyncCapacity?: ActiveAsyncCapacityHandle;
 	externalJobFollowUp?: {
 		sourceRunId: string;
@@ -1730,7 +1731,7 @@ export function executeAsyncChain(
 /**
  * Execute a single agent asynchronously
  */
-export function workflowAwaitedAsyncResultPath(asyncDir: string): string {
+export function awaitedAsyncResultPath(asyncDir: string): string {
 	return path.join(asyncDir, "workflow-result.json");
 }
 
@@ -2164,8 +2165,8 @@ export function executeAsyncSingle(
 						...(lane ? { lane } : {}),
 					},
 				],
-				resultPath: params.parentWorkflowRunId !== undefined && (params.revivalLease !== undefined || params.workflowAwaitAsync === true)
-					? workflowAwaitedAsyncResultPath(asyncDir)
+				resultPath: params.awaitResult === true || (params.parentWorkflowRunId !== undefined && params.revivalLease !== undefined)
+					? awaitedAsyncResultPath(asyncDir)
 					: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : resultFilePath(DIRS.results, id),
 				cwd: runnerCwd,
 				placeholder: "{previous}",
@@ -2198,6 +2199,7 @@ export function executeAsyncSingle(
 				controlIntercomTarget,
 				childIntercomTargets: childIntercomTarget ? [childIntercomTarget(agent, 0)] : undefined,
 				resultMode: "single",
+				...(params.awaitResult === true ? { awaitResult: true } : {}),
 				launchContractDigest,
 				launchResolvedExtensions,
 				runFanoutBudget,
@@ -2221,6 +2223,7 @@ export function executeAsyncSingle(
 				...(ctx.currentSessionId ? { sessionId: ctx.currentSessionId } : {}),
 				...(initialCompletionOwnerId ? { completionOwnerId: initialCompletionOwnerId } : {}),
 				mode: "single",
+				...(params.awaitResult === true ? { awaitResult: true } : {}),
 				state: "running",
 				startedAt: initialStatusAt,
 				lastUpdate: initialStatusAt,

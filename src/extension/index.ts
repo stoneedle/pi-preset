@@ -17,8 +17,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, discoverAgentsAll, type AgentConfig, type AgentScope } from "../agents/agents.ts";
 import { resolveGlobalNpmRoot } from "../agents/global-npm-root.ts";
 import { buildAdvertisedAgentCatalog, buildAdvertisedAgentPrompt } from "../agents/advertised-agent-prompt.ts";
@@ -79,6 +79,7 @@ import { buildSubagentToolDescription, buildSubagentToolPromptMetadata } from ".
 import { formatWorkflowPreflightSummary, normalizeWorkflowPreflight } from "../workflows/workflow-preflight.ts";
 import { runtimeReplacedAbortReason } from "../workflows/workflow-reuse.ts";
 import { finalizeToolResult } from "./tool-result.ts";
+import { createFinalDelivery, FINAL_DELIVERY_MESSAGE_TYPE } from "./final-delivery.ts";
 import { removedModelWorkflowFieldError } from "./public-execution.ts";
 import { collectGoalContinuationNotices } from "../missions/goal-driver.ts";
 import { restoreForegroundRunHistory } from "../runs/foreground/foreground-history.ts";
@@ -685,6 +686,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return executeSubagentReady(id, params, signal, onUpdate, ctx);
 	};
 
+	const finalDelivery = createFinalDelivery(pi, {
+		execute: executeSubagentCollapsed,
+		hasActiveWork: () => hasLiveSubagentWork(state) || completionNotifier.hasPendingDelivery() || supervisorChannel.hasPendingRequests(),
+	});
+	pi.registerMessageRenderer(FINAL_DELIVERY_MESSAGE_TYPE, (message) =>
+		new Markdown(typeof message.content === "string" ? message.content : "", 0, 0, getMarkdownTheme()));
+
 	const slashBridge = registerSlashSubagentBridge({
 		events: pi.events,
 		getContext: () => state.lastUiContext,
@@ -725,6 +733,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 		async execute(id, params, signal, onUpdate, ctx) {
 			const removedField = removedModelWorkflowFieldError(params);
+			if (params.delivery === "final") {
+				// Keep final-mode failure details intact for audit and context filtering.
+				return finalDelivery.execute(id, params as SubagentParamsLike, signal ?? new AbortController().signal, onUpdate, ctx);
+			}
 			if (removedField) throw new Error(removedField);
 			return finalizeToolResult(await executeSubagentCollapsed(id, params as SubagentParamsLike, signal ?? new AbortController().signal, onUpdate, ctx));
 		},
@@ -745,7 +757,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					0,
 					0,
 				);
-			const asyncLabel = args.async === true ? `${gap}${theme.fg("warning", "[async]")}` : "";
+			const asyncLabel = args.delivery === "final" ? `${gap}${theme.fg("accent", "[final]")}` : args.async === true ? `${gap}${theme.fg("warning", "[async]")}` : "";
 			return new Text(
 				`${title}${gap}${theme.fg("accent", args.agent || "?")}${asyncLabel}`,
 				0,

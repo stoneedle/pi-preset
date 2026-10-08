@@ -52,6 +52,16 @@ If you want every implementation reviewed, say so in your prompt or project inst
 When you finish implementing, run a reviewer subagent before summarizing.
 ```
 
+### Final answer delivery
+
+If you want a specialized child agent to produce the final answer directly without parent summarization or rewriting, ask Pi to use final delivery (`delivery: "final"`):
+
+```text
+Investigate this issue first, then run oracle and deliver its verbatim output as the final response.
+```
+
+When the child succeeds, Pi renders the child's raw, unedited text as the terminal response and ends the turn without querying the parent model again. If the child fails, errors out, or returns empty text, Pi falls back seamlessly to the parent model to answer the original request directly.
+
 ## Builtin agents
 
 The extension ships with agents you can use immediately:

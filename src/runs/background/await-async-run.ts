@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { readStatus } from "../../shared/utils.ts";
-import { workflowAwaitedAsyncResultPath } from "./async-execution.ts";
+import { awaitedAsyncResultPath } from "./async-execution.ts";
 import { waitForImportedAsyncRoot, type ImportedAsyncRootResult } from "./chain-root-attachment.ts";
 import { currentPidNamespaceScope } from "./pid-namespace.ts";
 import { resultPayloadPathForSessionRun } from "./result-files.ts";
@@ -45,7 +45,7 @@ export async function awaitExistingAsyncRun(asyncDir: string, runId: string, sig
 	// The launcher's initial status has no workflow identity until the runner starts, so only the
 	// mode is checked here; a run that does not publish to the workflow result path stays unavailable.
 	if (status.mode !== "single") return { status: "unavailable", reason: `Async run '${runId}' is not a single-agent run.` };
-	const resultPath = workflowAwaitedAsyncResultPath(asyncDir);
+	const resultPath = awaitedAsyncResultPath(asyncDir);
 	let runnerExited = false;
 	let completed: ImportedAsyncRootResult;
 	try {
@@ -68,9 +68,9 @@ export async function awaitExistingAsyncRun(asyncDir: string, runId: string, sig
  * concurrent importers can win the rename; the others get undefined and launch fresh.
  */
 export function claimWorkflowAwaitedResult(asyncDir: string, claimant: string): string | undefined {
-	const claimedPath = `${workflowAwaitedAsyncResultPath(asyncDir)}.${claimant}.claimed`;
+	const claimedPath = `${awaitedAsyncResultPath(asyncDir)}.${claimant}.claimed`;
 	try {
-		fs.renameSync(workflowAwaitedAsyncResultPath(asyncDir), claimedPath);
+		fs.renameSync(awaitedAsyncResultPath(asyncDir), claimedPath);
 		return claimedPath;
 	} catch {
 		return undefined;

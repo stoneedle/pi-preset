@@ -49,7 +49,7 @@ import {
 	type SequentialStep,
 } from "../../shared/settings.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
-import { buildAsyncRunnerSteps, DEFAULT_ASYNC_TIMEOUT_MS, executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable, workflowAwaitedAsyncResultPath } from "../background/async-execution.ts";
+import { buildAsyncRunnerSteps, DEFAULT_ASYNC_TIMEOUT_MS, executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable, awaitedAsyncResultPath } from "../background/async-execution.ts";
 import { updateActiveRunIndex } from "../background/active-run-index.ts";
 import { steeringReceipt } from "../background/steering.ts";
 import { acquireActiveAsyncCapacity, ActiveAsyncCapacityError, getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, resolveMaxActiveAsyncRunsPerSession, transferActiveAsyncCapacity, type ActiveAsyncCapacityHandle } from "../background/active-async-capacity.ts";
@@ -387,6 +387,7 @@ export interface SubagentParamsLike {
 	/** Per-run intercom bridge config. It replaces the global config for this launch only. */
 	intercomBridge?: IntercomBridgeConfig;
 	async?: boolean;
+	delivery?: "final";
 	foregroundOnly?: boolean;
 	timeoutMs?: number;
 	maxRuntimeMs?: number;
@@ -2325,7 +2326,7 @@ async function resumeAsyncRun(input: {
 	const revivedId = result.details.asyncId ?? runId;
 	if (input.params.workflowParentRunId !== undefined && result.details.asyncDir) {
 		const asyncDir = result.details.asyncDir;
-		const resultPath = workflowAwaitedAsyncResultPath(asyncDir);
+		const resultPath = awaitedAsyncResultPath(asyncDir);
 		const stopListener = stopAwaitedAsyncChildOnAbort(input.signal, input.deps.state, revivedId, asyncDir, input.deps.kill);
 		const completed = await waitForImportedAsyncRoot({ runId: revivedId, asyncDir, resultPath, index: 0 }, {
 			shouldAbort: () => input.signal?.aborted === true,
@@ -2334,7 +2335,7 @@ async function resumeAsyncRun(input: {
 		}).finally(stopListener.remove);
 		const details: Details = { ...result.details };
 		if (target.launchContractDigest) details.sourceLaunchContractDigest = target.launchContractDigest;
-		return importWorkflowAwaitedChildResult(completed, { runId: revivedId, asyncDir, resultPath, task: effectiveFollowUp, parentWorkflowRunId: input.params.workflowParentRunId, details, emptyOutputText: `Revived ${target.source} subagent ${revivedId} completed without output.`, state: input.deps.state, pi: input.deps.pi });
+		return importAwaitedChildResult(completed, { runId: revivedId, asyncDir, resultPath, task: effectiveFollowUp, parentWorkflowRunId: input.params.workflowParentRunId, details, emptyOutputText: `Revived ${target.source} subagent ${revivedId} completed without output.`, state: input.deps.state, pi: input.deps.pi });
 	}
 	const revivedTarget = intercomBridge.active ? resolveSubagentIntercomTarget(revivedId, target.agent, 0) : undefined;
 	const sourceLabel = target.source;
@@ -3339,7 +3340,7 @@ function importedAsyncRootUsage(completed: Awaited<ReturnType<typeof waitForImpo
 	};
 }
 
-function removeWorkflowAwaitedResult(asyncDir: string, resultPath: string, runId: string, publication: NonNullable<Awaited<ReturnType<typeof waitForImportedAsyncRoot>>["importedPublication"]>): void {
+function removeAwaitedResult(asyncDir: string, resultPath: string, runId: string, publication: NonNullable<Awaited<ReturnType<typeof waitForImportedAsyncRoot>>["importedPublication"]>): void {
 	try {
 		fs.rmSync(resultPath, { force: true });
 	} catch {
@@ -3348,7 +3349,7 @@ function removeWorkflowAwaitedResult(asyncDir: string, resultPath: string, runId
 	removeResultIndex(asyncDir, publication.sessionId, runId, publication.toolCallId);
 }
 
-function emitWorkflowAwaitedChildComplete(
+function emitAwaitedChildComplete(
 	pi: ExtensionAPI,
 	state: SubagentState,
 	runId: string,
@@ -3374,18 +3375,18 @@ function emitWorkflowAwaitedChildComplete(
 		success: completed.success,
 		timestamp: Date.now(),
 		triggerTurn: false,
-		awaitedByWorkflow: true,
+		awaitedByCaller: true,
 		parentWorkflowRunId,
 	});
 }
 
-/** Consumes an awaited workflow child's published result: clears the payload, announces completion, and builds the tool result. */
-function importWorkflowAwaitedChildResult(
+/** Consumes a caller-awaited child's result without a competing background delivery. */
+function importAwaitedChildResult(
 	completed: Awaited<ReturnType<typeof waitForImportedAsyncRoot>>,
 	options: { runId: string; asyncDir: string; resultPath: string; task: string; parentWorkflowRunId: string | undefined; details: Details; emptyOutputText?: string; state: SubagentState; pi: ExtensionAPI },
 ): AgentToolResult<Details> {
-	if (completed.importedPublication) removeWorkflowAwaitedResult(options.asyncDir, options.resultPath, options.runId, completed.importedPublication);
-	emitWorkflowAwaitedChildComplete(options.pi, options.state, options.runId, options.asyncDir, options.parentWorkflowRunId, completed);
+	if (completed.importedPublication) removeAwaitedResult(options.asyncDir, options.resultPath, options.runId, completed.importedPublication);
+	emitAwaitedChildComplete(options.pi, options.state, options.runId, options.asyncDir, options.parentWorkflowRunId, completed);
 	const usage = importedAsyncRootUsage(completed);
 	const childResult: SingleResult = omitUndefinedProperties({
 		index: 0,
@@ -3425,8 +3426,8 @@ function importWorkflowAwaitedChildResult(
 }
 
 // A replaced runtime leaves the child running so a relaunch of the workflow can re-attach to it.
-function stopAwaitedAsyncChildOnAbort(signal: AbortSignal | undefined, state: SubagentState, runId: string, asyncDir: string, kill?: ExecutorDeps["kill"]): { remove: () => void } {
-	const stopOnAbort = () => { if (!workflowStopCause(signal?.reason)) stopAsyncRun(state, runId, kill, { asyncDir, resolvedId: runId }); };
+function stopAwaitedAsyncChildOnAbort(signal: AbortSignal | undefined, state: SubagentState, runId: string, asyncDir: string, kill?: ExecutorDeps["kill"], preserveWorkflowChild = true): { remove: () => void } {
+	const stopOnAbort = () => { if (!preserveWorkflowChild || !workflowStopCause(signal?.reason)) stopAsyncRun(state, runId, kill, { asyncDir, resolvedId: runId }); };
 	if (signal?.aborted) stopOnAbort();
 	else signal?.addEventListener("abort", stopOnAbort, { once: true });
 	return { remove: () => signal?.removeEventListener("abort", stopOnAbort) };
@@ -3446,21 +3447,27 @@ function resolveLiveWorkflowRunId(deps: ExecutorDeps, id: string): string | unde
 	}
 }
 
-async function waitForWorkflowAsyncSingleResult(
+async function waitForAwaitedAsyncSingleResult(
 	params: SubagentParamsLike,
 	launchResult: AgentToolResult<Details>,
 	options: { runId: string; task: string; signal?: AbortSignal; state: SubagentState; pi: ExtensionAPI; kill?: ExecutorDeps["kill"] },
 ): Promise<AgentToolResult<Details>> {
-	if (params.workflowAwaitAsync !== true || !launchResult.details.asyncDir) return launchResult;
+	if ((params.workflowAwaitAsync !== true && params.delivery !== "final") || !launchResult.details.asyncDir) return launchResult;
 	const asyncDir = launchResult.details.asyncDir;
-	const resultPath = workflowAwaitedAsyncResultPath(asyncDir);
-	const stopListener = stopAwaitedAsyncChildOnAbort(options.signal, options.state, options.runId, asyncDir, options.kill);
+	const resultPath = awaitedAsyncResultPath(asyncDir);
+	const stopListener = stopAwaitedAsyncChildOnAbort(options.signal, options.state, options.runId, asyncDir, options.kill, params.delivery !== "final");
 	const completed = await waitForImportedAsyncRoot({ runId: options.runId, asyncDir, resultPath, index: 0 }, omitUndefinedProperties({
 		shouldAbort: () => options.signal?.aborted === true,
-		timeoutMessage: "Workflow stopped before async child completed.",
+		timeoutMessage: params.delivery === "final" ? "Final-delivery child stopped before completion." : "Workflow stopped before async child completed.",
 		abortedAsStopped: true,
-	})).finally(stopListener.remove);
-	return importWorkflowAwaitedChildResult(completed, { runId: options.runId, asyncDir, resultPath, task: options.task, parentWorkflowRunId: params.workflowParentRunId, details: launchResult.details, state: options.state, pi: options.pi });
+	})).catch((error) => {
+		if (params.delivery === "final") {
+			const stopped = stopAsyncRun(options.state, options.runId, options.kill, { asyncDir, resolvedId: options.runId });
+			if (stopped?.isError) throw new Error(`Final result import failed and child stop failed: ${JSON.stringify(stopped.content)}`, { cause: error });
+		}
+		throw error;
+	}).finally(stopListener.remove);
+	return importAwaitedChildResult(completed, { runId: options.runId, asyncDir, resultPath, task: options.task, parentWorkflowRunId: params.workflowParentRunId, details: launchResult.details, state: options.state, pi: options.pi });
 }
 
 async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Promise<AgentToolResult<Details> | null> {
@@ -3620,9 +3627,9 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			parentWorkflowRunId: params.workflowParentRunId,
 			workflowKey: params.workflowKey,
 			lane: params.lane,
-			workflowAwaitAsync: params.workflowAwaitAsync,
+			awaitResult: params.workflowAwaitAsync === true || params.delivery === "final",
 		}));
-		return waitForWorkflowAsyncSingleResult(params, asyncResult, { runId: id, task: params.task ?? "", signal: data.signal, state: deps.state, pi: deps.pi, kill: deps.kill });
+		return waitForAwaitedAsyncSingleResult(params, asyncResult, { runId: id, task: params.task ?? "", signal: data.signal, state: deps.state, pi: deps.pi, kill: deps.kill });
 	}
 
 	return null;
@@ -6160,7 +6167,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									const reattached = await awaitExistingAsyncRun(priorAsyncDir, priorRunId, workflowSignal).finally(stopListener.remove);
 									const claimedPath = reattached.status === "settled" ? claimWorkflowAwaitedResult(priorAsyncDir, workflowRunId) : undefined;
 									if (reattached.status === "settled" && claimedPath) {
-										const imported = importWorkflowAwaitedChildResult(reattached.result, { runId: priorRunId, asyncDir: priorAsyncDir, resultPath: claimedPath, task: typeof childParams.task === "string" ? childParams.task : "", parentWorkflowRunId: workflowReuseSource?.runId, details: { mode: "single", asyncId: priorRunId, asyncDir: priorAsyncDir, results: [] }, state: deps.state, pi: deps.pi });
+										const imported = importAwaitedChildResult(reattached.result, { runId: priorRunId, asyncDir: priorAsyncDir, resultPath: claimedPath, task: typeof childParams.task === "string" ? childParams.task : "", parentWorkflowRunId: workflowReuseSource?.runId, details: { mode: "single", asyncId: priorRunId, asyncDir: priorAsyncDir, results: [] }, state: deps.state, pi: deps.pi });
 										const reattachedResult = workflowChildResult(key, imported, childParams, deps.state);
 										// Like a settled journal match: only a successful child is reused; a failed or stopped one launches fresh.
 										if (reattachedResult.ok) {
@@ -7957,6 +7964,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const { workflow: _workflow, ...withoutWorkflowSource } = publicParams;
 			publicParams = { ...withoutWorkflowSource, workflowScript, args: "error" in normalizedArgs ? publicParams.args : deepFreezeWorkflowArgs(normalizedArgs.args) };
 		}
+		if (publicParams.delivery === "final") publicParams = { ...publicParams, async: true };
 		publicExecutions.add(publicParams);
 		return executeWithSingleDispatchGuard(id, publicParams, signal, onUpdate, ctx);
 	};

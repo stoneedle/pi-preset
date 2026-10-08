@@ -1430,6 +1430,8 @@ export interface AgentCapabilityRow {
 }
 
 export interface Details {
+	/** Terminal tool handoff; failure details remain auditable but are removed from provider context. */
+	finalDelivery?: { status: "delivered" | "fallback" | "cancelled"; error?: string; outputPath?: string };
 	commands?: import("../runs/shared/child-commands.ts").ChildCommandSnapshot[];
 	mode: SubagentResultMode | "management";
 	workflowReceiptPath?: string;
@@ -1891,6 +1893,8 @@ export interface AsyncStatus {
 	toolCallId?: string;
 	sessionId?: string;
 	mode: SubagentRunMode;
+	/** Completion is consumed by the launching tool rather than the background notifier. */
+	awaitResult?: boolean;
 	context?: "fresh" | "fork" | "mixed";
 	isNested?: boolean;
 	state: "queued" | "running" | "complete" | "failed" | "partial" | "paused" | "stopped" | "rejected";

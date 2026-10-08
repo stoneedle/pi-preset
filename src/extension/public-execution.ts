@@ -40,6 +40,9 @@ export interface PublicSubagentExecutionParams {
 	workflowKey?: unknown;
 	workflowChildAsyncId?: unknown;
 	workflowAwaitAsync?: unknown;
+	delivery?: unknown;
+	foregroundOnly?: unknown;
+	chatProgress?: unknown;
 	workflowAwaitDetached?: unknown;
 	workflowParentDeadlineAt?: unknown;
 	suppressRoutineResultIntercom?: unknown;
@@ -86,6 +89,15 @@ export function validateWorkflowCapacityOverrides(params: PublicSubagentExecutio
  * Internal runs.run children and structured owned delegation bypass this boundary.
  */
 export function normalizePublicSubagentExecution<T extends PublicSubagentExecutionParams>(params: T, options: { structuredWorkflows?: boolean } = {}): PublicSubagentExecutionNormalization<T> {
+	if (params.delivery !== undefined) {
+		if (params.delivery !== "final") return { ok: false, error: "delivery must be 'final' or omitted.", mode: "workflow" };
+		if (params.action !== undefined || params.workflow !== undefined || params.workflowScript !== undefined || params.tasks !== undefined || params.chain !== undefined || !params.agent) {
+			return { ok: false, error: "Final delivery requires one direct { agent, task? } call, without actions or workflows.", mode: "workflow" };
+		}
+		if (params.async === false || params.foregroundOnly === true || params.chatProgress === "live-card") {
+			return { ok: false, error: "Final delivery waits inside an async launch. Omit async or pass true; foregroundOnly and live-card are unsupported.", mode: "workflow" };
+		}
+	}
 	for (const field of ["resource", "resourceProvenance", "workflowResource", "workflowResourceProvenance", "workflowResourcePermit", "resourcePermit", "permit"] as const) {
 		if (Object.hasOwn(params, field) && (params as Record<string, unknown>)[field] !== undefined) {
 			return { ok: false, error: "Public execution does not accept workflow resource provenance or permit fields.", mode: params.action === undefined ? "workflow" : "management" };
