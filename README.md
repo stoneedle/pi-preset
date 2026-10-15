@@ -54,7 +54,7 @@ When you finish implementing, run a reviewer subagent before summarizing.
 
 ### Final answer delivery
 
-If you want a specialized child agent to produce the final answer directly without parent summarization or rewriting, ask Pi to use final delivery (`delivery: "final"`):
+If you want a specialized child agent to produce the final answer directly without parent summarization or rewriting, ask Pi to use final delivery (`options.delivery: "final"`):
 
 ```text
 Investigate this issue first, then run oracle and deliver its verbatim output as the final response.
@@ -120,7 +120,7 @@ For bounded orchestration, `maxSubagentSpawnsPerRun` limits cumulative logical c
 
 or ask: "Check whether subagents and intercom are set up correctly."
 
-For installed-version help, use `/subagents-guide [topic]` or `subagent({ action: "guide", topic: "workflows" })`. The default topic is `overview`; available topics are `overview`, `workflows`, `agents`, `missions`, `observability`, `tool-reference`, `configuration`, `models`, `watchdog`, `extension-api`, and `council`.
+For installed-version help, use `/subagents-guide [topic]` or `subagent({ action: "guide", options: { topic: "workflows" } })`. The default topic is `overview`; available topics are `overview`, `workflows`, `agents`, `missions`, `observability`, `tool-reference`, `configuration`, `models`, `watchdog`, `extension-api`, and `council`.
 
 ## Documentation
 
