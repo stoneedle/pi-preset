@@ -15,21 +15,6 @@ type ResolvedSession struct {
 var ErrSessionNotFound = errors.New("session not found")
 var ErrInvalidSessionID = errors.New("invalid session id")
 
-func ResolveByID(sessionsDir, id string) (ResolvedSession, error) {
-	if id == "" || filepath.Base(id) != id || filepath.Ext(id) != ".jsonl" {
-		return ResolvedSession{}, ErrInvalidSessionID
-	}
-	path, err := findPathByFilename(sessionsDir, id)
-	if err != nil {
-		return ResolvedSession{}, err
-	}
-	sess, err := ParseFile(path, filepath.Base(filepath.Dir(path)), id)
-	if err != nil {
-		return ResolvedSession{}, err
-	}
-	return ResolvedSession{Session: sess, Path: path}, nil
-}
-
 func findPathByFilename(sessionsDir, id string) (string, error) {
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {

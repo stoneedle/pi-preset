@@ -2,7 +2,6 @@ package sessions
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,10 +9,6 @@ import (
 	"testing"
 	"time"
 )
-
-func createSessionFile(sessionsDir, path string) (string, error) {
-	return CreateSessionFileWithSettings(sessionsDir, path, InitialSettings{})
-}
 
 func TestEncodeProjectName(t *testing.T) {
 	tests := []struct {
@@ -60,12 +55,6 @@ func TestDecodeProjectName(t *testing.T) {
 		{"--Users-setkyar-_cache--", "/Users/setkyar/_cache"},
 		// Literal hyphens are indistinguishable from separators in native names.
 		{"--Users-setkyar-my-project--", "/Users/setkyar/my/project"},
-		// Custom escape encoding written by older pi-web builds, still readable.
-		{"--Users_-setkyar--", "/Users/setkyar"},
-		{"--home_-user_-project--", "/home/user/project"},
-		{"--a_-b_-c_-d--", "/a/b/c/d"},
-		{"--Users_-setkyar_-my-project--", "/Users/setkyar/my-project"},
-		{"--Users_-setkyar_-__cache--", "/Users/setkyar/_cache"},
 		// Windows dash encoding: drive letter followed by two dashes
 		// (both : and \ became -).
 		{"--C--Users-me-proj--", `C:\Users\me\proj`},
@@ -86,6 +75,8 @@ func TestEncodeDecodeRoundTripWithoutAmbiguousCharacters(t *testing.T) {
 		"/home/user/project",
 		"/a/b/c/d",
 		"/home/neven/code/xyz.net",
+		"/foo_/bar",
+		"/foo__bar/baz",
 	}
 	for _, p := range paths {
 		encoded := EncodeProjectName(p)
@@ -103,8 +94,6 @@ func TestDecodeProjectNameNativeNamesAreLossy(t *testing.T) {
 	paths := []string{
 		"/Users/setkyar/my-project",
 		"/project-with-hyphens/sub_dir",
-		"/foo_/bar",
-		"/foo__bar/baz",
 	}
 	for _, p := range paths {
 		if decoded := DecodeProjectName(EncodeProjectName(p)); decoded == p {
@@ -149,26 +138,6 @@ func TestSortSummariesByActivityKeepsInvalidTimestampsLast(t *testing.T) {
 		got[i] = summaries[i].ID
 	}
 	want := []string{"newest", "older", "invalid", "empty"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("sorted IDs = %v, want %v", got, want)
-	}
-}
-
-func TestSortSummariesByProjectActivityGroupsProjects(t *testing.T) {
-	summaries := []SessionSummary{
-		{ID: "web-new", Project: "/pi/web", LastActivity: "2026-05-18T10:00:00Z"},
-		{ID: "web-mid", Project: "/pi/web", LastActivity: "2026-05-18T09:50:00Z"},
-		{ID: "milk", Project: "/milktea", LastActivity: "2026-05-18T09:40:00Z"},
-		{ID: "web-old", Project: "/pi/web", LastActivity: "2026-05-18T09:30:00Z"},
-	}
-
-	SortSummariesByProjectActivity(summaries)
-
-	got := make([]string, len(summaries))
-	for i := range summaries {
-		got[i] = summaries[i].ID
-	}
-	want := []string{"web-new", "web-mid", "web-old", "milk"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("sorted IDs = %v, want %v", got, want)
 	}
@@ -235,23 +204,14 @@ func TestListRecentLocationsRecoversHyphenatedNativePaths(t *testing.T) {
 	}
 }
 
-// legacyEncodeProjectName reproduces the escape encoding older pi-web builds
-// wrote (__ → _, _- → /). Reads must keep supporting these directories.
-func legacyEncodeProjectName(path string) string {
-	s := strings.Trim(path, "/")
-	s = strings.ReplaceAll(s, "_", "__")
-	s = strings.ReplaceAll(s, "/", "_-")
-	return "--" + s + "--"
-}
-
-func TestResolveLocationReadsCustomEncodedDirectory(t *testing.T) {
+func TestResolveLocationUsesNativeHeader(t *testing.T) {
 	tmp := t.TempDir()
 	sessionsDir := filepath.Join(tmp, "sessions")
 	// Unix-shaped literal so the assertion is identical on every platform;
 	// resolveLocation reads the header cwd, which need not exist on disk.
 	const realPath = "/Users/setkyar/custom-project_dir"
 
-	projectDir := filepath.Join(sessionsDir, legacyEncodeProjectName(realPath))
+	projectDir := filepath.Join(sessionsDir, "arbitrary-project-directory")
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -372,8 +332,10 @@ func TestCreateSessionFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessDir := filepath.Join(tmpDir, "sessions")
 	projectPath := filepath.Join(tmpDir, "test-project")
-
-	id, err := createSessionFile(sessDir, projectPath)
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	id, err := CreateSessionFile(sessDir, projectPath)
 	if err != nil {
 		t.Fatalf("CreateSessionFile failed: %v", err)
 	}
@@ -413,8 +375,10 @@ func TestCreateSessionFileUsesNativePiProjectDirectory(t *testing.T) {
 	sessDir := filepath.Join(tmp, "sessions")
 	// A hyphen and an underscore: native pi leaves both verbatim.
 	projectPath := filepath.Join(tmp, "native-project_dir")
-
-	id, err := createSessionFile(sessDir, projectPath)
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	id, err := CreateSessionFile(sessDir, projectPath)
 	if err != nil {
 		t.Fatalf("CreateSessionFile failed: %v", err)
 	}
@@ -431,7 +395,7 @@ func TestCreateSessionFileAcceptsLegitimateDoubleDotInName(t *testing.T) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	id, err := createSessionFile(tmp, dir)
+	id, err := CreateSessionFile(tmp, dir)
 	if err != nil {
 		t.Fatalf("expected legitimate ..hidden path to be accepted, got %v", err)
 	}
@@ -442,106 +406,8 @@ func TestCreateSessionFileAcceptsLegitimateDoubleDotInName(t *testing.T) {
 
 func TestCreateSessionFileRejectsRelativePath(t *testing.T) {
 	tmp := t.TempDir()
-	if _, err := createSessionFile(tmp, "relative/foo"); err == nil {
+	if _, err := CreateSessionFile(tmp, "relative/foo"); err == nil {
 		t.Fatal("expected error for relative path, got nil")
-	}
-}
-
-func TestRenameSessionAppendsSessionInfo(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	content := `{"type":"session","name":"Old Name","timestamp":"2026-05-08T10:00:00Z"}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	now := func() time.Time { return time.Date(2026, 5, 8, 10, 1, 2, 0, time.UTC) }
-	if err := RenameSession(path, " New Name ", now); err != nil {
-		t.Fatalf("RenameSession failed: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(string(data), content) {
-		t.Fatal("rename rewrote existing history")
-	}
-	var entry map[string]any
-	if err := json.Unmarshal(data[len(content):], &entry); err != nil {
-		t.Fatal(err)
-	}
-	if entry["type"] != "session_info" || entry["name"] != "New Name" || entry["timestamp"] != "2026-05-08T10:01:02Z" || entry["parentId"] != nil {
-		t.Fatalf("appended entry = %#v", entry)
-	}
-	if id, _ := entry["id"].(string); len(id) != 8 {
-		t.Fatalf("missing native entry id: %#v", entry)
-	}
-	s, err := ParseSummary(path, "--proj--", "s.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Name != "New Name" {
-		t.Fatalf("Name = %q, want New Name", s.Name)
-	}
-}
-
-func TestLabelSessionEntryAppendsLabelAndClearEntries(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	content := `{"type":"session","version":3,"id":"sid","timestamp":"2026-05-08T10:00:00Z"}` + "\n" +
-		`{"type":"message","id":"target1","parentId":null,"timestamp":"2026-05-08T10:00:01Z","message":{"role":"user","content":"hello"}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	now := func() time.Time { return time.Date(2026, 5, 8, 10, 1, 2, 0, time.UTC) }
-	if err := LabelSessionEntry(path, "target1", " Important ", now); err != nil {
-		t.Fatalf("LabelSessionEntry set failed: %v", err)
-	}
-	if err := LabelSessionEntry(path, "target1", "  ", now); err != nil {
-		t.Fatalf("LabelSessionEntry clear failed: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("line count = %d, want 4: %q", len(lines), string(data))
-	}
-	var setEntry, clearEntry map[string]any
-	if err := json.Unmarshal([]byte(lines[2]), &setEntry); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal([]byte(lines[3]), &clearEntry); err != nil {
-		t.Fatal(err)
-	}
-	if setEntry["type"] != "label" || setEntry["targetId"] != "target1" || setEntry["label"] != "Important" {
-		t.Fatalf("set entry = %#v", setEntry)
-	}
-	if clearEntry["type"] != "label" || clearEntry["targetId"] != "target1" {
-		t.Fatalf("clear entry = %#v", clearEntry)
-	}
-	if _, ok := clearEntry["label"]; ok {
-		t.Fatalf("clear entry should omit label: %#v", clearEntry)
-	}
-}
-
-func TestLabelSessionEntryRejectsMissingTarget(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	if err := os.WriteFile(path, []byte(`{"type":"session"}`+"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := LabelSessionEntry(path, "missing", "label", nil); !errors.Is(err, ErrSessionEntryNotFound) {
-		t.Fatalf("err = %v, want ErrSessionEntryNotFound", err)
-	}
-}
-
-func TestRenameSessionRejectsEmptyName(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	if err := os.WriteFile(path, []byte(`{"type":"session"}`+"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := RenameSession(path, "   ", nil); err == nil {
-		t.Fatal("expected error for empty name")
 	}
 }
 
@@ -566,9 +432,6 @@ func TestParseSummaryHandlesLargeToolResultLine(t *testing.T) {
 	if s.Name != "Big Session" {
 		t.Errorf("Name = %q, want %q", s.Name, "Big Session")
 	}
-	if s.MessageCount != 2 {
-		t.Errorf("MessageCount = %d, want 2", s.MessageCount)
-	}
 }
 
 func TestParseSummaryUsesHeaderName(t *testing.T) {
@@ -585,9 +448,6 @@ func TestParseSummaryUsesHeaderName(t *testing.T) {
 	}
 	if s.Name != "My Project" {
 		t.Errorf("Name = %q, want %q", s.Name, "My Project")
-	}
-	if s.MessageCount != 1 {
-		t.Errorf("MessageCount = %d, want 1", s.MessageCount)
 	}
 }
 
@@ -733,64 +593,6 @@ func TestParseSummaryExtractsSessionUUID(t *testing.T) {
 	}
 }
 
-func TestParseSummaryAccumulatesUsage(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "s.jsonl")
-	content := `{"type":"session","timestamp":"2026-05-08T10:00:00Z"}` + "\n" +
-		`{"type":"message","timestamp":"2026-05-08T10:00:01Z","message":{"role":"assistant","content":"x","usage":{"totalTokens":100,"cost":{"total":0.01}}}}` + "\n" +
-		`{"type":"message","timestamp":"2026-05-08T10:00:02Z","message":{"role":"assistant","content":"y","usage":{"totalTokens":50,"cost":{"total":0.005}}}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	s, err := ParseSummary(path, "--proj--", "s.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.TokenTotal != 150 {
-		t.Errorf("TokenTotal = %d, want 150", s.TokenTotal)
-	}
-	if s.CostTotal < 0.0149 || s.CostTotal > 0.0151 {
-		t.Errorf("CostTotal = %v, want ~0.015", s.CostTotal)
-	}
-	if s.MessageCount != 2 {
-		t.Errorf("MessageCount = %d, want 2", s.MessageCount)
-	}
-}
-
-func TestParseSummaryTracksLatestModelInfo(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "s.jsonl")
-	content := `{"type":"message","timestamp":"2026-05-08T10:00:01Z","message":{"role":"assistant","provider":"anthropic","model":"claude-4","content":"x"}}` + "\n" +
-		`{"type":"model_change","timestamp":"2026-05-08T10:00:02Z","provider":"deepseek","modelId":"deepseek-v4-pro"}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	s, err := ParseSummary(path, "--proj--", "s.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.ModelProvider != "deepseek" || s.Model != "deepseek-v4-pro" {
-		t.Fatalf("model = %q/%q, want deepseek/deepseek-v4-pro", s.ModelProvider, s.Model)
-	}
-}
-
-func TestParseFileTracksLatestModelInfo(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "s.jsonl")
-	content := `{"type":"message","timestamp":"2026-05-08T10:00:01Z","message":{"role":"assistant","provider":"anthropic","model":"claude-4","content":"x"}}` + "\n" +
-		`{"type":"model_change","timestamp":"2026-05-08T10:00:02Z","provider":"deepseek","modelId":"deepseek-v4-pro"}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	s, err := ParseFile(path, "--proj--", "s.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.ModelProvider != "deepseek" || s.Model != "deepseek-v4-pro" {
-		t.Fatalf("model = %q/%q, want deepseek/deepseek-v4-pro", s.ModelProvider, s.Model)
-	}
-}
-
 func TestParseFileMarksSessionBrokenWhenCwdMissing(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.jsonl")
@@ -806,7 +608,7 @@ func TestParseFileMarksSessionBrokenWhenCwdMissing(t *testing.T) {
 	if sess.ChatAvailable {
 		t.Fatal("expected chat to be disabled for missing cwd")
 	}
-	if !strings.Contains(sess.ChatDisabledReason, "working directory no longer exists") {
+	if !strings.Contains(sess.ChatDisabledReason, "working directory is unavailable") {
 		t.Fatalf("reason = %q", sess.ChatDisabledReason)
 	}
 }
@@ -835,12 +637,15 @@ func TestParseSummaryFallsBackToDirNameWhenCwdMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// dir name as produced by EncodeProjectName for /Users/setkyar/pi/web.
-	s, err := ParseSummary(path, "--Users_-setkyar_-pi_-web--", "s.jsonl")
+	s, err := ParseSummary(path, "--Users-setkyar-pi-web--", "s.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Project != "Users/setkyar/pi/web" {
 		t.Errorf("Project = %q, want %q", s.Project, "Users/setkyar/pi/web")
+	}
+	if s.ChatAvailable {
+		t.Fatal("missing native cwd must be view-only")
 	}
 }
 
@@ -918,165 +723,5 @@ func TestParseFileLeavesChatEnabledWhenCwdExists(t *testing.T) {
 	}
 	if !sess.ChatAvailable {
 		t.Fatalf("expected chat to be enabled, reason = %q", sess.ChatDisabledReason)
-	}
-}
-
-func TestForkSessionFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	sessDir := filepath.Join(tmpDir, "sessions")
-	projectPath := filepath.Join(tmpDir, "test-project")
-
-	// Create source session
-	id, err := createSessionFile(sessDir, projectPath)
-	if err != nil {
-		t.Fatalf("CreateSessionFile failed: %v", err)
-	}
-
-	projectDir := filepath.Join(sessDir, piEncodeProjectDir(projectPath))
-	sourcePath := filepath.Join(projectDir, id)
-
-	// Append some tree entries
-	entries := []string{
-		`{"type":"message","id":"a1b2c3d4","parentId":null,"timestamp":"2026-05-08T10:00:00Z","message":{"role":"user","content":"Hello"}}` + "\n",
-		`{"type":"message","id":"b2c3d4e5","parentId":"a1b2c3d4","timestamp":"2026-05-08T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}}` + "\n",
-		`{"type":"message","id":"c3d4e5f6","parentId":"b2c3d4e5","timestamp":"2026-05-08T10:02:00Z","message":{"role":"user","content":"How are you?"}}` + "\n",
-		`{"type":"message","id":"d4e5f6g7","parentId":"c3d4e5f6","timestamp":"2026-05-08T10:03:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Good!"}]}}` + "\n",
-	}
-	f, err := os.OpenFile(sourcePath, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if _, err := f.WriteString(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.Close()
-
-	now := func() time.Time { return time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC) }
-
-	// Fork from the second user message (c3d4e5f6)
-	newID, err := ForkSessionFile(sessDir, sourcePath, "c3d4e5f6", now)
-	if err != nil {
-		t.Fatalf("ForkSessionFile failed: %v", err)
-	}
-	if !strings.HasSuffix(newID, ".jsonl") {
-		t.Fatalf("expected .jsonl suffix, got %q", newID)
-	}
-
-	newPath := filepath.Join(projectDir, newID)
-	data, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf("read forked file failed: %v", err)
-	}
-	content := string(data)
-
-	if !strings.Contains(content, `"type":"session"`) {
-		t.Fatalf("missing session header")
-	}
-	if !strings.Contains(content, `"parentSession"`) {
-		t.Fatalf("missing parentSession")
-	}
-	if !strings.Contains(content, `"forkedFrom"`) {
-		t.Fatalf("missing forkedFrom")
-	}
-	if !strings.Contains(content, `"id":"a1b2c3d4"`) {
-		t.Fatalf("missing first user message")
-	}
-	if !strings.Contains(content, `"id":"b2c3d4e5"`) {
-		t.Fatalf("missing assistant message")
-	}
-	if !strings.Contains(content, `"id":"c3d4e5f6"`) {
-		t.Fatalf("missing fork point message")
-	}
-	if strings.Contains(content, `"id":"d4e5f6g7"`) {
-		t.Fatalf("should not contain message after fork point")
-	}
-}
-
-func TestCloneSessionFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	sessDir := filepath.Join(tmpDir, "sessions")
-	projectPath := filepath.Join(tmpDir, "test-project")
-
-	id, err := createSessionFile(sessDir, projectPath)
-	if err != nil {
-		t.Fatalf("CreateSessionFile failed: %v", err)
-	}
-
-	projectDir := filepath.Join(sessDir, piEncodeProjectDir(projectPath))
-	sourcePath := filepath.Join(projectDir, id)
-
-	entries := []string{
-		`{"type":"message","id":"a1b2c3d4","parentId":null,"timestamp":"2026-05-08T10:00:00Z","message":{"role":"user","content":"Hello"}}` + "\n",
-		`{"type":"message","id":"b2c3d4e5","parentId":"a1b2c3d4","timestamp":"2026-05-08T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}}` + "\n",
-		`{"type":"message","id":"c3d4e5f6","parentId":"b2c3d4e5","timestamp":"2026-05-08T10:02:00Z","message":{"role":"user","content":"How are you?"}}` + "\n",
-	}
-	f, err := os.OpenFile(sourcePath, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if _, err := f.WriteString(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.Close()
-
-	now := func() time.Time { return time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC) }
-
-	newID, err := CloneSessionFile(sessDir, sourcePath, "c3d4e5f6", now)
-	if err != nil {
-		t.Fatalf("CloneSessionFile failed: %v", err)
-	}
-	if !strings.HasSuffix(newID, ".jsonl") {
-		t.Fatalf("expected .jsonl suffix, got %q", newID)
-	}
-
-	newPath := filepath.Join(projectDir, newID)
-	data, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf("read cloned file failed: %v", err)
-	}
-	content := string(data)
-
-	if !strings.Contains(content, `"type":"session"`) {
-		t.Fatalf("missing session header")
-	}
-	if !strings.Contains(content, `"parentSession"`) {
-		t.Fatalf("missing parentSession")
-	}
-	if strings.Contains(content, `"forkedFrom"`) {
-		t.Fatalf("clone should not have forkedFrom")
-	}
-	if !strings.Contains(content, `"id":"a1b2c3d4"`) {
-		t.Fatalf("missing first user message")
-	}
-	if !strings.Contains(content, `"id":"b2c3d4e5"`) {
-		t.Fatalf("missing assistant message")
-	}
-	if !strings.Contains(content, `"id":"c3d4e5f6"`) {
-		t.Fatalf("missing leaf message")
-	}
-}
-
-func TestForkSessionFileEntryNotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	sessDir := filepath.Join(tmpDir, "sessions")
-	projectPath := filepath.Join(tmpDir, "test-project")
-
-	id, err := createSessionFile(sessDir, projectPath)
-	if err != nil {
-		t.Fatalf("CreateSessionFile failed: %v", err)
-	}
-
-	projectDir := filepath.Join(sessDir, piEncodeProjectDir(projectPath))
-	sourcePath := filepath.Join(projectDir, id)
-
-	now := func() time.Time { return time.Date(2026, 5, 8, 11, 0, 0, 0, time.UTC) }
-
-	_, err = ForkSessionFile(sessDir, sourcePath, "nonexistent", now)
-	if err == nil {
-		t.Fatal("expected error for nonexistent entry")
 	}
 }

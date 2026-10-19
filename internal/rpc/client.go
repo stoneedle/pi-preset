@@ -31,17 +31,17 @@ func WriteCommand(w io.Writer, cmd map[string]any) error {
 	return err
 }
 
-func buildSwitchSessionCommand(id, sessionPath string) map[string]any {
-	return map[string]any{"id": id, "type": "switch_session", "sessionPath": sessionPath}
-}
-
 func BuildPromptCommand(id string, chat chat.Request, streaming bool) map[string]any {
 	cmd := map[string]any{"id": id, "type": "prompt", "message": chat.Message}
 	if len(chat.Images) > 0 {
 		cmd["images"] = chat.Images
 	}
 	if streaming {
-		cmd["streamingBehavior"] = "steer"
+		behavior := "steer"
+		if chat.Delivery == "followUp" {
+			behavior = "followUp"
+		}
+		cmd["streamingBehavior"] = behavior
 	}
 	return cmd
 }

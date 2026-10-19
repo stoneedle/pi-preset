@@ -25,17 +25,6 @@ func writeStateFile(agentDir string, development bool, host, port string, tailsc
 	}
 	path := filepath.Join(webDir, stateFileName(development))
 
-	// Only the regular server owns the legacy state path used by extensions.
-	// Development mode gets an independent state file and lock.
-	if !development {
-		oldPath := filepath.Join(agentDir, "pi-web-state.json")
-		if _, err := os.Stat(oldPath); err == nil {
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				_ = os.Rename(oldPath, path)
-			}
-		}
-	}
-
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return "", nil, err

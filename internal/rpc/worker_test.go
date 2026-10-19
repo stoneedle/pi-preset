@@ -53,113 +53,22 @@ func TestWorkerDirFallsBackToTempWhenCWDMissing(t *testing.T) {
 	}
 }
 
-func TestStatusReportsRunningDuringRecentStreamActivity(t *testing.T) {
-	w := &piRPCWorker{
-		status:  workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending: make(map[string]chan response),
-	}
-
-	w.handleRPCLine(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}`)
-
-	if got := w.Status(); got.State != workers.WorkerStateRunning {
-		t.Fatalf("status = %q, want running", got.State)
-	}
-}
-
-func TestStatusReturnsIdleAfterAgentEnd(t *testing.T) {
-	w := &piRPCWorker{
-		status:  workers.WorkerStatus{State: workers.WorkerStateRunning},
-		pending: make(map[string]chan response),
-	}
-
-	w.handleRPCLine(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}`)
-	w.handleRPCLine(`{"type":"agent_end"}`)
-
-	if got := w.Status(); got.State != workers.WorkerStateIdle {
-		t.Fatalf("status = %q, want idle", got.State)
-	}
-}
-
-func TestStatusDoesNotStayRunningAfterStreamActivityExpires(t *testing.T) {
-	w := &piRPCWorker{
-		status:  workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending: make(map[string]chan response),
-	}
-
-	w.handleRPCLine(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}`)
-	time.Sleep(2200 * time.Millisecond)
-
-	if got := w.Status(); got.State != workers.WorkerStateIdle {
-		t.Fatalf("status = %q, want idle after stream activity expires", got.State)
-	}
-}
-
-func TestHandleRPCLineTracksTurnEndAsStreamActivity(t *testing.T) {
-	w := &piRPCWorker{
-		status:  workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending: make(map[string]chan response),
-	}
-
-	w.handleRPCLine(`{"type":"turn_end"}`)
-
-	if got := w.Status(); got.State != workers.WorkerStateRunning {
-		t.Fatalf("status = %q, want running", got.State)
-	}
-}
-
-func TestHandleRPCLineEmitsStreamPreviewCallbacks(t *testing.T) {
-	var previews []StreamPreview
-	w := &piRPCWorker{
-		status:        workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending:       make(map[string]chan response),
-		streamSink:    func(preview StreamPreview) { previews = append(previews, preview) },
-		streamPreview: &streamPreviewAccumulator{},
-	}
-
-	w.handleRPCLine(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hel"}}`)
-	w.handleRPCLine(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"lo"}}`)
-
-	if len(previews) != 2 {
-		t.Fatalf("previews = %d, want 2", len(previews))
-	}
-	if previews[0].Content != "hel" || previews[0].Done {
-		t.Fatalf("first preview = %+v", previews[0])
-	}
-	if previews[1].Content != "hello" || previews[1].Done {
-		t.Fatalf("second preview = %+v", previews[1])
-	}
-}
-
-func TestHandleRPCLineEmitsDonePreviewOnAgentEnd(t *testing.T) {
-	var previews []StreamPreview
-	w := &piRPCWorker{
-		status:        workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending:       make(map[string]chan response),
-		streamSink:    func(preview StreamPreview) { previews = append(previews, preview) },
-		streamPreview: &streamPreviewAccumulator{},
-	}
-
-	w.handleRPCLine(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}`)
-	w.handleRPCLine(`{"type":"agent_end"}`)
-
-	if len(previews) != 2 {
-		t.Fatalf("previews = %d, want 2", len(previews))
-	}
-	if previews[1].Content != "hello" || !previews[1].Done {
-		t.Fatalf("done preview = %+v", previews[1])
-	}
-}
-
-func TestHandleRPCLineTracksMessageEndAsStreamActivity(t *testing.T) {
-	w := &piRPCWorker{
-		status:  workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending: make(map[string]chan response),
-	}
-
-	w.handleRPCLine(`{"type":"message_end"}`)
-
-	if got := w.Status(); got.State != workers.WorkerStateRunning {
-		t.Fatalf("status = %q, want running", got.State)
+func TestStateFollowsLifecycleNotSilenceOrTurnBoundaries(t *testing.T) {
+	w := &piRPCWorker{status: workers.WorkerStatus{State: workers.WorkerStateIdle}, pending: make(map[string]chan response)}
+	for _, step := range []struct {
+		event string
+		state workers.State
+	}{
+		{`{"type":"agent_start"}`, workers.WorkerStateRunning},
+		{`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}`, workers.WorkerStateRunning},
+		{`{"type":"turn_end"}`, workers.WorkerStateRunning},
+		{`{"type":"agent_end"}`, workers.WorkerStateRunning},
+		{`{"type":"agent_settled"}`, workers.WorkerStateIdle},
+	} {
+		w.handleRPCLine(step.event)
+		if got := w.Status().State; got != step.state {
+			t.Fatalf("%s => %s, want %s", step.event, got, step.state)
+		}
 	}
 }
 
@@ -197,7 +106,7 @@ func TestGetCommandsParsesResponseAndCaches(t *testing.T) {
 	}()
 
 	waitForPending(t, w, "req-1")
-	w.handleRPCLine(`{"type":"response","id":"req-1","command":"get_commands","success":true,"data":{"commands":[{"name":"skill:memory","description":"mem","source":"skill"},{"name":"btw","description":"side chat","source":"extension"}]}}`)
+	w.handleRPCLine(`{"type":"response","id":"req-1","command":"get_commands","success":true,"data":{"commands":[{"name":"skill:memory","description":"mem","source":"skill"},{"name":"terminal-only","description":"terminal command","source":"extension"}]}}`)
 
 	got := <-resCh
 	if got.err != nil {
@@ -239,7 +148,7 @@ func TestHandleRPCLineIgnoresMalformedJSON(t *testing.T) {
 
 func TestHandleRPCLineTracksThinkingAndTextStreamEvents(t *testing.T) {
 	w := &piRPCWorker{
-		status:  workers.WorkerStatus{State: workers.WorkerStateIdle},
+		status:  workers.WorkerStatus{State: workers.WorkerStateRunning},
 		pending: make(map[string]chan response),
 	}
 

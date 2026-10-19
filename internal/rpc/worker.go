@@ -21,8 +21,6 @@ import (
 type piRPCWorker struct {
 	mu                   sync.Mutex
 	writeMu              sync.Mutex
-	sessionPath          string
-	startedAt            time.Time
 	cmd                  *exec.Cmd
 	stdin                io.WriteCloser
 	status               workers.WorkerStatus
@@ -35,9 +33,6 @@ type piRPCWorker struct {
 	commands             []workers.SlashCommand
 	commandsCached       bool
 	lastActive           atomic.Int64 // unix nanos; only user-initiated actions update this
-	lastStreamActivity   atomic.Int64 // unix nanos; stream/turn events keep worker visually running
-	streamSink           StreamEventSink
-	streamPreview        *streamPreviewAccumulator
 }
 
 func (w *piRPCWorker) touch() {
@@ -50,20 +45,6 @@ func (w *piRPCWorker) IdleSince(now time.Time) time.Duration {
 		return 0
 	}
 	return now.Sub(time.Unix(0, last))
-}
-
-// PID returns the operating-system process ID of the underlying pi worker, or
-// 0 if the process has not started or has already exited.
-func (w *piRPCWorker) PID() int {
-	if w.cmd == nil || w.cmd.Process == nil {
-		return 0
-	}
-	return w.cmd.Process.Pid
-}
-
-// StartedAt reports when the worker process was spawned (for uptime).
-func (w *piRPCWorker) StartedAt() time.Time {
-	return w.startedAt
 }
 
 // workerDir is the cwd for `pi --mode rpc`. Extensions load at process start
@@ -107,11 +88,9 @@ func sessionHeaderCWD(sessionPath string) string {
 	return strings.TrimSpace(hdr.CWD)
 }
 
-func NewPiWorkerWithStream(sessionPath string, streamSink StreamEventSink) (workers.ChatWorker, error) {
-	if _, err := exec.LookPath("pi"); err != nil {
-		return nil, fmt.Errorf("pi executable not found: %w", err)
-	}
-	cmd := exec.Command("pi", "--mode", "rpc")
+func NewPiWorker(sessionPath string) (workers.ChatWorker, error) {
+	cmd, err := piCommand("--mode", "rpc", "--session", sessionPath)
+	if err != nil { return nil, err }
 	cmd.Dir = workerDir(sessionPath)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -124,27 +103,17 @@ func NewPiWorkerWithStream(sessionPath string, streamSink StreamEventSink) (work
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
 	worker := &piRPCWorker{
-		sessionPath:   sessionPath,
-		startedAt:     time.Now(),
-		cmd:           cmd,
-		stdin:         stdin,
-		status:        workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending:       make(map[string]chan response),
-		stderrBuf:     &stderrBuf,
-		streamSink:    streamSink,
-		streamPreview: &streamPreviewAccumulator{},
+		cmd:       cmd,
+		stdin:     stdin,
+		status:    workers.WorkerStatus{State: workers.WorkerStateIdle},
+		pending:   make(map[string]chan response),
+		stderrBuf: &stderrBuf,
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	go worker.consume(stdout)
 	go worker.wait()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := worker.switchSession(ctx); err != nil {
-		_ = worker.Close()
-		return nil, err
-	}
 	// Best-effort: refresh model/thinking-level from pi so a respawned worker
 	// doesn't show stale defaults after the in-memory cache was lost on reap.
 	stateCtx, stateCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -219,7 +188,9 @@ func (w *piRPCWorker) SetModel(ctx context.Context, provider, modelID string) er
 		w.mu.Lock()
 		w.currentModel = m.ID
 		w.currentProvider = m.Provider
-		w.status = workers.WorkerStatus{State: workers.WorkerStateIdle, Model: m.ID, ModelName: m.Name, ModelProvider: m.Provider}
+		w.status.Model = m.ID
+		w.status.ModelName = m.Name
+		w.status.ModelProvider = m.Provider
 		w.mu.Unlock()
 		// Refresh thinking level after model switch
 		go w.refreshThinkingLevel()
@@ -240,10 +211,6 @@ func (w *piRPCWorker) Abort(ctx context.Context) error {
 	if err := w.sendAndAwait(ctx, BuildAbortCommand(w.nextID())); err != nil {
 		return err
 	}
-	w.mu.Lock()
-	w.status.State = workers.WorkerStateIdle
-	w.status.Error = ""
-	w.mu.Unlock()
 	return nil
 }
 
@@ -353,8 +320,6 @@ func (w *piRPCWorker) refreshThinkingLevel() {
 	_, _ = w.GetState(ctx)
 }
 
-const streamActivityWindow = 2 * time.Second
-
 func (w *piRPCWorker) Status() workers.WorkerStatus {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -362,9 +327,6 @@ func (w *piRPCWorker) Status() workers.WorkerStatus {
 	s.Model = w.currentModel
 	s.ModelProvider = w.currentProvider
 	s.ThinkingLevel = w.currentThinkingLevel
-	if s.State == workers.WorkerStateIdle && w.hasRecentStreamActivityLocked(time.Now()) {
-		s.State = workers.WorkerStateRunning
-	}
 	return s
 }
 
@@ -380,10 +342,6 @@ func (w *piRPCWorker) Close() error {
 
 func (w *piRPCWorker) nextID() string {
 	return fmt.Sprintf("req-%d", w.seq.Add(1))
-}
-
-func (w *piRPCWorker) switchSession(ctx context.Context) error {
-	return w.sendAndAwait(ctx, buildSwitchSessionCommand(w.nextID(), w.sessionPath))
 }
 
 func (w *piRPCWorker) sendAndAwait(ctx context.Context, cmd map[string]any) error {
@@ -463,23 +421,14 @@ func (w *piRPCWorker) handleRPCLine(line string) {
 		if ch != nil {
 			ch <- res
 		}
-	case "message_update":
-		var msg struct {
-			AssistantMessageEvent assistantMessageEvent `json:"assistantMessageEvent"`
-		}
-		if err := json.Unmarshal([]byte(line), &msg); err == nil {
-			w.emitStreamPreview(msg.AssistantMessageEvent)
-		}
-		w.noteStreamActivity()
-	case "message_end", "turn_end":
-		w.noteStreamActivity()
-		w.completeStreamPreview()
-	case "agent_end":
-		w.completeStreamPreview()
+	case "agent_start":
 		w.mu.Lock()
-		w.status = workers.WorkerStatus{State: workers.WorkerStateIdle}
+		w.status.State = workers.WorkerStateRunning
 		w.mu.Unlock()
-		w.lastStreamActivity.Store(0)
+	case "agent_settled":
+		w.mu.Lock()
+		w.status.State = workers.WorkerStateIdle
+		w.mu.Unlock()
 	case "thinking_level_changed":
 		if meta.Level != "" {
 			w.mu.Lock()
@@ -487,36 +436,6 @@ func (w *piRPCWorker) handleRPCLine(line string) {
 			w.mu.Unlock()
 		}
 	}
-}
-
-func (w *piRPCWorker) noteStreamActivity() {
-	w.lastStreamActivity.Store(time.Now().UnixNano())
-}
-
-func (w *piRPCWorker) emitStreamPreview(event assistantMessageEvent) {
-	if w.streamSink == nil || w.streamPreview == nil {
-		return
-	}
-	if preview, ok := w.streamPreview.handleAssistantEvent(event); ok {
-		w.streamSink(preview)
-	}
-}
-
-func (w *piRPCWorker) completeStreamPreview() {
-	if w.streamSink == nil || w.streamPreview == nil {
-		return
-	}
-	if preview, ok := w.streamPreview.complete(); ok {
-		w.streamSink(preview)
-	}
-}
-
-func (w *piRPCWorker) hasRecentStreamActivityLocked(now time.Time) bool {
-	last := w.lastStreamActivity.Load()
-	if last == 0 {
-		return false
-	}
-	return now.Sub(time.Unix(0, last)) <= streamActivityWindow
 }
 
 func (w *piRPCWorker) wait() {

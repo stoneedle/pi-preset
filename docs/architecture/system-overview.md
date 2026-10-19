@@ -1,200 +1,51 @@
 # System Overview
 
-## What pi-web Does
+pi-web is a small mobile remote for native Pi sessions. The browser lists sessions, reads results, and sends messages to the Pi instance that owns the selected session. It has one interface, not a desktop workspace or a second rendering mode.
 
-pi-web is a local HTTP server that lets you browse and interact with your pi coding-agent sessions in a web browser. It scans `~/.pi/agent/sessions/`, renders a dark-themed UI, and supports live-reloading, chat continuation, and session sharing.
+## Responsibilities
 
-## Tech Stack
+| Component | Owns |
+|---|---|
+| `web/src/routes/RemoteApp.svelte` | Session list, conversation, composer, and compact session information |
+| `internal/server` | Authenticated HTTP/SSE boundary and routing to the session owner |
+| `internal/sessions` | Native JSONL parsing, active-branch projection, recent windows, and history cursors |
+| `.pi/extensions/pi-remote.ts` | Authenticated loopback controls inside the existing Pi process |
+| `pi-title-glyphs` | Native names and runtime status heartbeats |
+| `internal/workers` / `internal/rpc` | Explicit background continuation, one worker per session |
+| `internal/ui` / `internal/frontend` | Small HTML shell and embedded, content-hashed Vite assets |
 
-| Layer | Technology |
-|-------|------------|
-| Backend | Go 1.25+ |
-| Frontend (live app) | Svelte 5 SPA (`web/src/main.js` → `App.svelte`), built by Vite; the session viewer is fully component-driven over a reactive `SessionDataModel`. Go serves a single embedded shell (`internal/ui/embedded/app.html`) + injects bootstrap data |
-| Static export | Go `html/template` (`internal/ui/embedded/share-session.html`) + inlined `export.js`/CSS, built from the same `web/src/session/` modules (self-contained Gist) |
-| Styling | Custom CSS (multi-theme: dark/light/nord/dracula/custom) |
-| Live Updates | Server-Sent Events (SSE) |
-| Chat RPC | JSONL over stdin/stdout via `pi --mode rpc` |
-| Session Storage | JSONL files on disk; pi-web creates new session files and only appends metadata (native `session_info` for inactive rename; active rename goes to the Pi title owner, `label` for entry labels) |
-| Local DB | SQLite (`~/.pi/agent/pi-web.sqlite`) for per-project scratchpads, per-session review annotations, project visibility prefs, server-backed user settings, the btw scratch-chat registry, schedules + run history, the chat queue, and diff review comments |
-| Auth | Token cookie/query/header (optional on localhost) |
+The Go server does not own the conversation ledger. Native Pi writes messages. Opening a page or asking for status never starts an executor. Creating a session or explicitly continuing an inactive session may start `pi --mode rpc --session <path>`; an existing owner or live terminal registration prevents competing execution.
 
-## Component Diagram
+## Data flow
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                                 Browser                                   │
-│                                                                           │
-│   ┌──────────────────────────────────────┐  ┌─────────────────────────┐  │
-│   │        Svelte 5 SPA (#spa-root)       │  │   EventSource Client    │  │
-│   │  main.js → App.svelte (path router)   │  │      /events?id=…       │  │
-│   │                                       │  │                         │  │
-│   │  / → SessionsPage (Svelte index)      │  │  • reload (session)     │  │
-│   │  /session → SessionPage (Svelte       │  │  • new-session (index)  │  │
-│   │     components + reactive model)      │  │  • status-delta         │  │
-│   │  /settings → SettingsPage (Svelte)    │  │  • status-snapshot      │  │
-│   │  /schedules → SchedulesPage (Svelte)  │  │  • annotations, btw…    │  │
-│   │  shared: CommandPalette, Version UI   │  │                         │  │
-│   └──────────────────────────────────────┘  └─────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ HTTP
-                                    ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                              HTTP Router                                  │
-│                                                                           │
-│   GET  /              →  handleIndex      (SPA shell)                    │
-│   GET  /session       →  handleSession    (SPA shell)                    │
-│   GET  /settings      →  handleSettingsPage (SPA shell)                  │
-│   GET  /schedules     →  handleAppShell   (SPA shell, catch-all route)   │
-│   GET  /api/session   →  handleApiSession  (JSON)                        │
-│   GET  /api/sessions  →  handleApiSessions (JSON list)                   │
-│   POST /api/chat      →  handleChat        (multipart or JSON)           │
-│   POST /api/chat/cancel → handleCancelChat                               │
-│   GET/POST/DELETE/PATCH /api/chat/queue → handleChatQueue (SQLite)       │
-│   POST /api/set-model →  handleSetModel                                  │
-│   POST /api/set-thinking-level → handleSetThinkingLevel                  │
-│   POST /api/new-session / fork-session / clone-session                   │
-│   POST /api/rename-session → handleRenameSession                         │
-│   POST /api/label-session → handleLabelSessionEntry                      │
-│   GET  /api/models    →  handleAvailableModels                           │
-│   GET  /api/commands  →  handleCommands       (slash-command palette)    │
-│   GET  /api/worker-status → handleWorkerStatus                           │
-│   GET  /api/btw / POST /api/btw/new → btw scratch-chats (SQLite, SSE)    │
-│   GET  /api/files     →  handleApiFiles       (@mention autocomplete)    │
-│   GET  /api/git/info  / POST /api/git/rename-branch                      │
-│   GET  /api/git/diff → working-tree diff for the diff modal              │
-│   GET/POST/DELETE /api/diff/reviews → diff review comments (SQLite)      │
-│   GET/POST /api/scratchpad → scratchpad (SQLite)                         │
-│   GET/POST/DELETE /api/annotations → review annotations (SQLite, SSE)    │
-│   GET/POST /api/schedules /api/schedule(/run|/runs) → schedules (SQLite) │
-│   GET/POST /api/settings → user settings (SQLite, write-through cache)   │
-│   GET/POST /api/projects → project visibility prefs (SQLite)             │
-│   GET  /api/sounds  /  GET /sounds/…   (notification sounds)             │
-│   POST /share         →  handleShare         (GitHub Gist)               │
-│   GET  /events        →  handleEvents        (SSE)                       │
-│   GET  /api/recent-locations → handleRecentLocations                     │
-│   GET  /custom-themes.css → handleCustomThemes                           │
-│   /api/push/{vapid,subscribe,unsubscribe}  (web-push, optional)         │
-│   /api/{version,check-update,update,restart} (self-update, optional)    │
-│   GET  /metrics / /api/metrics → worker metrics dashboard (gopsutil)    │
-│   PWA: /manifest.webmanifest, /sw.js, /icon.svg, /cat.webm, …           │
-│   GET  /static/…      →  embedded Vite assets                            │
-│                                                                           │
-│   All handlers wrapped with auth.Middleware (token check)                │
-└──────────────────────────────────────────────────────────────────────────┘
-                                    │
-         ┌──────────────────────────┼──────────────────────────┐
-         │                          │                          │
-         ▼                          ▼                          ▼
-   ┌──────────┐            ┌──────────────┐           ┌──────────────┐
-   │ Sessions │            │    Chat      │           │   File       │
-   │  Cache   │            │   Workers    │           │  Watchers    │
-   │          │            │              │           │              │
-   │ LoadAll  │            │ Manager      │           │ fsnotify     │
-   │ ParseFile│            │  ├─ worker   │           │  ├─ debounce │
-   │ Resolve  │            │  ├─ reap     │           │  └─ fallback │
-   │ Create   │            │  └─ status   │           │ polling      │
-   └──────────┘            └──────────────┘           └──────────────┘
-                                    │
-                                    ▼
-   ┌──────────────────────────────────────────────────────────────────┐
-   │                    External Processes                             │
-   │                                                                   │
-   │   pi --mode rpc          (per-session chat worker subprocess)     │
-   │   gh gist create         (share session as private gist)          │
-   │                                                                   │
-   └──────────────────────────────────────────────────────────────────┘
+```text
+Native Pi JSONL ──> message windows ──> browser
+       │                                 │
+       └── fsnotify ──> SSE reload hints ─┘
+
+Runtime heartbeat ──> validated state ──> SSE / status API
+
+Browser action ──> Go auth ──> authenticated loopback owner ──> same Pi instance
+                            └─> existing explicit background worker
 ```
 
-## Network Binding
+The shell carries no conversation bootstrap. Initial JSON contains recent full user/assistant text and folded descriptors. Tool arguments/results, thinking bodies, and images have separate on-demand endpoints. History and subsequent changes use cursors. SSE is an invalidation/state channel, not another conversation transport.
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   --host flag   │──────────────────────▶│  127.0.0.1      │
-│   (override)    │                       │  (default)      │
-└─────────────────┘                       └─────────────────┘
-         │
-         ▼
-   Non-loopback →  PI_WEB_TOKEN required  (or --insecure)
-   Loopback     →  Auth optional
+## Storage and deployment
 
-When no --host override is supplied, Tailscale is running, and
-`PI_WEB_TOKEN` is set, pi-web also configures Tailscale Serve:
-
-    tailscale serve --bg --https=<port> http://127.0.0.1:<port>
-
-Tailscale owns HTTPS/certificates and exposes the app at the node's MagicDNS
-name, while pi-web itself continues listening only on localhost.
-```
-
-## Session Directory Layout
-
-```
+```text
 ~/.pi/agent/
-├── sessions/
-│   ├── --project-name--/
-│   │   ├── 2026-01-15T10-30-00.000Z_a1b2c3d4.jsonl
-│   │   ├── 2026-01-15T11-00-00.000Z_e5f6g7h8.jsonl
-│   │   └── …
-│   └── --home-me-other--/
-│       └── …
-├── session-status/
-│   ├── 2026-01-15T10-30-00.000Z_a1b2c3d4.jsonl   ← terminal writes here
-│   └── …
-├── pi-web.sqlite           ← scratchpads, annotations, review comments, project prefs, settings, btw registry, schedules, chat queue
-└── pi-web/
-    ├── pi-web-state.json       ← regular server state + lock
-    ├── pi-web-state-dev.json   ← development state + lock (while running)
-    ├── custom-themes.css       ← optional user custom theme
-    ├── vapid.json          ← web-push VAPID keys (when push enabled)
-    └── push-subs.json      ← web-push subscriptions (when push enabled)
+  sessions/<encoded-project>/<native-session>.jsonl
+  session-status/<native-session>.jsonl.<pid>.json
+  pi-web.sqlite                         # saved appearance settings
+  pi-web/
+    pi-web-state.json                    # server discovery and lock
+    owners/<native-session>.jsonl.json   # loopback owner credentials
+    custom-themes.css                   # optional saved theme
 ```
 
-## Project Visibility
+Existing history, login cookies, saved appearance, and Tailscale addresses are preserved. Removed workspace features have no routes, renderers, schedulers, or compatibility mode. Their historical private files are not read or deleted.
 
-Project filtering is an **opt-in master switch**, stored in the `app_settings`
-SQLite table (`project_filter_enabled`, default **off**). Per-project enable
-state lives in the `project_prefs` table. Both are server-side, so they sync
-across devices. See `internal/server/projects.go`.
+The default listener is `127.0.0.1:31415`. Non-loopback access requires a token unless explicitly launched insecurely. With a token, Tailscale Serve can proxy the loopback listener over HTTPS without changing the node's existing address. `PI_CODING_AGENT_DIR` selects an isolated agent directory, including in E2E tests.
 
-- **Filter off (default):** every session shows; new sessions (web- or
-  terminal-created) appear immediately, exactly like before the feature existed.
-- **Filter on:** the index only renders sessions whose project is **enabled** —
-  an allowlist. Projects discovered after the table is first seeded default to
-  hidden, so one-off folders stay out of view.
-- **First seed** (empty `project_prefs`): every discovered project is enabled, so
-  turning the filter on doesn't blank the homepage.
-- **Registering** a folder path (`action: register`) pre-approves it so sessions
-  that later land there show immediately, even before any session exists.
-- Filtering is applied server-side in both `handleIndex` and `handleApiSessions`
-  (no client flash) and is a no-op while the master switch is off. Manage via the
-  index menu → **Manage Projects** (search, select/deselect-all, register, and the
-  filter switch), backed by `GET/POST /api/projects`.
-- The session sidebar (Projects tab and the Sessions tab's project switcher)
-  requests `GET /api/projects?filtered=1`, which applies the same allowlist
-  server-side — except the current session's project, which is always included so
-  the project you are in never disappears. The Manage Projects modal omits the
-  param and keeps seeing every project.
-
-## Startup Order
-
-1. Parse CLI flags (`-p`, `-host`, `-o`, `-insecure`, `-version`) and detect internal `PI_WEB_DEV=1` development mode
-2. Validate sessions directory exists
-3. Determine bind host (flag → localhost)
-4. Enforce auth for explicit non-loopback binds
-5. Build `server.Deps` (renderers, cache, workers, auth)
-6. Create `Server` → opens SQLite, starts file watcher + status watcher + sweeper, and (unless in development mode) the schedule loop + chat-queue drainer
-7. Register routes on `http.ServeMux`
-8. Load Vite manifest and register static assets
-9. Optionally configure Tailscale Serve HTTPS for localhost
-10. Write and lock the regular state file, or `pi-web-state-dev.json` in development mode
-11. Optionally open browser
-12. Warm models cache (async)
-13. Start `http.Server` with timeouts; graceful shutdown on `SIGINT`/`SIGTERM`
-
-The internal development mode shares session files and SQLite data but disables
-the autonomous scheduler, chat-queue drainer and push delivery.
-This allows `make dev` to run on port `31416` beside the installed server on
-`31415` without duplicating background side effects. Regular release behavior
-and its single-instance lock remain unchanged, and its state file stays
-authoritative for `/web` and `/remote` discovery.
+See [backend](backend.md), [frontend](frontend.md), and [E2E testing](../dev/e2e-testing.md).

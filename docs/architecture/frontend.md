@@ -1,124 +1,31 @@
-# Frontend Architecture
+# Frontend
 
-pi-web uses a single Vite-built Svelte SPA embedded into the Go binary, plus a separate self-contained static export path.
+## One interface
 
-## Vite App Frontend
+`web/src/main.js` loads the selected locale and mounts `App.svelte`, which renders `routes/RemoteApp.svelte`. `/` shows the session list and `/session?id=...` shows a conversation. Both use the same responsive layout; there are no workspace sidebars, settings routes, export renderer, or alternate desktop mode.
 
-Built with **Vite + Svelte + JavaScript modules**, embedded into the Go binary.
+Go emits `internal/ui/embedded/app.html` with links from the Vite manifest. Conversation data is never embedded in HTML. JavaScript and CSS use content-hashed `/static/` URLs and correct MIME types. Only the selected language is loaded. English strings live in `shared/locales/en.js`; generate translations with `python scripts/build_locales.py <language>`.
 
-### Build Pipeline
+## Conversation and transport
 
-```txt
-web/src/main.js
-web/src/App.svelte
-web/src/routes/*.svelte
-web/src/{components,routes,index,session,settings,shared}/**/*.{svelte,js}
-        │
-        └──▶ vite build ──▶ web/dist/ ──▶ //go:embed
-                              │
-                              ▼
-                         .vite/manifest.json
-```
+`RemoteApp.svelte` owns the selected conversation and viewport. `remote-api.js` owns HTTP errors, single-flight refresh coordination, stable-ID message merging, and browser-local unread persistence.
 
-At startup, `internal/frontend/assets.go` + `web/assets_embed.go` reads `.vite/manifest.json`, validates the `src/main.js` SPA entrypoint, and registers its hashed asset route under `/static/...`. Other hashed chunks are served from the embedded `web/dist/assets/` filesystem.
+- The initial API response is a recent message window. Ordinary user/assistant text stays complete, including long replies.
+- `RemoteBlock.svelte` fetches a tool/thinking body when expanded. Images use their own authenticated endpoint and are not automatically loaded with history.
+- Older messages prepend using a `before` cursor. The viewport retains its existing message anchor.
+- Live updates use an `after` cursor. Changed tool cards replace their existing stable-ID message rather than duplicating it.
+- Repeated invalidations coalesce behind one active refresh. Failed requests leave the current conversation available with a retry action.
 
-## SPA Shell and Routes
+Markdown escapes raw HTML, allows only explicit web/mail/local links, and renders Markdown images as links instead of fetching them. Tool output remains escaped preformatted text.
 
-The live app is hosted by `internal/ui/embedded/app.html`, rendered by `internal/ui/spa_page.go`. The shell preserves the PWA contract: viewport/no-zoom metadata, theme boot, Window Controls Overlay boot, font variables, custom themes, and service-worker registration.
+## Runtime state and controls
 
-Browser routes served by the SPA shell:
+EventSource subscribes to a session ID or `__all__`. Named `status-snapshot` events contain an ID-to-state map; `status-delta` contains `{id,state}`. `reload` and `new-session` trigger coordinated API refreshes. Disconnects display unknown on both the list and conversation rather than retaining a trustworthy-looking idle state.
 
-- `/` → `web/src/routes/SessionsPage.svelte`
-- `/session?id=…` → `web/src/routes/SessionPage.svelte`
-- `/schedules` → `web/src/routes/SchedulesPage.svelte`
-- `/settings` → `web/src/routes/SettingsPage.svelte`
+Controls use the selected session's existing owner. An unattached history session offers explicit background continuation; browsing does not attach a new worker. The composer sends text/images and Pi-native `steer` or `followUp` delivery. Skill suggestions insert into the draft and never execute on selection. A transport receipt means accepted, not confirmed processed.
 
-An unrecognized browser path renders `NotFoundPage.svelte`. There is **no SPA login route**: when `PI_WEB_TOKEN` is set and a request is unauthenticated, the auth middleware replies with the standalone Go-rendered token prompt (`internal/ui/auth_page.go` + `internal/ui/embedded/auth.html`) before the SPA ever loads.
+Session information exposes project, branch, cache-hit ratio, context, Fast availability, model, and thinking. Unavailable runtime measurements remain unknown. Model/thinking changes affect subsequent requests. Native terminal dialogs remain in the terminal.
 
-API, SSE, PWA, sound, and static asset routes remain server-handled and are not intercepted by the SPA fallback.
+Clicking a list entry clears its unread marker immediately. This does not depend on scrolling to the last message or observing a particular message on screen. Saved theme/font/language preferences remain readable without a settings workspace. The viewport tracks the mobile visual viewport so the composer stays usable with the software keyboard.
 
-`/schedules` is reachable from the index and from a session view, so its entry points push `{ back: <origin url> }` as history state (`backState()` in `web/src/shared/navigation.js`) and the Schedules back button returns there; a direct deep link has no state and falls back to `/`.
-
-## Sessions Index (`/`)
-
-`SessionsPage.svelte` owns the page shell and orchestrates Svelte components for the sessions list, session cards, command palette, home menu, new-session modal, and project management modal. The same `ProjectsModal` is also mounted by the session viewer, opened from the Manage Projects control in its header. `web/src/index/` now contains pure data/API helpers (`sessions.js`) for normalization, grouping, filtering, and API calls.
-
-Data comes from existing APIs such as `/api/sessions`, `/api/new-session`, `/api/projects`, `/api/recent-locations`, and `/events?id=__all__`. Running-session status is pushed through the shared SSE helpers and reflected reactively in the cards/counts.
-
-## Session Viewer (`/session?id=…`)
-
-`SessionPage.svelte` owns the route, fetches session JSON from `/api/session?id=…`, and **orchestrates the whole viewer as Svelte components**. It creates the reactive `SessionDataModel` once, provides it via context, and installs the live session runtime context (`model`, navigator, `navigateTo`, `reconcileEntries`, content runtime) before child components mount. Live components read that explicit runtime context instead of `window.__pi*` aliases. `SessionPage`'s `onMount` runs `startSessionPageRuntime()` (bootstrap, `setupSessionUi`, content-runtime wiring, header handlers, initial nav) and `setupSessionGlobals()` (page-global glue). Annotation wiring is declarative: `SessionShell` passes the annotation config to `<AnnotationLayer>` as props (via `<RightSidebar>`) rather than an imperative `init()` up-call. There is **no `session.js` orchestrator** — see `docs/dev/templates-vs-web.md` § Current Migration State.
-
-The message pane is rendered by Svelte components (no string-building renderer): `SessionContent` → `SessionEntry` → `ToolCall` → `ToolOutput`/`AskQuestion`, with `{@html}` used only for markdown + pre-rendered ANSI tool output. Other session UI components: `SessionTree`/`SessionSidebarProjects`/`SessionSidebarSessions`/`SessionTreeNodes`/`TreeNode`, `SessionInfoHeader`, `SessionHeader`, `RightSidebar` (+ `ArtifactPanel`, `AnnotationLayer`), `ChatComposer` (+ `ChatToolbar`/`QueuePanel`/`GitFooter`), `LiveReload`, `LoadEarlier`, `CommandMenu`, `ImageModal`, the modals (`ShortcutsModal`/`ModelUsageModal`/`ForkModal`/`LabelModal`/`DiffModal`/`ShareDialog`), `BtwPopup`, `CatGatekeeper`. The left sidebar tabs between projects, sessions in one selected project, and the active session's message outline. The Projects tab requests 20-project pages from `/api/projects?limit=20&offset=…`, pins the current project into the first page, and appends another page as the main list is scrolled. An interrupted incremental request is retried once automatically, then leaves a compact retry control at the list boundary if the connection remains unavailable. That first response also bundles the current project's first five sessions so the expanded folder does not require a second archive scan. Other folders and later session pages independently request five-session pages from `/api/sessions?project=…&limit=5&offset=…` as their nested lists are scrolled. Project rows show the shared animated running indicator when any child session is active; the initial project response supplies existing running IDs and later SSE status deltas carry the cached project path. The Sessions project card opens a searchable project switcher; selecting a project reloads only that tab's session list and leaves the viewed session unchanged. The Sessions tab requests 20-item pages through `/api/sessions?project=…&limit=…&offset=…`, and its debounced search uses the API's `q` parameter so unloaded sessions remain searchable. All three tabs end with a matching count footer; the Sessions footer also owns the previous/next page controls. The old runners/renderers have been replaced by Svelte components plus focused helpers: `web/src/session/` holds the reactive model, pure helpers, live-only helpers, and a few shared utilities:
-
-- `data/` — payload decoding + the reactive `SessionDataModel` (`session-data.svelte.js`, the single source of truth: entries/lookups/tree/active-path/view-state, `reconcile()`)
-- `tree/`, `render/`, `navigation/` — **pure** tree/format/markdown/navigation helpers consumed by the Svelte components (and the export). The message renderer is now `<SessionEntry>`/`<ToolCall>`; `render/` keeps `session-format`, `markdown`, `entry-format`, `session-entry-actions` (download/share/copy)
-- `session-globals.js`, `session-content-runtime.js`, `lazy-highlight.js` — the relocated live glue (see above)
-- `chat/` — **pure/shared helpers**: `chat-api` + `git-api` (fetch wrappers), `chat-selectors` (pure model/thinking helpers), `diff-api` + `diff-review` (diff modal data + review comments), `done-notifier` (shared notification/sound/push util, also used by the settings page). Live composer DOM helpers live under `web/src/components/session/chat/`, wired together by `chat-composer-runtime.js` (`runChatComposer`, mounted by `<ChatComposer>`).
-- `live/` — live-only helpers used by `<LiveReload>`: `live-connection.js` (SSE connection/reconnect lifecycle), `live-events.js` (SSE/reload primitives), `live-scroll.js` (low-level scroll primitives), `live-follow.js` (`createFollowScrollController` — follow-mode decision state + follow button), `live-stats.js` (header stats), and `chat-preview.js` (streaming-preview helper, also used by `<BtwPopup>`)
-- `ui/` — sidebar/search/toggle/session-ui-runner helpers used by `setupSessionUi` and `RightSidebar`
-- `artifacts/`, `annotations/` — pure registries/filters/ranges + the fetch API wrappers; the panels themselves are `ArtifactPanel.svelte`/`AnnotationLayer.svelte`
-- `cat-gatekeeper/` — pure timer/storage logic behind `CatGatekeeper.svelte`
-
-The index + settings Phase 4 migration is complete: those routes are Svelte-orchestrated too, with only pure/API helpers left outside components.
-
-## Static / Share Export
-
-Export/share remains separate and self-contained. `web/src/export/export-entry.js` builds `internal/ui/embedded/export/export.js`, which is inlined by `internal/ui/export.go` with vendored `marked` and `highlight.js` assets.
-
-Export rules:
-
-- no Go server dependency
-- no live SSE/chat imports
-- no `/static/assets/...` dependency
-- reusable rendering helpers may be shared with the live app when they are side-effect-free
-
-## Live Reload
-
-The session route listens to `/events?id=<sessionId>` via `web/src/session/live/` helpers for:
-
-- `reload` / canonical session updates
-- `chat-preview` streaming preview updates
-- annotation snapshots
-
-The index route listens to `/events?id=__all__` for `new-session`, `status-snapshot`, and `status-delta`.
-
-## Shared Frontend Modules
-
-- `web/src/shared/api.js` — JSON fetch helpers
-- `web/src/shared/status-events.js` — shared status SSE lifecycle
-- `web/src/shared/app-events.js` — named `/events` subscriptions (schedules, scratchpad,
-  settings) multiplexed onto one EventSource per topic, so extra consumers do not eat
-  the browser's six-connection-per-host budget
-- `web/src/shared/storage.js` — localStorage helpers
-- `web/src/shared/escape.js` — HTML escaping
-- `web/src/shared/theme.js` — theme toggle (dark/light/nord/dracula/custom)
-- `web/src/shared/version.js` — pure version formatting/changelog/fetch helpers; `VersionController.svelte` owns the update modal/status UI
-- `web/src/shared/keybindings.js` — remappable keyboard-action registry (default combos for global, navigation, and composer shortcuts); `keyboard-nav.js` and the session globals consume it
-- `web/src/shared/keyboard-nav.js` — vim-style j/k/gg/G navigation
-- `web/src/components/shared/CommandPalette.svelte` — shared ⌘K session search palette
-
-## Static Assets
-
-| Asset | Source | Served From |
-|-------|--------|-------------|
-| Vite SPA bundle | `web/dist/assets/app-*.js` | `/static/assets/app-*.js` |
-| Vite lazy chunks | `web/dist/assets/*.js` | `/static/assets/*.js` |
-| Static export JS | `internal/ui/embedded/export/export.js` + vendors | inline in exported HTML |
-| Theme CSS | `internal/ui/embedded/styles/theme.css` | inlined in SPA shell + export |
-| Index CSS | `internal/ui/embedded/styles/index.css` | inlined in SPA shell |
-| Settings CSS | `internal/ui/embedded/styles/settings.css` | inlined in SPA shell |
-| Schedules CSS | `internal/ui/embedded/styles/schedules.css` | inlined in SPA shell |
-| Session CSS | `internal/ui/embedded/styles/session.css` | inlined in SPA shell + export |
-| Menu CSS | `internal/ui/embedded/styles/menu.css` | inlined in SPA shell |
-| Palette CSS | `internal/ui/embedded/styles/palette.css` | inlined in SPA shell |
-| Custom themes | `~/.pi/agent/pi-web/custom-themes.css` (optional) | `/custom-themes.css` |
-| PWA manifest | `internal/ui/embedded/assets/manifest.webmanifest` | `/manifest.webmanifest` |
-| Service worker | `internal/ui/embedded/assets/sw.js` | `/sw.js` |
-| Icons | `internal/ui/embedded/assets/icon.svg` etc. | `/icon.svg`, `/icon-maskable.svg`, `/pi-logo.svg` |
-| Sound assets | `internal/ui/embedded/assets/cat.webm` | `/cat.webm` |
-| User sound assets | `~/.pi/agent/pi-web/assets/*.mp3` | `/sounds/*.mp3` |
-
-## Theme System
-
-The live SPA shell uses `theme.css`, `index.css`, `settings.css`, `schedules.css`, `session.css`, `menu.css`, and `palette.css` from `internal/ui/embedded/styles/`. They are inlined into the shell (there are no standalone CSS routes; only `/custom-themes.css` is served). The shell still injects the server-backed theme and font variables before the app starts so first paint matches the installed PWA theme without a flash.
+The service worker does not cache session data or implement notifications. Device-emulated E2E tests exercise the actual production bundle at its configured viewport; see [E2E testing](../dev/e2e-testing.md).

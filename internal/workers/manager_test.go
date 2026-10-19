@@ -62,7 +62,8 @@ func TestManagerCreatesOneWorkerPerSession(t *testing.T) {
 	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) {
 		created++
 		return &fakeChatWorker{}, nil
-	})
+	}, nil)
+
 	ctx := context.Background()
 	if err := manager.Send(ctx, "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "a"}); err != nil {
 		t.Fatal(err)
@@ -83,7 +84,8 @@ func TestManagerGetCommandsPeeksWithoutSpawning(t *testing.T) {
 	manager := NewManager(func(string, string) (ChatWorker, error) {
 		created++
 		return &fakeChatWorker{}, nil
-	})
+	}, nil)
+
 	cmds, ready, err := manager.GetCommands(context.Background(), "missing.jsonl")
 	if err != nil {
 		t.Fatalf("GetCommands error: %v", err)
@@ -101,7 +103,7 @@ func TestManagerGetCommandsPeeksWithoutSpawning(t *testing.T) {
 
 func TestManagerGetCommandsReturnsWorkerCommands(t *testing.T) {
 	worker := &fakeChatWorker{commands: []SlashCommand{{Name: "skill:memory", Source: "skill"}}}
-	manager := NewManager(func(string, string) (ChatWorker, error) { return worker, nil })
+	manager := NewManager(func(string, string) (ChatWorker, error) { return worker, nil }, nil)
 	if err := manager.EnsureWorker(context.Background(), "a.jsonl", "/tmp/a.jsonl"); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +120,7 @@ func TestManagerGetCommandsReturnsWorkerCommands(t *testing.T) {
 }
 
 func TestManagerReportsMissingWorkerIdle(t *testing.T) {
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) { return &fakeChatWorker{}, nil })
+	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) { return &fakeChatWorker{}, nil }, nil)
 	status := manager.Status("missing.jsonl")
 	if status.State != WorkerStateIdle {
 		t.Fatalf("status = %q, want idle", status.State)
@@ -132,7 +134,8 @@ func TestManagerStatusReportsRunningWhileSendSpawnsWorker(t *testing.T) {
 		close(spawnStarted)
 		<-releaseSpawn
 		return &fakeChatWorker{}, nil
-	})
+	}, nil)
+
 	sendDone := make(chan error, 1)
 	go func() {
 		sendDone <- manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"})
@@ -158,7 +161,8 @@ func TestManagerStatusReportsRunningWhileSendSpawnsWorker(t *testing.T) {
 func TestManagerStatusIdleAfterFailedSend(t *testing.T) {
 	manager := NewManager(func(string, string) (ChatWorker, error) {
 		return nil, errors.New("spawn failed")
-	})
+	}, nil)
+
 	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err == nil {
 		t.Fatal("Send should surface the spawn error")
 	}
@@ -173,7 +177,7 @@ func TestManagerEvictsErroredWorker(t *testing.T) {
 		created++
 		return &fakeChatWorker{}, nil
 	}
-	manager := NewManager(factory)
+	manager := NewManager(factory, nil)
 	ctx := context.Background()
 	if err := manager.Send(ctx, "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "a"}); err != nil {
 		t.Fatal(err)
@@ -217,7 +221,7 @@ func (r *reapableWorker) IdleSince(now time.Time) time.Duration                 
 
 func TestManagerReapsIdleWorkersBeyondTTL(t *testing.T) {
 	w := &reapableWorker{idleFor: time.Hour}
-	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute)
+	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute, nil)
 	defer manager.Close()
 	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err != nil {
 		t.Fatal(err)
@@ -236,7 +240,7 @@ func TestManagerReapsIdleWorkersBeyondTTL(t *testing.T) {
 
 func TestManagerKeepsFreshWorker(t *testing.T) {
 	w := &reapableWorker{idleFor: time.Second}
-	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute)
+	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute, nil)
 	defer manager.Close()
 	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err != nil {
 		t.Fatal(err)
@@ -253,7 +257,7 @@ func TestManagerKeepsFreshWorker(t *testing.T) {
 func TestManagerDoesNotReapRunningWorker(t *testing.T) {
 	// streaming=true → Status reports running, so reap should skip even if idle for > TTL.
 	w := &runningReapable{}
-	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute)
+	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute, nil)
 	defer manager.Close()
 	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err != nil {
 		t.Fatal(err)
@@ -296,91 +300,9 @@ func (erroredWorker) Status() WorkerStatus {
 }
 func (erroredWorker) Close() error { return nil }
 
-// inspectableWorker implements the optional inspector interface so Snapshot can
-// surface PID, uptime, and idle duration.
-type inspectableWorker struct {
-	pid       int
-	startedAt time.Time
-	idleFor   time.Duration
-	status    WorkerStatus
-}
-
-func (w *inspectableWorker) Prompt(context.Context, chat.Request) error     { return nil }
-func (w *inspectableWorker) SetModel(context.Context, string, string) error { return nil }
-func (w *inspectableWorker) SetThinkingLevel(context.Context, string) error { return nil }
-func (w *inspectableWorker) Abort(context.Context) error                    { return nil }
-func (w *inspectableWorker) GetState(context.Context) (WorkerStatus, error) { return w.status, nil }
-func (w *inspectableWorker) GetCommands(context.Context) ([]SlashCommand, error) {
-	return nil, nil
-}
-func (w *inspectableWorker) Status() WorkerStatus                  { return w.status }
-func (w *inspectableWorker) Close() error                          { return nil }
-func (w *inspectableWorker) PID() int                              { return w.pid }
-func (w *inspectableWorker) StartedAt() time.Time                  { return w.startedAt }
-func (w *inspectableWorker) IdleSince(now time.Time) time.Duration { return w.idleFor }
-
-func TestManagerSnapshotEmptyWhenNoWorkers(t *testing.T) {
-	manager := NewManager(func(string, string) (ChatWorker, error) { return &fakeChatWorker{}, nil })
-	if snaps := manager.Snapshot(); len(snaps) != 0 {
-		t.Fatalf("Snapshot() = %#v, want empty", snaps)
-	}
-}
-
-func TestManagerSnapshotReportsInspectorFields(t *testing.T) {
-	w := &inspectableWorker{
-		pid:       4242,
-		startedAt: time.Now().Add(-90 * time.Second),
-		idleFor:   30 * time.Second,
-		status:    WorkerStatus{State: WorkerStateIdle, Model: "claude-opus"},
-	}
-	manager := NewManager(func(string, string) (ChatWorker, error) { return w, nil })
-	if err := manager.EnsureWorker(context.Background(), "a.jsonl", "/tmp/a.jsonl"); err != nil {
-		t.Fatal(err)
-	}
-	snaps := manager.Snapshot()
-	if len(snaps) != 1 {
-		t.Fatalf("Snapshot() len = %d, want 1", len(snaps))
-	}
-	s := snaps[0]
-	if s.SessionID != "a.jsonl" {
-		t.Errorf("SessionID = %q, want a.jsonl", s.SessionID)
-	}
-	if s.PID != 4242 {
-		t.Errorf("PID = %d, want 4242", s.PID)
-	}
-	if s.State != WorkerStateIdle {
-		t.Errorf("State = %q, want idle", s.State)
-	}
-	if s.Model != "claude-opus" {
-		t.Errorf("Model = %q, want claude-opus", s.Model)
-	}
-	if s.UptimeS < 80 || s.UptimeS > 120 {
-		t.Errorf("UptimeS = %v, want ~90", s.UptimeS)
-	}
-	if s.IdleForS < 29 || s.IdleForS > 31 {
-		t.Errorf("IdleForS = %v, want ~30", s.IdleForS)
-	}
-}
-
-func TestManagerSnapshotHandlesNonInspectableWorker(t *testing.T) {
-	manager := NewManager(func(string, string) (ChatWorker, error) {
-		return &fakeChatWorker{}, nil
-	})
-	if err := manager.EnsureWorker(context.Background(), "a.jsonl", "/tmp/a.jsonl"); err != nil {
-		t.Fatal(err)
-	}
-	snaps := manager.Snapshot()
-	if len(snaps) != 1 {
-		t.Fatalf("Snapshot() len = %d, want 1", len(snaps))
-	}
-	if snaps[0].PID != 0 || snaps[0].UptimeS != 0 {
-		t.Errorf("non-inspectable worker should report zero PID/uptime, got %#v", snaps[0])
-	}
-}
-
 func TestBusyWorkerUsesSteeringCommand(t *testing.T) {
 	worker := &fakeChatWorker{streaming: true}
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) { return worker, nil })
+	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) { return worker, nil }, nil)
 	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "steer"}); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +322,7 @@ func TestManagerFactoryReceivesSessionIDAndPath(t *testing.T) {
 		gotID = sessionID
 		gotPath = sessionPath
 		return &fakeChatWorker{}, nil
-	})
+	}, nil)
 
 	if err := manager.EnsureWorker(context.Background(), "a.jsonl", "/tmp/a.jsonl"); err != nil {
 		t.Fatal(err)
@@ -415,7 +337,8 @@ func TestEnsureWorkerCreatesWorkerWithoutSendingMessage(t *testing.T) {
 	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) {
 		created++
 		return &fakeChatWorker{}, nil
-	})
+	}, nil)
+
 	ctx := context.Background()
 	if err := manager.EnsureWorker(ctx, "a.jsonl", "/tmp/a.jsonl"); err != nil {
 		t.Fatal(err)

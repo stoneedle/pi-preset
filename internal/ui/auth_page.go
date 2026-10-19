@@ -7,6 +7,9 @@ import (
 	"io"
 )
 
+//go:embed embedded/styles/theme.css
+var liveThemeCss string
+
 //go:embed embedded/auth.html
 var authTmplStr string
 

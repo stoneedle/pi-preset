@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 )
 
@@ -32,10 +31,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ":ok\n\n")
 	flusher.Flush()
 
-	if sessID == globalSessID {
-		s.writeStatusSnapshot(w)
-		flusher.Flush()
-	}
+	s.writeStatusSnapshot(w)
+	flusher.Flush()
 
 	for {
 		select {
@@ -62,38 +59,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeStatusSnapshot emits a single SSE event listing every session id that
-// is currently broadcast as running. Sorted for deterministic test output.
 func (s *Server) writeStatusSnapshot(w http.ResponseWriter) {
 	s.lastKnownMu.Lock()
-	ids := make([]string, 0, len(s.lastKnown))
-	for id := range s.lastKnown {
-		ids = append(ids, id)
+	states := make(map[string]string, len(s.lastStates))
+	for id, state := range s.lastStates {
+		states[id] = state
 	}
 	s.lastKnownMu.Unlock()
-	sort.Strings(ids)
-
-	var sb strings.Builder
-	sb.WriteString(`{"running":[`)
-	for i, id := range ids {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		idJSON, _ := json.Marshal(id)
-		sb.Write(idJSON)
-	}
-	sb.WriteString(`],"statuses":{`)
-	for i, id := range ids {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		idJSON, _ := json.Marshal(id)
-		sb.Write(idJSON)
-		sb.WriteByte(':')
-		data, _ := json.Marshal(s.runningStatusPayload(id, true))
-		sb.Write(data)
-	}
-	sb.WriteString("}}")
-
-	fmt.Fprintf(w, "event: status-snapshot\ndata: %s\n\n", sb.String())
+	data, _ := json.Marshal(states)
+	fmt.Fprintf(w, "event: status-snapshot\ndata: %s\n\n", data)
 }

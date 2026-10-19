@@ -1,399 +1,53 @@
-# Backend Architecture
+# Backend
 
-## Package Layout
+## HTTP responsibilities
 
-```
-pi-web/
-├── cmd/pi-web/
-│   └── main.go                 # Tiny CLI entry point; passes build version to app.Main
-├── web/
-│   └── assets_embed.go         # Embeds Vite build output from web/dist
-├── internal/
-│   ├── agentdir/
-│   │   └── agentdir.go         # Resolve ~/.pi/agent dir + the paths pi-web stores under it
-│   ├── app/
-│   │   ├── app.go              # CLI flags, dependency wiring, HTTP mux setup
-│   │   ├── network.go          # Bind host / loopback helpers
-│   │   ├── tailscale.go        # Tailscale Serve detection/configuration
-│   │   ├── models_cache.go     # Process-wide coalesced cache for model list
-│   │   ├── browser.go          # Open the default browser at startup
-│   │   ├── sounds.go           # Seed default notification sounds into the agent dir
-│   │   ├── update.go           # runInstall / runRestart for self-update
-│   │   └── state_file_*.go     # regular/development state files + flock helpers
-│   ├── frontend/
-│   │   └── assets.go           # Vite manifest parsing + static asset handlers
-│   ├── ui/
-│   │   ├── spa_page.go         # Live SPA shell renderer (RenderAppShell)
-│   │   ├── app_script.go       # SPA Vite module URL path + script tag
-│   │   ├── session_page.go     # Session page data prep (bootstrap base64 + CSS)
-│   │   ├── live_page.go        # Shared live document head + theme/font providers
-│   │   ├── export.go           # Static export renderer
-│   │   ├── auth_page.go        # Auth/token entry page
-│   │   ├── pwa.go              # PWA routes: manifest, sw.js, icons, css, cat.webm
-│   │   └── embedded/     # Embedded HTML/CSS/assets (shells, styles, export/)
-│   ├── auth/
-│   │   └── auth.go             # Token-based HTTP middleware
-│   ├── chat/
-│   │   └── request.go          # Multipart chat request parser (text + images)
-│   ├── chatqueue/
-│   │   └── chatqueue.go        # SQLite-backed per-session chat queue (items + paused state)
-│   ├── files/
-│   │   └── files.go            # Bounded read-only dir listing for @mention autocomplete
-│   ├── render/
-│   │   ├── assets.go           # Vite manifest parsing helpers
-│   │   └── json.go             # WriteJSON / WriteJSONError helpers
-│   ├── git/
-│   │   └── git.go              # git branch info, rename, PR URL detection
-│   ├── updater/
-│   │   └── updater.go          # Background version checker + changelog fetch
-│   ├── rpc/
-│   │   ├── client.go           # JSONL RPC command builders
-│   │   ├── worker.go           # pi --mode rpc subprocess worker
-│   │   ├── stream.go           # SSE chat-preview stream accumulator
-│   │   └── oneshot.go          # One-shot RPC for model enumeration
-│   ├── server/
-│   │   ├── server.go           # Server type, deps, SSE registry, route registration, SQLite open
-│   │   ├── handlers.go         # index, session, api/session(s), new, fork/clone, rename, locations, models, custom-themes
-│   │   ├── request.go          # Shared JSON body decoding + request-size caps
-│   │   ├── chat.go             # Chat, set-model, set-thinking, worker-status, commands handlers
-│   │   ├── chat_queue.go       # /api/chat/queue handler (list/add/delete/pause)
-│   │   ├── chat_queue_drainer.go # Autonomous queue dispatcher (running → idle, 5s tick, mutation kick)
-│   │   ├── new_session.go      # New-session creation logic
-│   │   ├── git.go              # /api/git/info, /api/git/rename-branch handlers
-│   │   ├── diff.go             # /api/git/diff, /api/diff/reviews handlers
-│   │   ├── files.go            # /api/files handler + per-cwd file-walk cache
-│   │   ├── settings.go         # Server-backed user settings (/api/settings) + SPA shell helpers
-│   │   ├── btw.go              # btw scratch-chat registry: get/new + legacy migration (SQLite)
-│   │   ├── session_title.go    # Active owner rename transport; inactive native metadata writes
-│   │   ├── metrics.go          # /metrics + /api/metrics + pprof registration (gopsutil sampler)
-│   │   ├── scratchpad.go       # Per-project scratchpad get/save (SQLite)
-│   │   ├── annotations.go      # Per-session review annotations: list/create/delete + SSE snapshot (SQLite)
-│   │   ├── projects.go         # Project visibility prefs: list/toggle/register + index filtering (SQLite)
-│   │   ├── sound.go            # /api/sounds + /sounds/ asset serving
-│   │   ├── push.go             # PushManager: VAPID, subscribe/unsubscribe, NotifyDone, NotifyScheduleDone
-│   │   ├── scheduler.go        # Cron tick loop + fireSchedule runner (creates a session, sends instructions)
-│   │   ├── schedules_api.go    # /api/schedules + /api/schedule(/run|/runs) handlers
-│   │   ├── update.go           # /api/version, check-update, update, restart handlers
-│   │   ├── events.go           # SSE endpoint (/events)
-│   │   ├── sse_format.go       # SSE event framing helper
-│   │   ├── share.go            # Share handler adapter
-│   │   ├── watcher.go          # fsnotify + polling file watcher
-│   │   ├── status.go           # Running-status computation logic
-│   │   ├── status_sweeper.go   # Periodic status revalidation
-│   │   └── status_watcher.go   # fsnotify on session-status/ dir
-│   ├── sessions/
-│   │   ├── session.go          # Session/SessionSummary structs, ParseFile, LoadAll, CreateSessionFile, RenameSession, fork/clone
-│   │   ├── cache.go            # Modtime-aware session cache
-│   │   └── lookup.go           # Resolve session by ID
-│   ├── schedules/
-│   │   └── schedule.go         # Schedule/Run structs, SQLite store, cron next-fire (robfig/cron)
-│   ├── share/
-│   │   └── share.go            # GitHub Gist creation logic
-│   └── workers/
-│       └── manager.go          # ChatWorker lifecycle: create, cache, reap
-```
+`internal/app` configures auth, native session storage, the worker manager, embedded assets, and server lifetime. `server.Register` exposes the following core routes; removed workspace URLs return 404.
 
-> The embedded standalone export bundle lives at `internal/ui/embedded/export/`
-> (`app/*.js` + `vendor/`), **not** at `internal/ui/export/`.
+| Route | Responsibility |
+|---|---|
+| `/`, `/session` | HTML shell without conversation data |
+| `/api/sessions` | Session summaries, search, bounded `limit`/`offset` |
+| `/api/session` | Recent window or `before`/`after` cursor projection |
+| `/api/session/block` | One selected tool/thinking body |
+| `/api/session/image` | One selected native image |
+| `/api/status` | Validated runtime state and connected owner's capabilities |
+| `/api/chat`, `/api/chat/cancel` | Send with native delivery or abort the main agent |
+| `/api/session/continue` | Explicitly attach an inactive session to a background worker |
+| `/api/new-session`, `/api/recent-locations` | Create in an existing directory; list known directories |
+| `/api/models`, `/api/commands` | Owner models and skill-only suggestions |
+| `/api/set-model`, `/api/set-thinking-level` | Change subsequent-request configuration |
+| `/api/git/info` | Read the current branch |
+| `/events` | SSE invalidation and status |
 
-## Key Types
+PWA assets and content-hashed frontend assets are embedded in the built binary. JSON and HTML can use gzip; SSE remains uncompressed. SQLite only supplies saved appearance settings. There are no web schedules, server chat queues, notifications, review comments, file browsers, share/export, or self-update handlers.
 
-### `server.Server`
+## Native message projection
 
-Central state holder. Created once at startup, lives for the process lifetime.
+`internal/sessions/window.go` follows native `parentId` links to select the active branch. Initial/history windows target 30 messages and approximately 64 KiB of text. The budget is soft: one ordinary long message remains whole. Tool results update their corresponding tool call instead of becoming unrelated assistant messages.
 
-```go
-type Server struct {
-    agentDir      string          // ~/.pi/agent (respects PI_CODING_AGENT_DIR)
-    sessionsDir   string          // ~/.pi/agent/sessions
-    clients       []*sseClient    // active SSE connections
-    clientsMu     sync.RWMutex
-    fileMod       map[string]time.Time  // last seen modtime per session
-    fileModMu     sync.RWMutex
-    chatSender    ChatSender      // workers.Manager
-    cache         *sessions.Cache // modtime-aware parse cache
-    auth          *auth.Middleware
-    shareRunner   shareCmdRunner  // overridable in tests
-    now           func() time.Time
-    renderExportSession func(s sessions.Session, theme string) string
-    renderAppShell      func(w io.Writer, bootstrap string) error
-    models              func(ctx context.Context) (json.RawMessage, error)
-    lastKnown     map[string]struct{} // sessions currently broadcast as running
-    lastKnownMu   sync.Mutex
-    push          *PushManager    // web-push subscriptions + done notifications
-    stopCh        chan struct{}
-    stopOnce      sync.Once
-    wg            sync.WaitGroup
+Initial descriptors omit tool arguments/results, thinking bodies, and image bytes. Those remain on disk until a body/image request. Cursors include branch identity; an invalid cursor produces a reset rather than silently joining unrelated branches. `after` requests carry new messages and changed tool cards, not the whole conversation.
 
-    taskMu     sync.Mutex      // shuts out new tasks and owns taskCtx
-    taskCtx    context.Context // server lifecycle context for background work
-    taskCancel context.CancelFunc
-    stopping   bool
+File watchers own content invalidation, not execution state. They debounce repeated writes, discover existing JSONL files when adding a new project directory, and broadcast on the first observed version too. Polling supplies content invalidation when fsnotify cannot start. Parsed sessions are cached, and SSE subscribers receive lightweight reload hints.
 
-    db            *sql.DB          // SQLite (~/.pi/agent/pi-web.sqlite)
-    schedules     *schedules.Store // cron definitions + run history
-    chatQueue     *chatqueue.Store // per-session queue items + paused state
-    queueDrainer  *queueDrainer    // autonomous queue dispatcher
-    updater       *updater.Checker // optional; nil disables /api/version etc.
-    runInstall    func(ctx context.Context) error // optional self-update install
-    runRestart    func() error                    // optional self-update restart
-    updateMu      sync.Mutex      // serializes install/restart
-    disableBackgroundJobs bool    // development server: no scheduler/drainer/push
+## Runtime truth
 
-    fileWalk     *fileWalkCache  // bounded dir-listing cache for @mention autocomplete
-    fileWalkOnce sync.Once
+`status.go` validates `session-status/<filename>.jsonl.<pid>.json`, written by the native runtime's title extension. A status must identify the session, have an accepted native state, and be within a ten-second heartbeat window. Multiple live owners, expired evidence, missing evidence, and disconnected controls are unknown. File mtime never implies running, idle, or complete.
 
-    metrics metricsState
-}
-```
+Trusted native states are `running`, `background`, `needs-you`, and `idle`. An in-process worker may supply explicit running/error evidence when no heartbeat file exists; an old heartbeat is not overridden with an optimistic idle guess. The status watcher and one-second sweeper broadcast expiry even without another conversation write.
 
-`Deps` (passed to `New`) supplies everything wired from `internal/app`: the
-`RenderExportSession` and `RenderAppShell` renderers, `Models`, `Cache`, `Auth`,
-`ChatSender`, plus the optional `Updater`, `RunInstall`, and `RunRestart`. When
-`Updater` is nil the version/update routes are not registered; when
-`RunInstall`/`RunRestart` are nil the corresponding endpoints respond `503`.
-`DisableBackgroundJobs` marks the internal development server: it still watches
-and serves the shared data, but does not run scheduling, queue draining,
-or push-delivery side effects.
+SSE snapshots are `id -> state`; deltas are `{id,state}`. `__all__` receives index-wide changes. Session subscribers receive their own state and content invalidations. Duplicate pending reload hints coalesce per client; slow clients cannot block producers.
 
-On `New`, the server opens (and migrates) a SQLite database at
-`~/.pi/agent/pi-web.sqlite` with eleven tables: `scratchpads` (per project path),
-`settings` (server-backed user settings key/value), `project_prefs` (which
-projects are enabled), `app_settings` (the project-filter master switch, default
-off), `btw_sessions` (the btw scratch-chat registry), `annotations` (per-session
-review notes keyed by session id; see `annotations.go`), `schedules` +
-`schedule_runs` (definitions and firing history; see `internal/schedules`),
-`review_comments` (per-session diff review notes; see `diff.go`), and
-`chat_queue_items` + `chat_queue_state` (queued messages and per-session pause
-state; see `internal/chatqueue`). See `projects.go`, `settings.go`, `btw.go`,
-`schedules.go`, and `chat_queue.go`. The pool is capped to a single
-connection (`SetMaxOpenConns(1)`) so concurrent writers queue instead of failing
-with "database is locked". A `PushManager` (when configured) persists web-push
-subscriptions and VAPID keys under the agent dir.
+## Same-instance control
 
-### `sessions.Session`
+`.pi/extensions/pi-remote.ts` starts an ephemeral loopback listener inside native Pi. A per-session owner file contains PID, port, native UUID, and a random bearer token. The listener rejects browser Origins, bounds bodies, checks the current session identity, and revokes its registration on session changes/shutdown. Go validates registration and forwards controls through `remote_owner.go`.
 
-The domain model for a session file. The scalar fields live on `SessionSummary`
-(reused for the index, where entries aren't parsed); `Session` embeds it and adds
-the full header + entries.
+No control/status/read request implicitly creates a worker. Explicit continuation checks owner and terminal registrations first. `workers.Manager` single-flights creation and reuses one `pi --mode rpc --session <path>` process. Crashed workers are evicted; idle reaping after ten minutes requires positive native idle evidence. RPC busy state follows `agent_start`/`agent_settled`, not short silence or intermediate `agent_end` events.
 
-```go
-type SessionSummary struct {
-    ID                 string
-    SessionUUID        string
-    Filename           string
-    Project            string
-    LastActivity       string
-    Name               string
-    MessageCount       int
-    TokenTotal         int
-    CostTotal          float64
-    Model              string  // last-known model from messages or model_change
-    ModelProvider      string  // provider for the last-known model
-    ChatAvailable      bool
-    ChatDisabledReason string
-}
+Public native APIs accept a remote message; that receipt is not proof of provider execution. Native Pi owns its queues, tools, persistence, and dialogs. pi-web neither starts a competing terminal instance nor writes fabricated conversation entries.
 
-type Session struct {
-    SessionSummary
-    Header  map[string]any   // type=="session" line
-    Entries []map[string]any // all JSONL lines
-}
-```
+## Auth and lifetime
 
-### `workers.Manager`
+Auth supports the existing token cookie/query/header flow. Unsafe browser requests require a matching Origin even on tokenless localhost; tokenless Host validation prevents DNS rebinding. Explicit non-loopback binds require a token unless the user chooses insecure mode. Tailscale Serve is configured only with a token.
 
-Manages `pi --mode rpc` subprocesses per session.
-
-```go
-type Manager struct {
-    mu           sync.Mutex
-    workers      map[string]ChatWorker  // sessionID → worker
-    creating     map[string]*createCall // single-flight: coalesce concurrent creates per session
-    factory      Factory                // (sessionID, sessionPath) → ChatWorker
-    pendingSends map[string]int         // accepted Sends not yet acked; keeps Status from dipping to idle
-    idleTTL      time.Duration          // default 10m
-    reaperStop   chan struct{}
-    reaperDone   chan struct{}
-}
-```
-
-`Manager.Snapshot()` returns one `WorkerSnapshot` per live worker (session ID,
-state, model, plus PID/uptime/idle for workers implementing the optional
-`inspector` interface). The metrics dashboard consumes it — see
-`docs/dev/metrics-dashboard.md`.
-
-### `rpc.piRPCWorker`
-
-A single `pi --mode rpc` subprocess. Communicates via JSONL on stdin/stdout.
-
-```go
-type piRPCWorker struct {
-    mu                   sync.Mutex
-    writeMu              sync.Mutex
-    sessionPath          string
-    startedAt            time.Time // process start; feeds metrics uptime
-    cmd                  *exec.Cmd
-    stdin                io.WriteCloser
-    status               workers.WorkerStatus
-    seq                  atomic.Uint64
-    pending              map[string]chan response  // in-flight RPC calls
-    currentModel         string
-    currentProvider      string
-    currentThinkingLevel string
-    stderrBuf            *strings.Builder
-    commands             []workers.SlashCommand // cached get_commands result
-    commandsCached       bool
-    lastActive           atomic.Int64 // unix nanos; user-initiated actions
-    lastStreamActivity   atomic.Int64 // unix nanos; stream events keep worker visually running
-    streamSink           StreamEventSink
-    streamPreview        *streamPreviewAccumulator
-}
-```
-
-## HTTP Handler Map
-
-| Route | Method | Handler | Description |
-|-------|--------|---------|-------------|
-| `/` | GET | `handleIndex` | Render SPA shell for the sessions route |
-| `/session` | GET | `handleSession` | Render SPA shell for the session route |
-| `/settings` | GET | `handleSettingsPage` | Render SPA shell for the settings route |
-| `/api/session` | GET | `handleApiSession` | JSON session data |
-| `/api/sessions` | GET | `handleApiSessions` | JSON list of session summaries |
-| `/api/chat` | POST | `handleChat` | Send chat message (multipart) |
-| `/api/chat/cancel` | POST | `handleCancelChat` | Abort running chat worker |
-| `/api/chat/queue` | GET/POST/DELETE/PATCH | `handleChatQueue` | Per-session queued messages + pause state (SQLite) |
-| `/api/set-model` | POST | `handleSetModel` | Change model for session |
-| `/api/set-thinking-level` | POST | `handleSetThinkingLevel` | Change thinking level |
-| `/api/models` | GET | `handleAvailableModels` | List available AI models |
-| `/api/worker-status` | GET | `handleWorkerStatus` | Get worker state for session |
-| `/api/commands` | GET | `handleCommands` | List slash commands exposed by the session worker |
-| `/metrics` | GET | `handleMetricsPage` | Worker metrics dashboard (self-contained HTML) |
-| `/api/metrics` | GET | `handleMetrics` | JSON snapshot: process + per-worker CPU/RSS (gopsutil); see `docs/dev/metrics-dashboard.md` |
-| `/api/debug/pprof/` | GET | `pprof.Index` (+ cmdline/profile/symbol/trace) | Go runtime profiler, auth-gated (`/api`-stripped before Index) |
-| `/share` | POST | `handleShare` | Create private GitHub Gist |
-| `/events` | GET | `handleEvents` | SSE stream |
-| `/api/new-session` | POST | `handleNewSession` | Create new session file |
-| `/api/fork-session` | POST | `handleApiForkSession` | Fork a session into a new file |
-| `/api/clone-session` | POST | `handleApiCloneSession` | Clone a session into a new file |
-| `/api/rename-session` | POST | `handleRenameSession` | Append `session_info` rename metadata |
-| `/api/label-session` | POST | `handleLabelSessionEntry` | Append a label to a session entry |
-| `/api/recent-locations` | GET | `handleRecentLocations` | List known project paths |
-| `/api/files` | GET | `handleApiFiles` | Bounded file listing for @mention autocomplete |
-| `/api/git/info` | GET | `handleGitInfo` | Branch / dirty / PR-URL info for a project |
-| `/api/git/rename-branch` | POST | `handleGitRenameBranch` | Rename the current git branch |
-| `/api/git/diff` | GET | `handleGitDiff` | Uncommitted working-tree diff (tracked + untracked) for the session cwd |
-| `/api/diff/reviews` | GET/POST/DELETE | `handleReviewComments` | Per-session diff review comments for the diff modal (SQLite) |
-| `/api/scratchpad` | GET/POST | `handleGetScratchpad` / `handleSaveScratchpad` | Per-project scratchpad (SQLite) |
-| `/api/annotations` | GET/POST/DELETE | `handleAnnotations` | Per-session review annotations; mutations broadcast an `annotations` SSE snapshot (SQLite) |
-| `/api/settings` | GET/POST | `handleGetSettings` / `handleSaveSettings` | Server-backed user settings (SQLite) |
-| `/api/btw` | GET | `handleGetBtw` | Resolve the btw scratch-chat session for a parent (SQLite) |
-| `/api/btw/new` | POST | `handleNewBtw` | Create a new btw scratch-chat session (SQLite) |
-| `/api/projects` | GET/POST | `handleApiProjects` / `handleUpdateProject` | List projects + filter state (`limit`/`offset`, optional `current` priority + `sessionLimit` bundled summaries, active session IDs per project, `filtered=1` to apply the enabled-projects allowlist with the current project always kept); enable/disable/register/remove, bulk enable-all/disable-all, enable-filter/disable-filter (SQLite) |
-| `/api/sounds` | GET | `handleApiSounds` | List available notification sounds |
-| `/sounds/` | GET | `handleSounds` | Serve a sound asset (no auth) |
-| `/custom-themes.css` | GET | `handleCustomThemes` | User custom theme CSS |
-| `/api/push/vapid` | GET | `handleVapid` | VAPID public key (when push enabled) |
-| `/api/push/subscribe` | POST | `handleSubscribe` | Register a web-push subscription |
-| `/api/push/unsubscribe` | POST | `handleUnsubscribe` | Remove a web-push subscription |
-| `/api/schedules` | GET/POST | `handleApiSchedules` | List schedules (with `nextRunAt`) / create (SQLite) |
-| `/api/schedule` | GET/POST/PUT/DELETE | `handleApiSchedule` | Read/update/delete one schedule (`?id=`) |
-| `/api/schedule/run` | POST | `handleApiScheduleRun` | Fire a schedule now (`?id=`); returns created `sessionId` |
-| `/api/schedule/runs` | GET | `handleApiScheduleRuns` | Run log for a schedule (`?id=`) |
-| `/api/version` | GET | `handleVersion` | Current/latest version (when updater set) |
-| `/api/check-update` | POST | `handleCheckUpdate` | Force a version check |
-| `/api/update` | POST | `handleUpdate` | Install the latest pi-web |
-| `/api/restart` | POST | `handleRestart` | Restart the service onto the new binary |
-
-PWA / static asset routes (registered outside `Server.Register`):
-
-| Route | Source |
-|-------|--------|
-| `/manifest.webmanifest`, `/sw.js`, `/icon.svg`, `/icon-maskable.svg`, `/pi-logo.svg`, `/cat.webm` | `internal/ui/pwa.go` (embedded assets) |
-| `/static/assets/app-*.js`, `/static/assets/...` | Embedded Vite SPA bundle and chunks (`internal/app/app.go` + `internal/frontend`) |
-
-## Auth Flow
-
-```
-Request ──▶ auth.Wrap(handler)
-                │
-                ▼
-      unsafe browser method?
-                │
-       Origin host must match
-       request Host (even when
-       token auth is disabled)
-                │
-                ▼
-        token set in env?
-                │
-        ┌───────┴───────┐
-        ▼               ▼
-      yes              no
-        │               │
-        ▼               ▼
-   extract token    pass through
-   (query → Authorization: Bearer → X-Pi-Token → cookie)
-        │
-        ▼
-   constant-time compare
-        │
-   ┌────┴────┐
-   ▼         ▼
- match    mismatch
-   │         │
-   ▼         ▼
- handler   401 Unauthorized
-```
-
-The origin check protects the default tokenless localhost server from blind
-cross-site browser mutations. `GET`, `HEAD`, and `OPTIONS` are unaffected.
-Origin-less clients such as local CLI scripts remain compatible; a browser
-request explicitly marked `Sec-Fetch-Site: cross-site` is rejected even if it
-omits `Origin`. Tokenless requests also require a recognized `Host`: loopback
-hosts are always accepted, and the configured bind host is added to the
-allowlist. This prevents DNS rebinding from turning a same-origin attacker
-hostname into access to the local server. The explicitly dangerous `--insecure`
-mode preserves its documented any-host behavior.
-
-Tailscale Serve is only configured when `PI_WEB_TOKEN` is set. Serve proxies the
-tailnet to the loopback server, so allowlisting its hostname for tokenless access
-would silently widen a loopback-only deployment into unauthenticated tailnet-wide
-access to the agent — defeating the same non-loopback token guard enforced at
-startup. When no token is set, startup skips Serve and stays loopback-only; the
-discovered Tailscale hostname is added to the allowlist only alongside a token.
-
-JSON handlers share `decodeJSONBody`, which caps request bodies at 2 MiB,
-rejects multiple JSON values, and rejects an explicit media type other than
-`application/json`. An omitted `Content-Type` remains valid for CLI
-compatibility. Multipart chat uploads retain their separate 32 MiB total and
-10 MiB-per-image limits.
-
-## Background Work and Shutdown
-
-Side-effecting asynchronous work started by the server—chat dispatch, worker
-prewarming, scheduled runs, queue dispatch, and push
-notifications—is registered through `startTask`. Every task receives the
-server-owned context. Shutdown prevents new tasks, cancels that context, stops
-the long-running watchers/drainers, waits for all accepted work, and only then
-closes SQLite. The service restart trigger is intentionally detached because
-it must outlive the response that initiates shutdown.
-
-## SSE Broadcasting
-
-The server maintains a slice of `sseClient` structs. Each client subscribes to a `sessID`:
-
-- `__all__` — index page subscribes here; receives `new-session`, `status-snapshot`, `status-delta`
-- Specific session ID — session page subscribes here; receives `reload` when the file changes, `chat-preview` during streaming, and `annotations` (a full annotation snapshot) whenever a note is created/deleted for that session
-
-Broadcasting is fire-and-forget with a buffered channel (16). If the client is slow, keyless events are dropped rather than blocking. Duplicate `reload` and `new-session` events are coalesced per-client while pending.
-
-## Running-Status Computation
-
-Three signals are OR'd together to determine if a session is "running":
-
-1. **session-status file** (`~/.pi/agent/session-status/<id>`): written by the terminal pi process
-2. **In-process chat worker**: `chatSender.Status(id).State == running`
-3. **Recent file activity**: JSONL file modtime within 800 ms
-
-Status changes are broadcast as SSE `status-delta` events to `__all__` subscribers. A 1-second sweeper periodically revalidates all known running sessions to clean up stale states.
+JSON mutation requests are bounded; multipart images retain separate per-image and total limits. Owner credentials never enter browser responses. Server shutdown stops watchers/sweepers, waits for their goroutines, and closes SQLite; the app owns worker shutdown. Tests use temporary agent directories and never the user's running service.

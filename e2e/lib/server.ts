@@ -1,4 +1,9 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  execFile,
+  type ChildProcess,
+} from "node:child_process";
 import { createServer } from "node:net";
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -6,7 +11,8 @@ import { BINARY, FIXTURES_SESSIONS, REPO_ROOT, TMP_DIR } from "./paths";
 
 /** Directory holding the stub `pi` binary, prepended to PATH so chat works without real pi. */
 const STUB_PI_DIR = join(REPO_ROOT, "e2e", "lib", "stub-pi");
-const STUB_BIN_DIR = process.platform === "win32" ? join(TMP_DIR, "stub-pi") : STUB_PI_DIR;
+const STUB_BIN_DIR =
+  process.platform === "win32" ? join(TMP_DIR, "stub-pi") : STUB_PI_DIR;
 
 export async function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -28,10 +34,17 @@ export async function findFreePort(): Promise<number> {
 /** Build the binary only if it is missing. CI is expected to `make build` beforehand. */
 export function ensureBinary(): void {
   if (existsSync(BINARY)) return;
-  console.log("[e2e] pi-web binary missing — running `make build` (CI should prebuild)...");
-  const res = spawnSync("make", ["build"], { cwd: REPO_ROOT, stdio: "inherit" });
+  console.log(
+    "[e2e] pi-web binary missing — running `make build` (CI should prebuild)...",
+  );
+  const res = spawnSync("make", ["build"], {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+  });
   if (res.status !== 0) {
-    throw new Error("`make build` failed; build the binary before running e2e tests");
+    throw new Error(
+      "`make build` failed; build the binary before running e2e tests",
+    );
   }
 }
 
@@ -39,7 +52,12 @@ export function ensureBinary(): void {
 export function seedAgentDir(): { agentDir: string; sessionsDir: string } {
   const agentDir = join(TMP_DIR, "agent");
   const sessionsDir = join(agentDir, "sessions");
-  rmSync(agentDir, { recursive: true, force: true });
+  rmSync(agentDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 3,
+    retryDelay: 100,
+  });
   mkdirSync(sessionsDir, { recursive: true });
   cpSync(FIXTURES_SESSIONS, sessionsDir, { recursive: true });
   return { agentDir, sessionsDir };
@@ -57,7 +75,9 @@ async function waitForReady(baseURL: string, timeoutMs = 15000): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 150));
   }
-  throw new Error(`server did not become ready at ${baseURL}: ${String(lastErr)}`);
+  throw new Error(
+    `server did not become ready at ${baseURL}: ${String(lastErr)}`,
+  );
 }
 
 export interface StartedServer {
@@ -84,13 +104,6 @@ export async function startServer(): Promise<StartedServer> {
       PI_WEB_E2E_STUB: join(STUB_PI_DIR, "pi"),
       // Ensure auth is off for tests regardless of the dev's shell env.
       PI_WEB_TOKEN: "",
-      // Lower the large-session truncation thresholds so the load-earlier spec
-      // can exercise pagination with a ~150-entry session instead of rendering
-      // thousands of messages (which flaked under parallel CPU contention).
-      // Comfortably above every other spec's session size (max ~34 entries).
-      // Keep in sync with tests/load-earlier.spec.ts.
-      PI_WEB_LARGE_SESSION_THRESHOLD: "100",
-      PI_WEB_LARGE_SESSION_TAIL_ENTRIES: "50",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -107,6 +120,13 @@ export async function startServer(): Promise<StartedServer> {
 export async function stopServer(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const closed = new Promise<void>((resolve) => child.once("close", resolve));
-  child.kill("SIGTERM");
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve, reject) =>
+      execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], (error) => {
+        if (error && child.exitCode === null) reject(error);
+        else resolve();
+      }),
+    );
+  } else child.kill("SIGTERM");
   await closed;
 }

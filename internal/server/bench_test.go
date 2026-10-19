@@ -1,8 +1,6 @@
 package server
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,16 +45,14 @@ func newBenchServer(b *testing.B, numSessions, messagesPerSession int) (*Server,
 	}
 
 	srv, err := New(Deps{
-		AgentDir:            dir,
-		SessionsDir:         dir,
-		Auth:                auth.New(""),
-		Cache:               sessions.NewCache(),
-		RenderExportSession: func(s sessions.Session, theme string) string { return "" },
-		RenderAppShell: func(w io.Writer, bootstrap string) error {
+		AgentDir:    dir,
+		SessionsDir: dir,
+		Auth:        auth.New(""),
+		Cache:       sessions.NewCache(),
+		RenderAppShell: func(w io.Writer) error {
 			_, err := w.Write([]byte("<html><body>spa</body></html>"))
 			return err
 		},
-		Models: func(ctx context.Context) (json.RawMessage, error) { return nil, nil },
 	})
 	if err != nil {
 		b.Fatalf("New: %v", err)

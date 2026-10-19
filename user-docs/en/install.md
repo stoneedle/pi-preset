@@ -1,45 +1,23 @@
-# Installation & Usage
+# Installation and usage
 
-## Features
-
-### Remote control
-
-- Continue any session from the browser with text or image attachments
-- Start a brand-new session against any project path, right from the web UI
-- In-browser model switching and thinking-level selector, per session
-- Per-session worker status (idle / running / error) with auto-recovery on crash
-- Multiple sessions run in parallel — kick off work in one, watch another stream
-- `PI_WEB_TOKEN` for safe LAN exposure — required by default for any explicit non-loopback bind
-
-### Reading sessions
-
-- Browse sessions across projects with filters, search, and full branch navigation
-- Live incremental updates while pi is still running (via fsnotify; ~ms latency)
-- Follow mode for tailing active sessions
-- Deep links to individual messages
-- Download a session as JSONL
-- Share static snapshots as secret GitHub Gists
-- `/web`, `/remote`, `/refresh`, `/pi-web token` and `/pi-web set-token` pi extensions for opening sessions, remote QR, session sync, and token management
-- `/skill:pi-web-schedule`, `/skill:pi-web-notes`, `/skill:pi-web-settings` (`pi-web-ctl`) so a session can manage schedules, the project scratchpad, and settings in natural language
+pi-web is a mobile session reader and remote control, not a second Pi workspace. It controls the native process holding a session; inactive history can be continued explicitly in a background worker.
 
 ## Requirements
 
-- Pi 1.0.4, Node.js 22.19+, Go 1.26+, Git and GNU Make
-- Git Bash on Windows; set `MAKE` to the GNU Make executable if it is outside `PATH`
-- Optional: `gh` for sharing and Tailscale for remote access
+- Pi 1.3.0+, Node.js 22.19+, Go 1.26+, Git, and GNU Make.
+- Git Bash on Windows. Set `MAKE` to the GNU Make executable if it is outside `PATH`.
+- Tailscale for remote HTTPS access.
 
-## Install the source fork
+## Install
 
 ```bash
 pi install git:github.com/stoneedle/pi-title-glyphs
 pi install git:github.com/stoneedle/pi-web
 ```
 
-The web package builds its frontend and Go binary from the same fork checkout, then installs the binary and CLI into `~/.pi/agent/bin/`. Its platform installer sets up login startup. The title plugin's README describes the exact Pi 1.0.4 host title repair; apply it and restart Pi. Ordinary extension updates can use `/reload`.
+The source package builds its frontend and Go binary, installs the binary in `~/.pi/agent/bin/`, and configures login startup. The title extension owns native names and runtime heartbeats; pi-web displays those facts without renaming history or patching the Pi host.
 
-Names come from the title plugin: the first opening text is saved immediately, and an optional background model summary may replace it once. Configure `{ "model": "openai-codex/gpt-6-luna" }` in `<agent-dir>/extension-data/pi-title-glyphs/config.json` to enable that summary. pi-web reads native names and supplies manual renaming. Manual names persist through reopen and defeat pending summaries. Existing named sessions keep their names.
-
-For a local development checkout:
+For a local checkout:
 
 ```bash
 git clone https://github.com/stoneedle/pi-web.git
@@ -49,179 +27,45 @@ pi install .
 node scripts/run-lifecycle.mjs install
 ```
 
-On Windows use `make build BINARY=pi-web.exe`. The lifecycle installer also builds before installing. In-app updates target this source fork, and Git development builds retain the existing development-version update guard. Keep the build toolchain available to the update process.
+On Windows, the binary is `pi-web.exe`. Lifecycle installation also builds before installing. Already-open Pi instances need `/reload` after an extension update so the in-process control bridge is registered. Use `/web` to open the current session, `/remote` for the Tailscale URL/QR code, and `/pi-web` for explicit local service management.
 
-### Develop alongside an installed instance
+## Remote access
 
-Leave the installed instance running on port `31415`, then start the source
-checkout in development mode:
+The default address is `http://127.0.0.1:31415`. Set a stable token in `~/.config/pi-web/env`:
 
-```bash
-make dev
+```text
+PI_WEB_TOKEN=your-private-token
 ```
 
-Open `http://127.0.0.1:31416`. `make dev` sets the internal `PI_WEB_DEV=1`
-development environment, so the source checkout shares sessions, settings, and
-SQLite data with the installed instance while keeping a separate development
-runtime lock and state file. Regular installed and manually launched instances
-are unchanged and retain the original single-instance behavior.
+Restart the service, then use `/remote`. Keep the same token to preserve existing browser login. pi-web uses the node's existing Tailscale HTTPS address; it does not require a new identity, profile, or session store. On macOS, first open Tailscale interactively, approve its administrator prompt, and sign in. On Linux, your user may need `sudo tailscale set --operator=$USER`.
 
-To prevent duplicate autonomous work, development mode does not run the
-schedule loop, chat-queue drainer, or push notifications. Direct
-requests made through the development UI still work. Do not drive the same
-chat session from both instances at once; each process has its own RPC worker
-manager.
-
-`make dev` requires [Air](https://github.com/air-verse/air) for Go hot reload:
+Explicit non-loopback binds require a token:
 
 ```bash
-go install github.com/air-verse/air@latest
-```
-
-`PI_WEB_DEV` is development harness plumbing, not a supported production
-multi-instance mode.
-
-## Uninstall
-
-```bash
-pi remove npm:@ygncode/pi-web@beta
-```
-
-This runs the package `preuninstall` script (`uninstall.sh`, or `uninstall.ps1`
-on Windows), which stops the running instance and removes:
-
-- the pi-web binary (`~/.pi/agent/bin/pi-web`, or `/usr/local/bin/pi-web` for standalone installs)
-- the version file (`~/.pi/agent/pi-web-version`)
-- the runtime state file (`~/.pi/agent/pi-web/pi-web-state.json`)
-- the auto-start config (launchd plist on macOS, systemd user service on Linux, Run-key entry + launcher scripts on Windows)
-
-Your data is preserved so a later reinstall picks up where you left off:
-`~/.pi/agent/pi-web.sqlite`, `~/.pi/agent/pi-web-memory.sqlite`, your session
-files under `~/.pi/agent/sessions/`, and `~/.config/pi-web/env` (including
-`PI_WEB_TOKEN`). Remove those manually if you want a clean slate.
-
-## Usage
-
-```bash
-# Start on the default port (31415)
-pi-web
-
-# Start and open a browser
-pi-web -o
-
-# Custom port
-pi-web -p 8080
-
-# Override bind host (loopback is unauthenticated by default)
 pi-web --host 127.0.0.1
-
-# Non-loopback bind requires a token — pi-web refuses to start otherwise
-PI_WEB_TOKEN=$(openssl rand -hex 16) pi-web --host 192.168.1.50
+PI_WEB_TOKEN=your-private-token pi-web --host 192.168.1.50
 ```
 
-By default, pi-web binds to `127.0.0.1`. If Tailscale is running with MagicDNS **and `PI_WEB_TOKEN` is set**, pi-web also runs `tailscale serve --bg --https=<port> http://127.0.0.1:<port>` and prints the HTTPS tailnet URL. Without a token, pi-web stays loopback-only and skips Tailscale Serve, so tailnet peers cannot reach the agent unauthenticated. Any explicit non-loopback bind also requires `PI_WEB_TOKEN` to be set; pass `--insecure` to override for local testing.
+Without a token, startup stays loopback-only and does not enable Tailscale Serve. `--insecure` is only for deliberately unauthenticated local testing. Scripts can use `Authorization: Bearer <token>` or `X-Pi-Token`. The browser login/query flow sets the existing `pi_token` cookie and removes the token from the URL.
 
-## Remote Access
+## Reading and replying
 
-Leave pi-web listening locally, then use the printed Tailscale HTTPS URL from your phone or laptop on the tailnet.
+Open a session to clear its unread marker. Recent full text appears first; expand a tool/thinking block or image to retrieve it, or load earlier messages without losing your reading position. A disconnect, stale heartbeat, or unavailable measurement appears as unknown.
 
-On macOS, install and open Tailscale interactively, approve the administrator prompt, and sign in. Then run `/pi-web restart`, followed by `/remote`.
+Use the Send button for text and the picture picker for camera/library attachments. Choose **Send / steer** or **Next turn** for Pi-native delivery. Skill suggestions only fill the draft. Model and thinking controls are in the session information section and affect subsequent requests. Accepted means handed to Pi, not proof that the model has processed it. Native dialogs still require the terminal.
 
-On Linux, allow your user to manage Tailscale before installing/running pi-web, otherwise `tailscale serve` may require sudo and auto-start can fail:
+Browsing never creates another executor. **Continue in background** is explicit and refuses to compete with a registered live terminal. There is no external-message refresh command or browser-managed queue.
+
+## Login startup and uninstall
+
+The installer configures launchd on macOS, a systemd user service on Linux, or an HKCU Run entry with a hidden launcher under `~/.config/pi-web/` on Windows. Windows has no automatic crash supervision; `/pi-web` can manage the service explicitly.
 
 ```bash
-sudo tailscale set --operator=$USER
+pi remove git:github.com/stoneedle/pi-web
 ```
 
-```bash
-# 1. Start pi-web with a token so it publishes the Tailscale HTTPS endpoint
-PI_WEB_TOKEN=$(openssl rand -hex 16) pi-web
+Uninstall removes the package's binary and startup registration. Native JSONL history, saved appearance, memory databases, and `~/.config/pi-web/env` remain. Do not delete or replace those files to update the interface.
 
-# 2. From any other Tailscale-connected device, open the printed
-#    "Tailscale HTTPS" URL and enter the token once.
-```
+## Development
 
-> By default, pi-web refuses to bind to a non-loopback address unless `PI_WEB_TOKEN` is set — anyone who can reach the bound address could otherwise view sessions and send instructions to pi. To override this guard for local-network testing, pass `--insecure`. **Don't use `--insecure` on Tailscale or any address reachable from outside your machine.**
->
-> Clients can pass the token via the `Authorization: Bearer <token>` header, the `X-Pi-Token` header, or once via `?token=<token>` (or the login prompt). When the token arrives through the query string, pi-web sets a `pi_token` cookie and redirects to the same URL with the token stripped, so it does not linger in the address bar or browser history. Prefer the header form for scripts and automation.
-
-## Browser Chat
-
-Open a session page and use the composer at the bottom to continue that exact session.
-
-- `Enter` sends, `Shift+Enter` inserts a newline
-- Drag-and-drop or paste images directly into the composer
-- The model picker and thinking-level selector live in the header — changes apply to the underlying pi worker immediately
-- Each active session gets its own dedicated `pi --mode rpc` worker, so different sessions don't block each other
-
-## Sharing Sessions
-
-Click **Share** on a session page to create a secret GitHub Gist.
-
-Requirements:
-- `gh` installed
-- `gh auth login` completed
-
-Sharing returns:
-- the secret gist URL
-- a preview URL at `https://pi.dev/session/#<gistId>`
-
-Shared gists are snapshots and do not live-update.
-
-## Auto-Start on Login
-
-### macOS
-
-```bash
-cp init/com.pi-web.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.pi-web.plist
-```
-
-### Linux (systemd)
-
-```bash
-# Install the systemd user service
-mkdir -p ~/.config/systemd/user
-cp init/pi-web.service ~/.config/systemd/user/
-
-# Optional: set your PI_WEB_TOKEN for non-loopback binds
-# (or use /pi-web set-token <token> from inside pi)
-mkdir -p ~/.config/pi-web
-echo 'PI_WEB_TOKEN=your-token-here' > ~/.config/pi-web/env
-
-# Enable and start
-systemctl --user daemon-reload
-systemctl --user enable --now pi-web.service
-
-# Check status
-systemctl --user status pi-web.service
-
-# View logs
-journalctl --user -u pi-web.service -f
-```
-
-> For the service to start at boot (before login), use a system service instead:
-> copy `init/pi-web.service` to `/etc/systemd/system/` and use `sudo systemctl`.
-
-### Windows
-
-The installer configures this automatically, without needing admin rights: a
-`pi-web` entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-launches `~/.config/pi-web/pi-web-start.vbs` at login, which starts the binary
-hidden (no console window) after loading `~/.config/pi-web/env`
-(`PI_WEB_TOKEN`, `PATH`, ...).
-
-To manage it by hand:
-
-```powershell
-# Start / stop
-wscript.exe "$HOME\.config\pi-web\pi-web-start.vbs"
-taskkill /IM pi-web.exe /F
-
-# Remove auto-start
-Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'pi-web'
-```
-
-There is no service supervision on Windows: if pi-web crashes it stays down
-until the next login (launchd/systemd restart it automatically on the other
-platforms).
+`make build`, `make check`, and `make e2e` are the verification entry points. E2E starts an isolated test server with temporary sessions and a deterministic native RPC fixture. `make dev` is an explicit developer action using port 31416 and a separate runtime lock; it is not a second product mode. Do not drive one session through two server instances.

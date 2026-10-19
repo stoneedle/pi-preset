@@ -1,57 +1,9 @@
-# Architecture Documentation
+# Architecture
 
-This directory contains the architecture documentation for **pi-web**, a local web viewer for pi coding-agent sessions.
+- [System overview](system-overview.md): component ownership, native storage, deployment boundaries.
+- [Backend](backend.md): HTTP responsibilities, windows/cursors, runtime truth, same-instance controls.
+- [Frontend](frontend.md): the compact interface, on-demand bodies, single-flight refresh, mobile viewport.
+- [Core data flow](data-flow.md): opening, receiving updates, and replying.
+- [E2E testing](../dev/e2e-testing.md): isolated production-bundle verification across seven device/browser projects.
 
-## Documents
-
-| Document | Description |
-|----------|-------------|
-| [system-overview.md](./system-overview.md) | High-level system architecture, component diagram, and tech stack |
-| [backend.md](./backend.md) | Go backend: packages, responsibilities, and key types |
-| [frontend.md](./frontend.md) | Frontend architecture: Svelte SPA, Vite build, embedded shell, and static export |
-| [data-flow.md](./data-flow.md) | Session file format, data model, and storage layout |
-
-## Architecture at a Glance
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           Browser                                    │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │
-│  │ / /session  │  │ /settings   │  │      SSE /events            │  │
-│  │ /schedules  │  │  Svelte SPA │  │   Live reload + status      │  │
-│  │ Svelte SPA  │  │             │  │        updates              │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼ HTTP
-┌─────────────────────────────────────────────────────────────────────┐
-│                        pi-web HTTP Server                            │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────────┐  │
-│  │   Auth     │ │  Handlers  │ │   SSE      │ │  File Watcher    │  │
-│  │Middleware  │ │  (server)  │ │ (events)   │ │ (fsnotify/poll)  │  │
-│  └────────────┘ └────────────┘ └────────────┘ └──────────────────┘  │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────────┐  │
-│  │  Sessions  │ │  Workers   │ │   RPC      │ │  Share (gh)      │  │
-│  │  (cache)   │ │  (manager) │ │  (pi CLI)  │ │  (gist create)   │  │
-│  └────────────┘ └────────────┘ └────────────┘ └──────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼ filesystem
-┌─────────────────────────────────────────────────────────────────────┐
-│                    ~/.pi/agent/sessions/                             │
-│         Project dirs  →  JSONL session files                         │
-│         (--name--)        (timestamp_uuid.jsonl)                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-## Key Design Decisions
-
-1. **Append-only session metadata**: pi-web reads from `~/.pi/agent/sessions/` and avoids rewriting session history. New sessions can be created via the web UI; active renames are committed by the Pi title owner, inactive renames append native `session_info`, and entry labels append `label` metadata. `pi-title-glyphs` owns automatic naming.
-
-2. **Live updates via SSE**: The browser opens an EventSource connection. The server watches session files via `fsnotify` (with polling fallback) and pushes `reload` events; session pages fetch `/api/session` to reconcile canonical JSONL entries. Browser chat can also receive best-effort `chat-preview` SSE events before JSONL reconciliation.
-
-3. **Chat via RPC workers**: Each session gets a dedicated `pi --mode rpc` subprocess. Workers are cached and reaped after 10 minutes of idle time.
-
-4. **Single Svelte SPA + static export**: All live browser routes (`/`, `/session`, `/settings`, `/schedules`) are Svelte 5 components built by Vite and served by one embedded shell (`internal/ui/embedded/app.html`). Sharing/export renders a separate self-contained snapshot (`internal/ui/export.go`). The pre-auth token prompt is the only other HTML page, rendered by the Go auth middleware.
-
-5. **Security**: Token-based auth (`PI_WEB_TOKEN`) is required when binding to non-loopback addresses (e.g., Tailscale).
+Current product decisions are tracked in [Issue #1](https://github.com/stoneedle/pi-web/issues/1). There is one interface and one native execution owner per session; removed workspace features have no alternate runtime or compatibility renderer.

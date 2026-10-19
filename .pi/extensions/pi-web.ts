@@ -46,11 +46,7 @@ async function detectHostPort(
   tailscale: boolean;
   tailscaleUrl?: string;
 } | null> {
-  // 1. Try pidfile (new path first, then old for migration compat)
-  const candidates = [
-    `${agentDir()}/pi-web/pi-web-state.json`,
-    `${agentDir()}/pi-web-state.json`,
-  ];
+  const candidates = [`${agentDir()}/pi-web/pi-web-state.json`];
   for (const path of candidates) {
     try {
       const raw = readFileSync(path, "utf-8");
@@ -754,16 +750,10 @@ async function showRemoteAccess(
 }
 
 export default function (pi: ExtensionAPI) {
-  // Start pi-web opportunistically when the extension loads so /remote works on a
-  // fresh shell after `pi install git:github.com/stoneedle/pi-web`.
-  void detectHostPort(pi)
-    .then((detected) => {
-      if (!detected) return;
-      return ensurePiWebRunning(pi, detected.host, detected.port);
-    })
-    .catch(() => {
-      // Keep startup quiet; /remote and /refresh show actionable errors if needed.
-    });
+  pi.on("session_start", async () => {
+    const detected = await detectHostPort(pi);
+    if (detected) await ensurePiWebRunning(pi, detected.host, detected.port);
+  });
 
   // ── /pi-web ───────────────────────────────────────────────────────
   pi.registerCommand("pi-web", {
@@ -1041,43 +1031,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /refresh ──────────────────────────────────────────────────────
-  pi.registerCommand("refresh", {
-    description: "Sync pi-web-written messages back into this session",
-    handler: async (_args, ctx: ExtensionCommandContext) => {
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      if (!sessionFile) {
-        ctx.ui.notify("Cannot refresh an in-memory session.", "error");
-        return;
-      }
-
-      let fileEntries: unknown[] = [];
-      try {
-        const raw = readFileSync(sessionFile, "utf-8");
-        fileEntries = raw
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0)
-          .map((line) => JSON.parse(line));
-      } catch (err) {
-        ctx.ui.notify(`Failed to read session file: ${err}`, "error");
-        return;
-      }
-
-      const currentCount = ctx.sessionManager.getEntries().length;
-      // fileEntries includes header, so subtract 1 for message entries
-      const fileCount = Math.max(0, fileEntries.length - 1);
-
-      if (fileCount > currentCount) {
-        const delta = fileCount - currentCount;
-        ctx.ui.notify(
-          `Mobile added ${delta} new message(s). Reloading session...`,
-          "info",
-        );
-        await ctx.switchSession(sessionFile);
-      } else {
-        ctx.ui.notify("Session is up to date.", "info");
-      }
-    },
-  });
 }

@@ -1,9 +1,11 @@
-.PHONY: title-e2e e2e-stub build setup frontend-setup go-setup root-setup frontend-build frontend-test frontend-knip frontend-lint frontend-format-check extension-test memory-test pi-web-ctl-test go-test install-test vet test check clean dev docs docs-dev release-patch release-minor release-major release-beta e2e e2e-setup
+.PHONY: e2e-stub build setup frontend-setup go-setup root-setup frontend-build frontend-test frontend-knip frontend-lint frontend-format-check extension-test memory-test go-test install-test vet test check clean dev docs docs-dev release-patch release-minor release-major release-beta e2e e2e-setup
 
 ifeq ($(OS),Windows_NT)
 BINARY ?= pi-web.exe
+PYTHON ?= python
 else
 BINARY ?= pi-web
+PYTHON ?= python3
 endif
 WEB_DIR := web
 E2E_DIR := e2e
@@ -55,10 +57,7 @@ extension-test: root-setup
 	npm run test:extensions
 
 memory-test:
-	PYTHONDONTWRITEBYTECODE=1 python3 .pi/skills/memory/scripts/test_memory.py
-
-pi-web-ctl-test:
-	PYTHONDONTWRITEBYTECODE=1 python3 .pi/skills/common/test_pi_web.py
+	PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1 $(PYTHON) .pi/skills/memory/scripts/test_memory.py
 
 go-test: go-setup
 	go test ./...
@@ -69,9 +68,9 @@ install-test:
 vet: go-setup
 	go vet ./...
 
-test: frontend-test extension-test memory-test pi-web-ctl-test go-test install-test
+test: frontend-test extension-test memory-test go-test install-test
 
-check: frontend-lint frontend-format-check frontend-knip frontend-test extension-test memory-test pi-web-ctl-test frontend-build go-test install-test vet
+check: frontend-lint frontend-format-check frontend-knip frontend-test extension-test memory-test frontend-build go-test install-test vet
 
 dev: frontend-setup go-setup
 	@echo "Starting secondary dev instance at http://127.0.0.1:31416 (frontend watcher + Go hot-reloader)..."
@@ -106,18 +105,14 @@ clean:
 	rm -f $(BINARY)
 	rm -rf $(WEB_DIR)/dist
 
-# Shared naming integration; PI_TITLE_GLYPHS_ROOT identifies the title fork checkout.
-title-e2e: build
-	go test -tags=title_e2e ./internal/server -run TestTitleOwnerRenameLateSummaryAndReopen -v
-
 # Docs site (VitePress). Assemble the generated srcDir from user-docs + authored
 # pages, then build/preview. Not part of `make check` — never gates the app.
 docs:
-	python3 scripts/build_site.py
+	$(PYTHON) scripts/build_site.py
 	cd website && npm install && npm run build
 
 docs-dev:
-	python3 scripts/build_site.py
+	$(PYTHON) scripts/build_site.py
 	cd website && npm install && npm run dev
 
 # Release helpers — bump package.json, commit, tag, and push.

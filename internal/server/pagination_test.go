@@ -13,152 +13,141 @@ import (
 	"pi-web/internal/sessions"
 )
 
-// writeSessionWithNMessages scaffolds a session JSONL with `n` message
-// entries (plus the leading session header line — so total entries in the
-// parsed Session is n+1). Used to exercise the pagination thresholds
-// (default 1500 entries → tail-truncate to 1000).
-func writeSessionWithNMessages(t *testing.T, root, project, name string, n int) string {
+func writeConversation(t *testing.T, root string, messages []map[string]any) string {
 	t.Helper()
-	dir := filepath.Join(root, project)
+	dir := filepath.Join(root, "project")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, name)
-	cwd := filepath.Join(root, "cwd")
-	if err := os.MkdirAll(cwd, 0755); err != nil {
+	file := filepath.Join(dir, "mobile.jsonl")
+	var lines strings.Builder
+	header, _ := json.Marshal(map[string]any{"type": "session", "version": 3, "id": "sid", "cwd": root})
+	lines.Write(header)
+	lines.WriteByte('\n')
+	var parent any
+	for i, message := range messages {
+		id := fmt.Sprintf("entry-%04d", i)
+		line, err := json.Marshal(map[string]any{"type": "message", "id": id, "parentId": parent, "message": message})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines.Write(line)
+		lines.WriteByte('\n')
+		parent = id
+	}
+	if err := os.WriteFile(file, []byte(lines.String()), 0644); err != nil {
 		t.Fatal(err)
 	}
-	var b strings.Builder
-	b.WriteString(`{"type":"session","version":3,"id":"sid","timestamp":"2026-05-06T00:00:00.000Z","cwd":` + jsonString(cwd) + `}` + "\n")
-	for i := 0; i < n; i++ {
-		fmt.Fprintf(&b, `{"type":"message","id":"id%06d","parentId":null,"timestamp":"2026-05-06T00:00:%02d.000Z","message":{"role":"user","content":"m%d"}}`+"\n", i, i%60, i)
+	return file
+}
+
+func sessionRequest(t *testing.T, s *Server, suffix string) (sessions.Window, string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.handleApiSession(w, httptest.NewRequest(http.MethodGet, "/api/session?id=mobile.jsonl"+suffix, nil))
+	if w.Code != 200 {
+		t.Fatalf("session: %d %s", w.Code, w.Body.String())
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+	var response struct {
+		Window sessions.Window `json:"window"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return response.Window, w.Body.String()
 }
 
-func TestHandleApiSession_PaginationWindowed(t *testing.T) {
+func TestMobileWindowNeverTransfersFoldedBodies(t *testing.T) {
 	root := t.TempDir()
-	const messages = 50
-	const totalEntries = messages + 1 // session header is entries[0]
-	writeSessionWithNMessages(t, root, "proj", "s.jsonl", messages)
+	large := strings.Repeat("folded-private-payload", 100000)
+	writeConversation(t, root, []map[string]any{
+		{"role": "user", "content": []any{map[string]any{"type": "text", "text": "hello"}, map[string]any{"type": "image", "data": large, "mimeType": "image/png"}}},
+		{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": large}, map[string]any{"type": "toolCall", "id": "call1", "name": "bash", "arguments": map[string]any{"command": "ls", "hidden": large}}}},
+		{"role": "toolResult", "toolCallId": "call1", "content": []any{map[string]any{"type": "text", "text": large}}},
+		{"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": "complete answer"}}},
+	})
 	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
-
-	// Window [10, 15) → 5 entries starting at entries[10].
-	// Since entries[0] is the session header, entries[10] is message #9 (id000009).
-	req := httptest.NewRequest(http.MethodGet, "/api/session?id=s.jsonl&from=10&count=5", nil)
-	w := httptest.NewRecorder()
-	s.handleApiSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	window, raw := sessionRequest(t, s, "")
+	if strings.Contains(raw, "folded-private-payload") || len(raw) > 4096 {
+		t.Fatalf("initial response leaked folded bodies: %d bytes", len(raw))
 	}
-	var resp struct {
-		Entries []map[string]any `json:"entries"`
-		Total   int              `json:"total"`
-		From    int              `json:"from"`
+	if len(window.Messages) != 3 || !strings.Contains(raw, "complete answer") {
+		t.Fatalf("ordinary messages missing: %s", raw)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+	for _, block := range []struct {
+		entry    string
+		index    int
+		expected string
+	}{
+		{"entry-0001", 0, large}, {"entry-0001", 1, large},
+	} {
+		w := httptest.NewRecorder()
+		s.handleSessionBlock(w, httptest.NewRequest("GET", fmt.Sprintf("/api/session/block?id=mobile.jsonl&entry=%s&index=%d", block.entry, block.index), nil))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), block.expected) {
+			t.Fatalf("expanded body incomplete: %d", w.Code)
+		}
+	}
+}
+
+func TestMobileWindowKeepsLongOrdinaryReplyWhole(t *testing.T) {
+	root := t.TempDir()
+	answer := strings.Repeat("正文不能为了速度而截断。", 12000)
+	writeConversation(t, root, []map[string]any{{"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": answer}}}})
+	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
+	window, _ := sessionRequest(t, s, "")
+	if len(window.Messages) != 1 || window.Messages[0].Blocks[0].Text != answer {
+		t.Fatal("ordinary reply was truncated")
+	}
+}
+
+func TestMobileHistoryAndIncrementalToolCompletion(t *testing.T) {
+	root := t.TempDir()
+	messages := make([]map[string]any, 100)
+	for i := range messages {
+		messages[i] = map[string]any{"role": "user", "content": fmt.Sprintf("message %d", i)}
+	}
+	file := writeConversation(t, root, messages)
+	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
+	window, _ := sessionRequest(t, s, "")
+	if len(window.Messages) != 30 || window.Before == "" {
+		t.Fatalf("unbounded window: %+v", window)
+	}
+	all := append([]sessions.ViewMessage{}, window.Messages...)
+	for window.Before != "" {
+		window, _ = sessionRequest(t, s, "&before="+window.Before)
+		all = append(window.Messages, all...)
+	}
+	if len(all) != 100 {
+		t.Fatalf("history has %d messages", len(all))
+	}
+	for i, message := range all {
+		if message.ID != fmt.Sprintf("entry-%04d", i) {
+			t.Fatalf("history order at %d: %s", i, message.ID)
+		}
+	}
+	initial, _ := sessionRequest(t, s, "")
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Total != totalEntries {
-		t.Errorf("total = %d, want %d", resp.Total, totalEntries)
+	f.WriteString(`{"type":"message","id":"call-entry","parentId":"entry-0099","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-1","name":"read","arguments":{"path":"file.txt"}}]}}` + "\n")
+	f.Close()
+	incremental, _ := sessionRequest(t, s, "&after="+initial.Cursor)
+	if len(incremental.Messages) != 1 || incremental.Messages[0].Blocks[0].State != "pending" {
+		t.Fatalf("delta includes history: %+v", incremental)
 	}
-	if resp.From != 10 {
-		t.Errorf("from = %d, want 10", resp.From)
+	f, err = os.OpenFile(file, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := len(resp.Entries); got != 5 {
-		t.Errorf("got %d entries, want 5", got)
+	f.WriteString(`{"type":"message","id":"result-entry","parentId":"call-entry","message":{"role":"toolResult","toolCallId":"tool-1","content":[{"type":"text","text":"not sent until expanded"}]}}` + "\n")
+	f.Close()
+	changed, raw := sessionRequest(t, s, "&after="+incremental.Cursor)
+	if len(changed.Messages) != 1 || changed.Messages[0].ID != "call-entry" || changed.Messages[0].Blocks[0].State != "done" || strings.Contains(raw, "not sent until expanded") {
+		t.Fatalf("tool completion delta: %s", raw)
 	}
-	firstID, _ := resp.Entries[0]["id"].(string)
-	if firstID != "id000009" {
-		t.Errorf("first entry id = %q, want id000009", firstID)
-	}
-}
-
-func TestHandleApiSession_PaginationClampsBeyondEnd(t *testing.T) {
-	root := t.TempDir()
-	const messages = 20
-	const totalEntries = messages + 1
-	writeSessionWithNMessages(t, root, "proj", "s.jsonl", messages)
-	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
-
-	// from=15, count=100 → should clamp to entries[15:21] = 6 entries
-	req := httptest.NewRequest(http.MethodGet, "/api/session?id=s.jsonl&from=15&count=100", nil)
-	w := httptest.NewRecorder()
-	s.handleApiSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var resp struct {
-		Entries []map[string]any `json:"entries"`
-		Total   int              `json:"total"`
-		From    int              `json:"from"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Total != totalEntries {
-		t.Errorf("total = %d, want %d", resp.Total, totalEntries)
-	}
-	if got := len(resp.Entries); got != totalEntries-15 {
-		t.Errorf("clamped entries = %d, want %d", got, totalEntries-15)
-	}
-}
-
-func TestHandleApiSession_NoPaginationByDefault(t *testing.T) {
-	root := t.TempDir()
-	const messages = 30
-	const totalEntries = messages + 1
-	writeSessionWithNMessages(t, root, "proj", "s.jsonl", messages)
-	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/session?id=s.jsonl", nil)
-	w := httptest.NewRecorder()
-	s.handleApiSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var resp struct {
-		Entries []map[string]any `json:"entries"`
-		Total   int              `json:"total"`
-		From    int              `json:"from"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Total != totalEntries {
-		t.Errorf("total = %d, want %d", resp.Total, totalEntries)
-	}
-	if got := len(resp.Entries); got != totalEntries {
-		t.Errorf("default (no params) returned %d entries, want all %d", got, totalEntries)
-	}
-	if resp.From != 0 {
-		t.Errorf("from = %d, want 0", resp.From)
-	}
-}
-
-func TestHandleApiSession_InvalidParamsReturnFull(t *testing.T) {
-	root := t.TempDir()
-	const messages = 12
-	const totalEntries = messages + 1
-	writeSessionWithNMessages(t, root, "proj", "s.jsonl", messages)
-	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
-
-	// from=abc (invalid) → should ignore pagination and return full set.
-	req := httptest.NewRequest(http.MethodGet, "/api/session?id=s.jsonl&from=abc&count=5", nil)
-	w := httptest.NewRecorder()
-	s.handleApiSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var resp struct {
-		Entries []map[string]any `json:"entries"`
-		Total   int              `json:"total"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if len(resp.Entries) != totalEntries {
-		t.Errorf("invalid params: got %d entries, want %d", len(resp.Entries), totalEntries)
+	unchanged, _ := sessionRequest(t, s, "&after="+changed.Cursor)
+	if len(unchanged.Messages) != 0 {
+		t.Fatal("unchanged reload retransmitted messages")
 	}
 }

@@ -1,179 +1,77 @@
 package server
 
 import (
-	"context"
-	"encoding/json"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"pi-web/internal/auth"
 	"pi-web/internal/sessions"
+	"pi-web/internal/ui"
 )
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := New(Deps{
-		AgentDir:            dir,
-		SessionsDir:         dir,
-		Auth:                auth.New(""),
-		Cache:               sessions.NewCache(),
-		RenderExportSession: func(s sessions.Session, theme string) string { return "" },
-		Models:              func(ctx context.Context) (json.RawMessage, error) { return nil, nil },
-	})
+	middleware := auth.New("")
+	middleware.AllowHost("example.com")
+	s, err := New(Deps{AgentDir: dir, SessionsDir: dir, Auth: middleware, Cache: sessions.NewCache(), RenderAppShell: ui.RenderAppShell})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatal(err)
 	}
-	// Close the server's sqlite handle before TempDir cleanup: Windows cannot
-	// delete a file that is still open.
 	t.Cleanup(s.Shutdown)
 	return s
 }
 
-func TestHandleCustomThemesServesConfiguredStylesheet(t *testing.T) {
+func TestOnlyMobileRoutesRemainAndShellContainsNoSessionData(t *testing.T) {
 	s := newTestServer(t)
-	webDir := filepath.Join(s.agentDir, "pi-web")
-	if err := os.MkdirAll(webDir, 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	css := `[data-theme="custom"] { --body-bg: #010203; }`
-	if err := os.WriteFile(filepath.Join(webDir, "custom-themes.css"), []byte(css), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/custom-themes.css", nil)
-	w := httptest.NewRecorder()
-	s.handleCustomThemes(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
-		t.Fatalf("expected text/css content type, got %q", got)
-	}
-	if got := w.Body.String(); got != css {
-		t.Fatalf("expected configured CSS %q, got %q", css, got)
-	}
-}
-
-func TestHandleCustomThemesFallbackWhenMissing(t *testing.T) {
-	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/custom-themes.css", nil)
-	w := httptest.NewRecorder()
-	s.handleCustomThemes(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
-		t.Fatalf("expected text/css content type, got %q", got)
-	}
-	if !strings.Contains(w.Body.String(), "No custom themes configured") {
-		t.Fatalf("expected fallback CSS comment, got %q", w.Body.String())
-	}
-}
-
-func TestCustomThemesPublicWhenAuthEnabled(t *testing.T) {
-	// The login gate loads /custom-themes.css before the user authenticates, so
-	// the route must stay reachable without a token even when auth is on.
-	dir := t.TempDir()
-	s, err := New(Deps{
-		AgentDir:            dir,
-		SessionsDir:         dir,
-		Auth:                auth.New("secret"),
-		Cache:               sessions.NewCache(),
-		RenderExportSession: func(s sessions.Session, theme string) string { return "" },
-		Models:              func(ctx context.Context) (json.RawMessage, error) { return nil, nil },
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(s.Shutdown)
+	writeConversation(t, s.sessionsDir, []map[string]any{{"role": "user", "content": "private-conversation-body"}})
 	mux := http.NewServeMux()
 	s.Register(mux)
-
-	req := httptest.NewRequest(http.MethodGet, "/custom-themes.css", nil)
-	req.Header.Set("Accept", "text/css")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /custom-themes.css without token = %d, want 200 (public)", rec.Code)
+	for _, path := range []string{"/", "/session?id=mobile.jsonl"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		Compress(mux).ServeHTTP(w, req)
+		if w.Code != 200 || w.Header().Get("Content-Encoding") != "gzip" {
+			t.Fatalf("shell response %d %v", w.Code, w.Header())
+		}
+		reader, err := gzip.NewReader(w.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(reader)
+		reader.Close()
+		if strings.Contains(string(body), "private-conversation-body") || strings.Contains(string(body), "pi-session-bootstrap") || len(body) > 20000 {
+			t.Fatalf("heavy shell: %d bytes", len(body))
+		}
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
-		t.Fatalf("Content-Type = %q, want text/css", got)
-	}
-}
-
-func TestDevelopmentModeDisablesAutonomousQueueDrainer(t *testing.T) {
-	dir := t.TempDir()
-	s, err := New(Deps{
-		AgentDir:              dir,
-		SessionsDir:           dir,
-		Auth:                  auth.New(""),
-		Cache:                 sessions.NewCache(),
-		DisableBackgroundJobs: true,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(s.Shutdown)
-	if !s.disableBackgroundJobs {
-		t.Fatal("development server did not retain DisableBackgroundJobs")
-	}
-	if s.queueDrainer != nil {
-		t.Fatal("development server started an autonomous queue drainer")
+	for _, path := range []string{"/settings", "/schedules", "/api/fork-session", "/api/clone-session", "/api/annotations", "/api/scratchpad", "/api/chat/queue", "/api/worker-status", "/api/projects", "/api/git/diff", "/metrics"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 404 {
+			t.Errorf("removed route %s returned %d", path, w.Code)
+		}
 	}
 }
 
-func TestShutdownStopsBackgroundGoroutines(t *testing.T) {
+func TestMobileAPIsStillRequireAuthentication(t *testing.T) {
 	s := newTestServer(t)
-	done := make(chan struct{})
-	go func() {
-		s.Shutdown()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Shutdown did not return within 2s — background goroutines did not exit")
+	s.auth = auth.New("private-token")
+	mux := http.NewServeMux()
+	s.Register(mux)
+	for _, path := range []string{"/api/session?id=mobile.jsonl", "/api/status?id=mobile.jsonl", "/api/session/block?id=mobile.jsonl&entry=x&index=0"} {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Accept", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s = %d", path, w.Code)
+		}
 	}
 }
 
-func TestShutdownIsIdempotent(t *testing.T) {
-	s := newTestServer(t)
-	s.Shutdown()
-	s.Shutdown() // must not panic
-}
-
-func TestShutdownCancelsAndWaitsForOwnedTasks(t *testing.T) {
-	s := newTestServer(t)
-	taskDone := make(chan struct{})
-	if !s.startTask(func(ctx context.Context) {
-		<-ctx.Done()
-		close(taskDone)
-	}) {
-		t.Fatal("startTask rejected work before shutdown")
-	}
-
-	s.Shutdown()
-
-	select {
-	case <-taskDone:
-	default:
-		t.Fatal("Shutdown returned before the owned task observed cancellation")
-	}
-}
-
-func TestStartTaskRejectsWorkAfterShutdown(t *testing.T) {
-	s := newTestServer(t)
-	s.Shutdown()
-	if s.startTask(func(context.Context) {}) {
-		t.Fatal("startTask accepted work after shutdown")
-	}
-}
+func TestShutdownIsIdempotent(t *testing.T) { s := newTestServer(t); s.Shutdown(); s.Shutdown() }

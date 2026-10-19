@@ -167,7 +167,7 @@ func BenchmarkLoadAllCached100(b *testing.B) {
 	}
 }
 
-func BenchmarkResolveByID(b *testing.B) {
+func BenchmarkResolveCold(b *testing.B) {
 	tmp := b.TempDir()
 	cwd := filepath.Join(tmp, "cwd")
 	os.MkdirAll(cwd, 0755)
@@ -185,14 +185,14 @@ func BenchmarkResolveByID(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ResolveByID(tmp, "target-session.jsonl")
+		_, err := NewCache().Resolve(tmp, "target-session.jsonl")
 		if err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-func BenchmarkResolveByIDCached(b *testing.B) {
+func BenchmarkResolveCached(b *testing.B) {
 	tmp := b.TempDir()
 	cwd := filepath.Join(tmp, "cwd")
 	os.MkdirAll(cwd, 0755)

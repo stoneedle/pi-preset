@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -44,10 +45,13 @@ func (s *Server) startSessionStatusWatcher() error {
 				if !ok {
 					return
 				}
-				if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+				if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
 					continue
 				}
-				s.recomputeAndBroadcastStatus(filepath.Base(ev.Name))
+				name := filepath.Base(ev.Name)
+				if index := strings.Index(name, ".jsonl."); index >= 0 && strings.HasSuffix(name, ".json") {
+					s.recomputeAndBroadcastStatus(name[:index+len(".jsonl")])
+				}
 			case err, ok := <-w.Errors:
 				if !ok {
 					return

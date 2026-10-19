@@ -12,7 +12,7 @@ func TestLoadFrontendScriptsSingleEntrypoint(t *testing.T) {
 		},
 		"assets/app-abc123.js": &fstest.MapFile{Data: []byte("console.log('hello')")},
 	}
-	scripts, err := loadFrontendScripts(fsys, appEntry)
+	scripts, err := LoadScripts(fsys, AppEntry)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestLoadFrontendScriptsLoadsMultipleEntrypoints(t *testing.T) {
 		"assets/app-000111.js":   &fstest.MapFile{Data: []byte("app")},
 		"assets/other-222333.js": &fstest.MapFile{Data: []byte("other")},
 	}
-	scripts, err := loadFrontendScripts(fsys, appEntry, "src/other.js")
+	scripts, err := LoadScripts(fsys, AppEntry, "src/other.js")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestLoadFrontendScriptsLoadsMultipleEntrypoints(t *testing.T) {
 }
 
 func TestLoadFrontendScriptsMissingManifest(t *testing.T) {
-	if _, err := loadFrontendScripts(fstest.MapFS{}, appEntry); err == nil {
+	if _, err := LoadScripts(fstest.MapFS{}, AppEntry); err == nil {
 		t.Fatal("expected error for missing manifest")
 	}
 }
@@ -68,7 +68,7 @@ func TestLoadFrontendScriptsEmptyFile(t *testing.T) {
 			Data: []byte(`{"src/main.js":{"file":""}}`),
 		},
 	}
-	if _, err := loadFrontendScripts(fsys, appEntry); err == nil {
+	if _, err := LoadScripts(fsys, AppEntry); err == nil {
 		t.Fatal("expected error for empty file")
 	}
 }
@@ -79,7 +79,7 @@ func TestLoadFrontendScriptsAbsolutePath(t *testing.T) {
 			Data: []byte(`{"src/main.js":{"file":"/etc/passwd"}}`),
 		},
 	}
-	if _, err := loadFrontendScripts(fsys, appEntry); err == nil {
+	if _, err := LoadScripts(fsys, AppEntry); err == nil {
 		t.Fatal("expected error for absolute path")
 	}
 }
@@ -90,7 +90,7 @@ func TestLoadFrontendScriptsPathTraversal(t *testing.T) {
 			Data: []byte(`{"src/main.js":{"file":"../etc/passwd"}}`),
 		},
 	}
-	if _, err := loadFrontendScripts(fsys, appEntry); err == nil {
+	if _, err := LoadScripts(fsys, AppEntry); err == nil {
 		t.Fatal("expected error for path traversal")
 	}
 }

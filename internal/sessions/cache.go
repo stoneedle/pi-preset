@@ -184,24 +184,6 @@ func (c *Cache) FindPath(name string) (string, bool) {
 	return p, ok
 }
 
-// ProjectForID returns the cached project path for a session without touching
-// the filesystem. LoadAll and Resolve both populate the cache records it reads.
-func (c *Cache) ProjectForID(name string) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	path, ok := c.pathIndex[name]
-	if !ok {
-		return "", false
-	}
-	if entry, ok := c.entries[path]; ok {
-		return entry.summary.Project, true
-	}
-	if entry, ok := c.sessionCache[path]; ok {
-		return entry.session.Project, true
-	}
-	return "", false
-}
-
 // Resolve resolves a session by filename ID. It tries the in-memory path index
 // first (O(1)) and falls back to a directory scan if the index is cold.
 // Parsed sessions are cached by modtime so repeated reads of unchanged files

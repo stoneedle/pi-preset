@@ -32,12 +32,12 @@ make e2e    # Playwright E2E; needs `make e2e-setup` once. Not in test/check
 - **Frontend:** tests next to source (`foo.js` → `foo.test.js`); DOM helpers take `{ documentImpl, windowImpl }` for DI.
 - **Lint/format (frontend):** ESLint (`eslint-plugin-svelte`) + Prettier, config in `web/`. `make check` runs `frontend-lint` + `frontend-format-check`. Fix locally with `cd web && npm run format` (auto-format) and `npm run lint`. Style is 2-space indent, single quotes (enforced by Prettier).
 - **E2E:** lives in `e2e/` (Playwright, built binary across desktop/mobile/iPad, stub `pi`). See `docs/dev/e2e-testing.md`.
-- **Always `make build`, never `go build` alone** — `//go:embed` needs `web/dist` + `internal/ui/embedded/export/export.js` from the frontend build.
+- **Always `make build`, never `go build` alone** — `//go:embed` needs the current `web/dist` from the frontend build.
 
 ## Critical Rules
 
-1. **Live app and export are separate renders.** Live = Svelte SPA via `internal/ui/embedded/app.html` (`spa_page.go`). Export/share = static snapshot via `internal/ui/embedded/share-session.html` (`export.go`), built from `web/src/export/export-entry.js` which reuses the live `web/src/session/` modules. Never leak live-only chrome (SPA scripts, SSE, chat) into the export.
-2. **Native session names have one owner.** `pi-title-glyphs` owns automatic naming. Active browser renames go to its authenticated per-session owner; inactive renames append native `session_info` metadata with entry IDs and parent links. Conversation entries come from the `pi --mode rpc` worker.
+1. **One mobile interface.** `RemoteApp.svelte` renders the session list and conversation. The HTML shell contains no conversation data. Session windows, folded bodies, images, and runtime state have separate HTTP responsibilities; there is no workspace, export, or alternate interface mode.
+2. **Native Pi owns execution and names.** `pi-title-glyphs` owns automatic naming; the browser displays native names. Active controls go to the authenticated in-process `pi-remote` owner. Only explicit continue/new-session actions may create a background RPC worker.
 3. **One worker per session.** Reused; crashed = evicted + replaced; idle reaped after 10 min.
 4. **Icons:** Lucide only, via `web/src/shared/icons.js` — no hand-drawn SVG or unicode glyphs.
 5. **i18n:** user-facing strings go through `t()` from `web/src/shared/i18n.js`. Edit **only** `web/src/shared/locales/en.js` — it is the source of truth; add/change keys there. Never hand-write the other locale files (`de.js`, `es.js`, …); they are machine-drafted by translating `en.js` via `pi`, the same English-source-only approach as the localized docs (see [Localized docs](#localized-docs)). Session content is never translated.
@@ -47,3 +47,17 @@ make e2e    # Playwright E2E; needs `make e2e-setup` once. Not in test/check
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, maps, and implementation tickets live in this fork's GitHub Issues. Read `docs/agents/issue-tracker.md` before tracker operations.
+
+### Triage labels
+
+Use the five default triage roles. Read `docs/agents/triage-labels.md` before triaging or changing triage labels.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` and `docs/adr/`, created only when needed. Read `docs/agents/domain.md` before domain exploration or modeling.

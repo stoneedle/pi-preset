@@ -29,40 +29,22 @@ type summaryLine struct {
 	Name      string      `json:"name"`
 	CWD       string      `json:"cwd"`
 	ID        string      `json:"id"`
-	Provider  string      `json:"provider"`
-	ModelID   string      `json:"modelId"`
 	Message   *summaryMsg `json:"message"`
 }
 
 type summaryMsg struct {
-	Role     string          `json:"role"`
-	Provider string          `json:"provider"`
-	Model    string          `json:"model"`
-	Content  json.RawMessage `json:"content"`
-	Usage    summaryUsage    `json:"usage"`
-}
-
-type summaryUsage struct {
-	TotalTokens float64     `json:"totalTokens"`
-	Cost        summaryCost `json:"cost"`
-}
-
-type summaryCost struct {
-	Total float64 `json:"total"`
+	Role       string          `json:"role"`
+	StopReason string          `json:"stopReason"`
+	Content    json.RawMessage `json:"content"`
 }
 
 type SessionSummary struct {
 	ID                 string
 	SessionUUID        string
-	Filename           string
 	Project            string
 	LastActivity       string
 	Name               string
-	MessageCount       int
-	TokenTotal         int
-	CostTotal          float64
-	Model              string
-	ModelProvider      string
+	LastReplyID        string
 	ChatAvailable      bool
 	ChatDisabledReason string
 }
@@ -71,6 +53,17 @@ type Session struct {
 	SessionSummary
 	Header  map[string]any
 	Entries []map[string]any
+}
+
+func isAssistantReply(role, reason any) bool {
+	if role != "assistant" {
+		return false
+	}
+	switch reason {
+	case "stop", "length", "error", "aborted":
+		return true
+	}
+	return false
 }
 
 func SortSummariesByActivity(s []SessionSummary) {
@@ -107,65 +100,13 @@ func SortSummariesByActivity(s []SessionSummary) {
 	}
 }
 
-// SortSummariesByProjectActivity makes project groups contiguous. Projects are
-// ordered by their newest session activity; sessions within each project are
-// ordered newest-first.
-func SortSummariesByProjectActivity(s []SessionSummary) {
-	type projectGroup struct {
-		project string
-		items   []SessionSummary
-		latest  time.Time
-		valid   bool
-		index   int
-	}
-
-	groups := make([]*projectGroup, 0)
-	byProject := make(map[string]*projectGroup)
-	for _, summary := range s {
-		project := summary.Project
-		group := byProject[project]
-		if group == nil {
-			group = &projectGroup{project: project, index: len(groups)}
-			byProject[project] = group
-			groups = append(groups, group)
-		}
-		group.items = append(group.items, summary)
-		if activity, err := time.Parse(time.RFC3339, summary.LastActivity); err == nil {
-			if !group.valid || activity.After(group.latest) {
-				group.latest = activity
-				group.valid = true
-			}
-		}
-	}
-
-	for _, group := range groups {
-		SortSummariesByActivity(group.items)
-	}
-
-	sort.Slice(groups, func(i, j int) bool {
-		if groups[i].valid != groups[j].valid {
-			return groups[i].valid
-		}
-		if !groups[i].latest.Equal(groups[j].latest) {
-			return groups[i].latest.After(groups[j].latest)
-		}
-		return groups[i].index < groups[j].index
-	})
-
-	out := s[:0]
-	for _, group := range groups {
-		out = append(out, group.items...)
-	}
-}
-
-const chatDisabledMissingCwd = "This session can be viewed, but chat is disabled because its working directory no longer exists."
+const chatDisabledCWD = "This session is view-only because its working directory is unavailable."
 
 func newSessionSummary(dirName, fileName string) SessionSummary {
 	return SessionSummary{
-		ID:            fileName,
-		Filename:      fileName,
-		Project:       cleanProjectName(dirName),
-		ChatAvailable: true,
+		ID:                 fileName,
+		Project:            cleanProjectName(dirName),
+		ChatDisabledReason: chatDisabledCWD,
 	}
 }
 
@@ -194,9 +135,9 @@ func applySummaryContext(s *SessionSummary, path, fileName, sessionInfoName, hea
 
 	if headerCwd != "" {
 		s.Project = headerCwd
-		if _, err := os.Stat(headerCwd); err != nil {
-			s.ChatAvailable = false
-			s.ChatDisabledReason = chatDisabledMissingCwd
+		if info, err := os.Stat(headerCwd); err == nil && info.IsDir() {
+			s.ChatAvailable = true
+			s.ChatDisabledReason = ""
 		}
 	}
 }
@@ -248,23 +189,11 @@ func ParseSummary(path, dirName, fileName string) (SessionSummary, error) {
 				continue
 			}
 			msg := raw.Message
-			s.MessageCount++
-			s.TokenTotal += int(msg.Usage.TotalTokens)
-			s.CostTotal += msg.Usage.Cost.Total
-			if msg.Model != "" {
-				s.Model = msg.Model
-				s.ModelProvider = msg.Provider
+			if isAssistantReply(msg.Role, msg.StopReason) {
+				s.LastReplyID = raw.ID
 			}
 			if firstUserText == "" && msg.Role == "user" {
 				firstUserText = extractRawText(msg.Content)
-			}
-		case "model_change":
-			if raw.Timestamp != "" {
-				s.LastActivity = raw.Timestamp
-			}
-			if raw.ModelID != "" {
-				s.Model = raw.ModelID
-				s.ModelProvider = raw.Provider
 			}
 		default:
 			if raw.Timestamp != "" {
@@ -339,146 +268,6 @@ func truncate(s string, n int) string {
 	return string(runes[:n]) + "…"
 }
 
-var ErrEmptySessionName = errors.New("session name is empty")
-var ErrSessionEntryNotFound = errors.New("session entry not found")
-
-func loadEntriesFromFile(path string) ([]map[string]any, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	entries := make([]map[string]any, 0)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, scanInitialBufferBytes), maxScanLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func LabelSessionEntry(path, targetID, label string, now func() time.Time) error {
-	targetID = strings.TrimSpace(targetID)
-	if targetID == "" {
-		return ErrSessionEntryNotFound
-	}
-	label = strings.TrimSpace(label)
-	if now == nil {
-		now = time.Now
-	}
-
-	entries, err := loadEntriesFromFile(path)
-	if err != nil {
-		return err
-	}
-	ids := make(map[string]struct{}, len(entries))
-	var parentID any
-	for _, entry := range entries {
-		id, _ := entry["id"].(string)
-		if id == "" {
-			continue
-		}
-		ids[id] = struct{}{}
-		parentID = id
-	}
-	if _, ok := ids[targetID]; !ok {
-		return ErrSessionEntryNotFound
-	}
-
-	entryID, err := randomEntryID()
-	if err != nil {
-		return err
-	}
-	entry := map[string]any{
-		"type":      "label",
-		"id":        entryID,
-		"parentId":  parentID,
-		"timestamp": now().UTC().Format(time.RFC3339Nano),
-		"targetId":  targetID,
-	}
-	if label != "" {
-		entry["label"] = label
-	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(append(data, '\n'))
-	return err
-}
-
-// RenameSession appends native session_info metadata to an inactive session.
-func RenameSession(path, name string, now func() time.Time) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ErrEmptySessionName
-	}
-	if now == nil {
-		now = time.Now
-	}
-
-	entries, err := loadEntriesFromFile(path)
-	if err != nil {
-		return err
-	}
-	var parentID any
-	for _, entry := range entries {
-		if entry["type"] == "session" {
-			continue
-		}
-		if id, _ := entry["id"].(string); id != "" {
-			parentID = id
-		}
-	}
-	id, err := randomEntryID()
-	if err != nil {
-		return err
-	}
-	entry := struct {
-		Type      string `json:"type"`
-		ID        string `json:"id"`
-		ParentID  any    `json:"parentId"`
-		Timestamp string `json:"timestamp"`
-		Name      string `json:"name"`
-	}{
-		Type:      "session_info",
-		ID:        id,
-		ParentID:  parentID,
-		Timestamp: now().UTC().Format(time.RFC3339Nano),
-		Name:      name,
-	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(append(data, '\n'))
-	return err
-}
-
 // ParseFile parses path in a single pass, collecting both the SessionSummary
 // fields and the full Entries slice. This avoids the double-read that would
 // result from calling ParseSummary followed by os.ReadFile.
@@ -541,33 +330,13 @@ func ParseFile(path, dirName, fileName string) (Session, error) {
 			if !ok {
 				continue
 			}
-			s.MessageCount++
-			if model, _ := msg["model"].(string); model != "" {
-				s.Model = model
-				s.ModelProvider, _ = msg["provider"].(string)
-			}
-			if usage, ok := msg["usage"].(map[string]any); ok {
-				if t, ok := usage["totalTokens"].(float64); ok {
-					s.TokenTotal += int(t)
-				}
-				if cost, ok := usage["cost"].(map[string]any); ok {
-					if total, ok := cost["total"].(float64); ok {
-						s.CostTotal += total
-					}
-				}
+			if isAssistantReply(msg["role"], msg["stopReason"]) {
+				s.LastReplyID, _ = raw["id"].(string)
 			}
 			if firstUserText == "" {
 				if role, _ := msg["role"].(string); role == "user" {
 					firstUserText = extractMessageText(msg["content"])
 				}
-			}
-		case "model_change":
-			if ts, ok := raw["timestamp"].(string); ok {
-				s.LastActivity = ts
-			}
-			if model, _ := raw["modelId"].(string); model != "" {
-				s.Model = model
-				s.ModelProvider, _ = raw["provider"].(string)
 			}
 		default:
 			if ts, ok := raw["timestamp"].(string); ok {
@@ -643,11 +412,8 @@ func EncodeProjectName(path string) string {
 	return "--" + s + "--"
 }
 
-// DecodeProjectName is the best-effort inverse of EncodeProjectName, used only
-// when no session header cwd is available. It accepts every encoding pi-web has
-// written: pi's native dash encoding and pi-web's older escape encoding
-// (__ → _, _- → /). Native names are ambiguous, so the header cwd wins when it
-// exists.
+// DecodeProjectName is the lossy inverse of Pi's native encoding, used only
+// when a session has no authoritative header cwd.
 func DecodeProjectName(dirName string) string {
 	s := strings.TrimPrefix(dirName, "--")
 	s = strings.TrimSuffix(s, "--")
@@ -661,17 +427,7 @@ func DecodeProjectName(dirName string) string {
 	return s
 }
 
-// decodeProjectBody decodes the content between the "--" wrappers. The old
-// pi-web escape encoding is tried first when its markers are present; otherwise
-// every - was a separator (pi's native encoding and the pre-escape legacy
-// encoding, which are identical).
 func decodeProjectBody(s string) string {
-	if strings.Contains(s, "_-") || strings.Contains(s, "__") {
-		// Escape-based encoding. Order: unescape / first, then _.
-		s = strings.ReplaceAll(s, "_-", "/")
-		s = strings.ReplaceAll(s, "__", "_")
-		return s
-	}
 	return strings.ReplaceAll(s, "-", "/")
 }
 
@@ -778,251 +534,42 @@ func sessionHeaderCWD(path string) string {
 	return ""
 }
 
-type InitialSettings struct {
-	ModelProvider string
-	ModelID       string
-	ThinkingLevel string
-}
-
-func CreateSessionFileWithSettings(sessionsDir, path string, settings InitialSettings) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", errors.New("path is required")
-	}
-	if strings.HasPrefix(path, "~/") {
+func CreateSessionFile(sessionsDir, directory string) (string, error) {
+	directory = strings.TrimSpace(directory)
+	if strings.HasPrefix(directory, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		path = filepath.Join(home, path[2:])
+		directory = filepath.Join(home, directory[2:])
 	}
-	path = filepath.Clean(path)
-	if !filepath.IsAbs(path) {
-		return "", errors.New("path must be absolute")
+	if !filepath.IsAbs(directory) {
+		return "", errors.New("working directory must be absolute")
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.MkdirAll(path, 0755); err != nil {
-			return "", err
-		}
-	}
-
-	projectDir := filepath.Join(sessionsDir, EncodeProjectName(path))
-	rel, err := filepath.Rel(sessionsDir, projectDir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("invalid path")
-	}
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
+	info, err := os.Stat(directory)
+	if err != nil {
 		return "", err
 	}
-
+	if !info.IsDir() {
+		return "", errors.New("working directory is not a directory")
+	}
+	project := filepath.Join(sessionsDir, EncodeProjectName(filepath.Clean(directory)))
+	if err := os.MkdirAll(project, 0755); err != nil {
+		return "", err
+	}
 	id, err := randomUUID()
 	if err != nil {
 		return "", err
 	}
 	now := time.Now().UTC()
-	rfc3339 := now.Format(time.RFC3339Nano)
 	filename := now.Format("2006-01-02T15-04-05.000Z") + "_" + id + ".jsonl"
-	filePath := filepath.Join(projectDir, filename)
-
-	header := map[string]any{
-		"type":      "session",
-		"version":   3,
-		"id":        id,
-		"timestamp": rfc3339,
-		"cwd":       path,
-	}
-	data, err := json.Marshal(header)
+	header, err := json.Marshal(map[string]any{
+		"type": "session", "version": 3, "id": id, "timestamp": now.Format(time.RFC3339Nano), "cwd": filepath.Clean(directory),
+	})
 	if err != nil {
 		return "", err
 	}
-	var fileData []byte
-	fileData = append(fileData, data...)
-	fileData = append(fileData, '\n')
-	var parentID any
-	if settings.ModelProvider != "" && settings.ModelID != "" {
-		entryID, err := randomEntryID()
-		if err != nil {
-			return "", err
-		}
-		line, err := json.Marshal(map[string]any{
-			"type":      "model_change",
-			"id":        entryID,
-			"parentId":  parentID,
-			"timestamp": rfc3339,
-			"provider":  settings.ModelProvider,
-			"modelId":   settings.ModelID,
-			"implicit":  true,
-		})
-		if err != nil {
-			return "", err
-		}
-		fileData = append(fileData, line...)
-		fileData = append(fileData, '\n')
-		parentID = entryID
-	}
-	if settings.ThinkingLevel != "" {
-		entryID, err := randomEntryID()
-		if err != nil {
-			return "", err
-		}
-		line, err := json.Marshal(map[string]any{
-			"type":          "thinking_level_change",
-			"id":            entryID,
-			"parentId":      parentID,
-			"timestamp":     rfc3339,
-			"thinkingLevel": settings.ThinkingLevel,
-			"implicit":      true,
-		})
-		if err != nil {
-			return "", err
-		}
-		fileData = append(fileData, line...)
-		fileData = append(fileData, '\n')
-	}
-	if err := os.WriteFile(filePath, fileData, 0644); err != nil {
-		return "", err
-	}
-	return filename, nil
-}
-
-// ForkSessionFile creates a new session file by copying entries from sourcePath
-// up to and including forkEntryID. The new session is placed in the same
-// project directory as the source and includes a parentSession reference.
-func ForkSessionFile(sessionsDir, sourcePath, forkEntryID string, now func() time.Time) (string, error) {
-	return createBranchSessionFile(sessionsDir, sourcePath, forkEntryID, now, true)
-}
-
-// CloneSessionFile creates a new session file by copying all entries on the
-// active branch from sourcePath (from leafEntryID back to root). The new
-// session is placed in the same project directory.
-func CloneSessionFile(sessionsDir, sourcePath, leafEntryID string, now func() time.Time) (string, error) {
-	return createBranchSessionFile(sessionsDir, sourcePath, leafEntryID, now, false)
-}
-
-func createBranchSessionFile(sessionsDir, sourcePath, targetEntryID string, now func() time.Time, isFork bool) (string, error) {
-	if now == nil {
-		now = time.Now
-	}
-
-	f, err := os.Open(sourcePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	var header map[string]any
-	var entries []map[string]any
-	seenSessionHeaders := make(map[string]bool)
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, scanInitialBufferBytes), maxScanLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			continue
-		}
-		if raw["type"] == "session" {
-			key := sessionHeaderKey(raw)
-			if key != "" && seenSessionHeaders[key] {
-				continue
-			}
-			if key != "" {
-				seenSessionHeaders[key] = true
-			}
-			header = raw
-			continue
-		}
-		entries = append(entries, raw)
-	}
-	if err := scanner.Err(); err != nil {
-		return "", err
-	}
-
-	cwd, _ := header["cwd"].(string)
-	if cwd == "" {
-		return "", errors.New("source session missing cwd")
-	}
-
-	// Build by-id map
-	byID := make(map[string]map[string]any)
-	for _, e := range entries {
-		if id, ok := e["id"].(string); ok && id != "" {
-			byID[id] = e
-		}
-	}
-
-	// Walk from target back to root
-	var pathEntries []map[string]any
-	currentID := targetEntryID
-	for currentID != "" {
-		entry, ok := byID[currentID]
-		if !ok {
-			break
-		}
-		pathEntries = append(pathEntries, entry)
-		parentID, _ := entry["parentId"].(string)
-		if parentID == "" || parentID == currentID {
-			break
-		}
-		currentID = parentID
-	}
-
-	if len(pathEntries) == 0 {
-		return "", errors.New("target entry not found")
-	}
-
-	// Reverse to chronological order (root → target)
-	for i, j := 0, len(pathEntries)-1; i < j; i, j = i+1, j-1 {
-		pathEntries[i], pathEntries[j] = pathEntries[j], pathEntries[i]
-	}
-
-	projectDir := filepath.Join(sessionsDir, EncodeProjectName(cwd))
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		return "", err
-	}
-
-	id, err := randomUUID()
-	if err != nil {
-		return "", err
-	}
-	timestamp := now().UTC().Format("2006-01-02T15-04-05.000Z")
-	filename := timestamp + "_" + id + ".jsonl"
-	filePath := filepath.Join(projectDir, filename)
-
-	newHeader := map[string]any{
-		"type":          "session",
-		"version":       3,
-		"id":            id,
-		"timestamp":     now().UTC().Format(time.RFC3339Nano),
-		"cwd":           cwd,
-		"parentSession": sourcePath,
-	}
-	if isFork {
-		newHeader["forkedFrom"] = targetEntryID
-	}
-
-	var fileData []byte
-	hdata, err := json.Marshal(newHeader)
-	if err != nil {
-		return "", err
-	}
-	fileData = append(fileData, hdata...)
-	fileData = append(fileData, '\n')
-
-	for _, entry := range pathEntries {
-		line, err := json.Marshal(entry)
-		if err != nil {
-			continue
-		}
-		fileData = append(fileData, line...)
-		fileData = append(fileData, '\n')
-	}
-
-	if err := os.WriteFile(filePath, fileData, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, filename), append(header, '\n'), 0644); err != nil {
 		return "", err
 	}
 	return filename, nil
@@ -1036,12 +583,4 @@ func randomUUID() (string, error) {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
-}
-
-func randomEntryID() (string, error) {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", b), nil
 }

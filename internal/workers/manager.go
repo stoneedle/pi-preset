@@ -34,27 +34,6 @@ type SlashCommand struct {
 	Source      string `json:"source"`
 }
 
-// WorkerSnapshot is a point-in-time view of a single live worker for the
-// metrics dashboard. PID/UptimeS/IdleForS are only populated for workers that
-// implement the optional inspector interface (real pi processes); test fakes
-// that don't will report zero values for those fields.
-type WorkerSnapshot struct {
-	SessionID string  `json:"session_id"`
-	PID       int     `json:"pid"`
-	State     State   `json:"state"`
-	Model     string  `json:"model,omitempty"`
-	UptimeS   float64 `json:"uptime_s"`
-	IdleForS  float64 `json:"idle_for_s"`
-}
-
-// inspector is the optional interface a worker implements to expose
-// process-level details for the metrics dashboard.
-type inspector interface {
-	PID() int
-	StartedAt() time.Time
-	IdleSince(now time.Time) time.Duration
-}
-
 type ChatWorker interface {
 	Prompt(ctx context.Context, chat chat.Request) error
 	SetModel(ctx context.Context, provider, modelID string) error
@@ -82,6 +61,7 @@ type Manager struct {
 	// making status polls fire a spurious idle transition.
 	pendingSends map[string]int
 
+	canReap    func(string) bool
 	idleTTL    time.Duration
 	reaperStop chan struct{}
 	reaperDone chan struct{}
@@ -97,19 +77,20 @@ type createCall struct {
 // The metrics dashboard uses it as the threshold for flagging "zombie" workers.
 const DefaultIdleTTL = 10 * time.Minute
 
-func NewManager(factory Factory) *Manager {
-	return NewManagerWithTTL(factory, DefaultIdleTTL)
+func NewManager(factory Factory, canReap func(string) bool) *Manager {
+	return NewManagerWithTTL(factory, DefaultIdleTTL, canReap)
 }
 
 // NewManagerWithTTL is the same as NewManager but lets callers override the
 // idle TTL. A non-positive ttl disables reaping.
-func NewManagerWithTTL(factory Factory, ttl time.Duration) *Manager {
+func NewManagerWithTTL(factory Factory, ttl time.Duration, canReap func(string) bool) *Manager {
 	m := &Manager{
 		workers:      make(map[string]ChatWorker),
 		creating:     make(map[string]*createCall),
 		factory:      factory,
 		pendingSends: make(map[string]int),
 		idleTTL:      ttl,
+		canReap:      canReap,
 		reaperStop:   make(chan struct{}),
 		reaperDone:   make(chan struct{}),
 	}
@@ -141,24 +122,27 @@ func (m *Manager) reapLoop() {
 
 func (m *Manager) reapOnce(now time.Time) {
 	m.mu.Lock()
-	var dead []ChatWorker
-	for id, w := range m.workers {
-		reaper, ok := w.(idleReportable)
-		if !ok {
-			continue
-		}
-		if w.Status().State != WorkerStateIdle {
-			continue
-		}
-		if reaper.IdleSince(now) <= m.idleTTL {
-			continue
-		}
-		dead = append(dead, w)
-		delete(m.workers, id)
+	candidates := make(map[string]ChatWorker, len(m.workers))
+	for id, worker := range m.workers {
+		candidates[id] = worker
 	}
 	m.mu.Unlock()
-	for _, w := range dead {
-		_ = w.Close()
+	for id, worker := range candidates {
+		idle, ok := worker.(idleReportable)
+		if !ok || worker.Status().State != WorkerStateIdle || idle.IdleSince(now) <= m.idleTTL {
+			continue
+		}
+		if m.canReap != nil && !m.canReap(id) {
+			continue
+		}
+		m.mu.Lock()
+		if m.workers[id] != worker || m.pendingSends[id] > 0 || worker.Status().State != WorkerStateIdle || idle.IdleSince(now) <= m.idleTTL {
+			m.mu.Unlock()
+			continue
+		}
+		delete(m.workers, id)
+		m.mu.Unlock()
+		_ = worker.Close()
 	}
 }
 
@@ -183,31 +167,10 @@ func (m *Manager) Send(ctx context.Context, sessionID, sessionPath string, chat 
 	return worker.Prompt(ctx, chat)
 }
 
-// Snapshot returns a point-in-time view of every live worker, for the metrics
-// dashboard. It does not spawn workers and never blocks on the workers
-// themselves beyond reading their cached status.
-func (m *Manager) Snapshot() []WorkerSnapshot {
-	now := time.Now()
+func (m *Manager) HasWorker(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]WorkerSnapshot, 0, len(m.workers))
-	for id, w := range m.workers {
-		st := w.Status()
-		snap := WorkerSnapshot{
-			SessionID: id,
-			State:     st.State,
-			Model:     st.Model,
-		}
-		if ins, ok := w.(inspector); ok {
-			snap.PID = ins.PID()
-			if started := ins.StartedAt(); !started.IsZero() {
-				snap.UptimeS = now.Sub(started).Seconds()
-			}
-			snap.IdleForS = ins.IdleSince(now).Seconds()
-		}
-		out = append(out, snap)
-	}
-	return out
+	return m.workers[id] != nil
 }
 
 func (m *Manager) Status(sessionID string) WorkerStatus {

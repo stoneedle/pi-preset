@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -20,7 +19,6 @@ import (
 	"pi-web/internal/server"
 	"pi-web/internal/sessions"
 	"pi-web/internal/ui"
-	"pi-web/internal/updater"
 	"pi-web/internal/workers"
 	"pi-web/web"
 )
@@ -46,9 +44,6 @@ func Main(version string) {
 	developmentMode := os.Getenv(developmentEnvVar) == "1"
 
 	agentDir := agentdir.Path()
-	if err := seedSoundsDir(agentDir); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to seed sounds directory: %v\n", err)
-	}
 	sessionsDir := filepath.Join(agentDir, "sessions")
 	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "sessions directory not found: %s\n", sessionsDir)
@@ -71,32 +66,18 @@ func Main(version string) {
 		authMiddleware.AllowAnyHost()
 	}
 
-	versionChecker := updater.New(version)
-
 	var srv *server.Server
-	manager := workers.NewManager(func(sessionID, sessionPath string) (workers.ChatWorker, error) {
-		return rpc.NewPiWorkerWithStream(sessionPath, func(preview rpc.StreamPreview) {
-			if srv != nil {
-				srv.BroadcastChatPreview(sessionID, preview)
-			}
-		})
-	})
+	manager := workers.NewManager(func(_ string, sessionPath string) (workers.ChatWorker, error) {
+		return rpc.NewPiWorker(sessionPath)
+	}, func(id string) bool { return srv != nil && srv.RuntimeIdle(id) })
 	var srvErr error
 	srv, srvErr = server.New(server.Deps{
-		AgentDir:            agentDir,
-		SessionsDir:         sessionsDir,
-		Auth:                authMiddleware,
-		ChatSender:          manager,
-		Cache:               sessions.NewCache(),
-		RenderExportSession: ui.RenderExportSessionPage,
-		RenderAppShell:      ui.RenderAppShell,
-		Models: func(ctx context.Context) (json.RawMessage, error) {
-			return defaultModelsCache.get(ctx)
-		},
-		Updater:               versionChecker,
-		RunInstall:            runInstall,
-		RunRestart:            runRestart,
-		DisableBackgroundJobs: developmentMode,
+		AgentDir:       agentDir,
+		SessionsDir:    sessionsDir,
+		Auth:           authMiddleware,
+		ChatSender:     manager,
+		Cache:          sessions.NewCache(),
+		RenderAppShell: ui.RenderAppShell,
 	})
 	if srvErr != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize server: %v\n", srvErr)
@@ -113,7 +94,7 @@ func Main(version string) {
 	if scripts, err := frontend.LoadScripts(dfs, frontend.AppEntry); err == nil {
 		for _, script := range scripts {
 			if script.Entry == frontend.AppEntry {
-				ui.SetAppScriptPath(script.Path)
+				ui.SetAppAssets(script.Path, script.CSS)
 			}
 			mux.HandleFunc(script.Path, frontend.ServeJS(script.JS, true))
 		}
@@ -158,7 +139,7 @@ func Main(version string) {
 	}
 	fmt.Printf("Serving from: %s\n", sessionsDir)
 	if developmentMode {
-		fmt.Println("Development mode: autonomous jobs disabled")
+		fmt.Println("Development state file enabled")
 	}
 	if authMiddleware.Enabled() {
 		fmt.Println("Auth: enabled (set PI_WEB_TOKEN to require token)")
@@ -188,11 +169,9 @@ func Main(version string) {
 		}()
 	}
 
-	warmModelsCache()
-
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           server.Compress(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		// WriteTimeout intentionally 0 — SSE streams are long-lived.
@@ -206,16 +185,10 @@ func Main(version string) {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
-	defer cancelCtx()
-
-	go versionChecker.Start(ctx)
-
 	shutdownCode := make(chan int, 1)
 	go func() {
 		sig := <-signals
 		fmt.Fprintf(os.Stderr, "shutting down: received %s\n", sig)
-		cancelCtx()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)

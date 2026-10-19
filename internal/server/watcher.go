@@ -75,13 +75,10 @@ func (s *Server) recordModTime(sessID string, mod time.Time) {
 	lastMod, known := s.fileMod[sessID]
 	s.fileMod[sessID] = mod
 	s.fileModMu.Unlock()
-	if known && mod.After(lastMod) {
+	if !known || !mod.Equal(lastMod) {
 		s.broadcast(sessID, "reload")
 		s.broadcast(globalSessID, "reload")
 	}
-	// Always recompute status for this session — the running state depends
-	// on the live mtime regardless of whether reload was emitted (e.g. the
-	// first observation of a brand-new session file).
 	s.recomputeAndBroadcastStatus(sessID)
 }
 
@@ -151,6 +148,12 @@ func (s *Server) handleFsEvent(w *fsnotify.Watcher, ev fsnotify.Event, deb *debo
 	if ev.Op&fsnotify.Create != 0 {
 		if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
 			_ = w.Add(ev.Name)
+			files, _ := os.ReadDir(ev.Name)
+			for _, file := range files {
+				if !file.IsDir() && strings.HasSuffix(file.Name(), ".jsonl") {
+					deb.schedule(filepath.Join(ev.Name, file.Name()))
+				}
+			}
 			return
 		}
 	}
@@ -162,16 +165,6 @@ func (s *Server) handleFsEvent(w *fsnotify.Watcher, ev fsnotify.Event, deb *debo
 	}
 	if ev.Op&fsnotify.Create != 0 {
 		s.broadcast(globalSessID, "new-session")
-		// Mark newly-created session files as known before the debounced stat.
-		// Otherwise a user can open a just-created empty session, send the first
-		// chat before the create event is recorded, and the first write is treated
-		// as an initial observation instead of a change, so the session page never
-		// reloads with the new messages.
-		s.fileModMu.Lock()
-		if _, known := s.fileMod[filepath.Base(ev.Name)]; !known {
-			s.fileMod[filepath.Base(ev.Name)] = time.Time{}
-		}
-		s.fileModMu.Unlock()
 	}
 	deb.schedule(ev.Name)
 }

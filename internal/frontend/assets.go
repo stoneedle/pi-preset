@@ -6,27 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"pi-web/internal/render"
 )
 
-const (
-	AppEntry = "src/main.js"
-
-	// Backward-compatible unexported alias used by package tests.
-	appEntry = AppEntry
-)
+const AppEntry = "src/main.js"
 
 // Script is one Vite-built JavaScript entrypoint ready to be served by Go.
 type Script struct {
 	Entry string
 	Path  string
 	JS    string
+	CSS   []string
 }
-
-type frontendScript = Script
 
 func loadManifest(distFS fs.FS) (render.Manifest, error) {
 	data, err := fs.ReadFile(distFS, ".vite/manifest.json")
@@ -57,27 +53,30 @@ func validateManifestEntry(manifest render.Manifest, entryName string) (render.M
 	return entry, nil
 }
 
-func loadFrontendScript(distFS fs.FS, manifest render.Manifest, entryName string) (frontendScript, error) {
+func loadFrontendScript(distFS fs.FS, manifest render.Manifest, entryName string) (Script, error) {
 	entry, err := validateManifestEntry(manifest, entryName)
 	if err != nil {
-		return frontendScript{}, err
+		return Script{}, err
 	}
 	scriptPath, ok := manifest.ScriptPath(entryName)
 	if !ok {
-		return frontendScript{}, fmt.Errorf("manifest script path not found: %s", entryName)
+		return Script{}, fmt.Errorf("manifest script path not found: %s", entryName)
 	}
 	content, err := fs.ReadFile(distFS, entry.File)
 	if err != nil {
-		return frontendScript{}, fmt.Errorf("read %s js: %w", entryName, err)
+		return Script{}, fmt.Errorf("read %s js: %w", entryName, err)
 	}
-	return frontendScript{Entry: entryName, Path: scriptPath, JS: string(content)}, nil
+	css := make([]string, 0, len(entry.CSS))
+	for _, path := range entry.CSS {
+		if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+			return Script{}, fmt.Errorf("invalid CSS path")
+		}
+		css = append(css, "/static/"+path)
+	}
+	return Script{Entry: entryName, Path: scriptPath, JS: string(content), CSS: css}, nil
 }
 
 func LoadScripts(distFS fs.FS, entryNames ...string) ([]Script, error) {
-	return loadFrontendScripts(distFS, entryNames...)
-}
-
-func loadFrontendScripts(distFS fs.FS, entryNames ...string) ([]Script, error) {
 	manifest, err := loadManifest(distFS)
 	if err != nil {
 		return nil, err
@@ -109,8 +108,7 @@ type staticAsset struct {
 	compressed []byte
 }
 
-// serveStaticAssets serves hashed JS chunks (lazy hljs chunk, rolldown
-// runtime) from the embed FS. All assets are pre-compressed at startup.
+// ServeStaticAssets serves content-hashed assets, pre-compressed at startup.
 func ServeStaticAssets(dfs fs.FS) http.HandlerFunc {
 	// Pre-load and compress all assets at startup.
 	cache := make(map[string]staticAsset)
@@ -137,7 +135,12 @@ func ServeStaticAssets(dfs fs.FS) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		contentType := mime.TypeByExtension(filepath.Ext(name))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Vary", "Accept-Encoding")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			w.Header().Set("Content-Encoding", "gzip")

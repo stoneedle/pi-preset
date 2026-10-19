@@ -4,157 +4,67 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
-
-	"pi-web/internal/sessions"
-	"pi-web/internal/workers"
 )
 
-func TestComputeRunningStatusFromStatusFile(t *testing.T) {
-	root := t.TempDir()
-	sessionsDir := filepath.Join(root, "sessions")
-	statusDir := filepath.Join(root, "session-status")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+func writeHeartbeat(t *testing.T, s *Server, id, pid, state string, updated time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(s.sessionStatusDir(), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(statusDir, 0o755); err != nil {
+	data, _ := json.Marshal(sessionStatusFile{ID: id, State: state, UpdatedAt: updated.Format(time.RFC3339Nano)})
+	if err := os.WriteFile(filepath.Join(s.sessionStatusDir(), id+"."+pid+".json"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	payload, _ := json.Marshal(sessionStatusFile{State: "running", UpdatedAt: time.Now().UTC().Format(time.RFC3339)})
-	if err := os.WriteFile(filepath.Join(statusDir, "session.jsonl"), payload, 0o644); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	s := &Server{agentDir: root, sessionsDir: sessionsDir, chatSender: &fakeSender{}}
-	if !s.computeRunningStatus("session.jsonl") {
-		t.Fatalf("expected running=true from session-status file")
+func TestRuntimeStateUsesRealHeartbeatNotConversationWrites(t *testing.T) {
+	for _, state := range []string{"running", "background", "needs-you", "idle"} {
+		t.Run(state, func(t *testing.T) {
+			now := time.Now()
+			s := &Server{agentDir: t.TempDir(), now: func() time.Time { return now }}
+			writeHeartbeat(t, s, "session.jsonl", "123", state, now)
+			if got := s.sessionState("session.jsonl"); got != state {
+				t.Fatalf("state=%s want %s", got, state)
+			}
+		})
+	}
+	s := &Server{agentDir: t.TempDir(), now: time.Now, fileMod: map[string]time.Time{"session.jsonl": time.Now()}}
+	if got := s.sessionState("session.jsonl"); got != "unknown" {
+		t.Fatalf("file write guessed activity: %s", got)
+	}
+	writeHeartbeat(t, s, "session.jsonl", "123", "running", time.Now().Add(-time.Minute))
+	if got := s.sessionState("session.jsonl"); got != "unknown" {
+		t.Fatalf("stale state became %s", got)
+	}
+	writeHeartbeat(t, s, "session.jsonl", "123", "running", time.Now())
+	writeHeartbeat(t, s, "session.jsonl", "456", "idle", time.Now())
+	if got := s.sessionState("session.jsonl"); got != "unknown" {
+		t.Fatalf("ambiguous owners became %s", got)
 	}
 }
 
-func TestComputeRunningStatusFromChatSender(t *testing.T) {
-	s := &Server{
-		sessionsDir: t.TempDir(),
-		chatSender:  &fakeSender{status: workers.WorkerStatus{State: workers.WorkerStateRunning}},
+func TestHeartbeatExpiryBroadcastsUnknownNotCompletion(t *testing.T) {
+	now := time.Now()
+	s := &Server{agentDir: t.TempDir(), now: func() time.Time { return now }}
+	writeHeartbeat(t, s, "session.jsonl", "123", "running", now)
+	client := s.addClient(globalSessID)
+	defer s.removeClient(client)
+	s.sweepStatusOnce()
+	first := <-client.ch
+	if !strings.Contains(first, `"state":"running"`) {
+		t.Fatalf("unexpected start: %s", first)
 	}
-	if !s.computeRunningStatus("session.jsonl") {
-		t.Fatalf("expected running=true from chatSender")
-	}
-}
-
-func TestComputeRunningStatusFromRecentMtime(t *testing.T) {
-	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	s := &Server{
-		sessionsDir: t.TempDir(),
-		chatSender:  &fakeSender{},
-		fileMod:     map[string]time.Time{"session.jsonl": now.Add(-400 * time.Millisecond)},
-		now:         func() time.Time { return now },
-	}
-	if !s.computeRunningStatus("session.jsonl") {
-		t.Fatalf("expected running=true from recent mtime")
-	}
-}
-
-func TestComputeRunningStatusIdleByDefault(t *testing.T) {
-	s := &Server{sessionsDir: t.TempDir(), chatSender: &fakeSender{}, now: time.Now}
-	if s.computeRunningStatus("session.jsonl") {
-		t.Fatalf("expected running=false by default")
-	}
-}
-
-func TestComputeRunningStatusEmptyID(t *testing.T) {
-	s := &Server{sessionsDir: t.TempDir(), chatSender: &fakeSender{}}
-	if s.computeRunningStatus("") {
-		t.Fatalf("empty id must be idle")
-	}
-}
-
-func TestRunningStatusPayloadIncludesCachedProject(t *testing.T) {
-	sessionsDir := t.TempDir()
-	writeSessionWithCWD(t, filepath.Join(sessionsDir, "sub"), "a.jsonl", "/repo/pi-web")
-	cache := sessions.NewCache()
-	if _, err := cache.LoadAll(sessionsDir); err != nil {
-		t.Fatal(err)
-	}
-	s := &Server{cache: cache}
-
-	payload := s.runningStatusPayload("a.jsonl", true)
-	if payload["project"] != "/repo/pi-web" {
-		t.Fatalf("project = %v, want /repo/pi-web", payload["project"])
-	}
-}
-
-func TestRecomputeAndBroadcastStatusEmitsDeltaOnFlip(t *testing.T) {
-	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	s := &Server{
-		sessionsDir: t.TempDir(),
-		chatSender:  &fakeSender{},
-		clients:     make([]*sseClient, 0),
-		lastKnown:   make(map[string]struct{}),
-		fileMod:     map[string]time.Time{"a.jsonl": now.Add(-400 * time.Millisecond)},
-		now:         func() time.Time { return now },
-	}
-	c := s.addClient(globalSessID)
-	defer s.removeClient(c)
-
-	s.recomputeAndBroadcastStatus("a.jsonl")
-
-	want := "event: status-delta\ndata: {\"id\":\"a.jsonl\",\"running\":true}"
+	now = now.Add(time.Minute)
+	s.sweepStatusOnce()
 	select {
-	case msg := <-c.ch:
-		if msg != want {
-			t.Fatalf("msg = %q want %q", msg, want)
+	case message := <-client.ch:
+		if !strings.Contains(message, `"state":"unknown"`) {
+			t.Fatalf("expiry faked completion: %s", message)
 		}
 	case <-time.After(time.Second):
-		t.Fatalf("expected status-delta broadcast")
-	}
-}
-
-func TestRecomputeAndBroadcastStatusNoBroadcastWhenUnchanged(t *testing.T) {
-	s := &Server{
-		sessionsDir: t.TempDir(),
-		chatSender:  &fakeSender{},
-		clients:     make([]*sseClient, 0),
-		lastKnown:   make(map[string]struct{}),
-		now:         time.Now,
-	}
-	c := s.addClient(globalSessID)
-	defer s.removeClient(c)
-
-	// First call on an idle session: idle was never recorded, computeRunning
-	// returns false → was==false, now==false → no broadcast.
-	s.recomputeAndBroadcastStatus("a.jsonl")
-
-	select {
-	case msg := <-c.ch:
-		t.Fatalf("unexpected broadcast: %q", msg)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestRecomputeAndBroadcastStatusFlipsBackToIdle(t *testing.T) {
-	s := &Server{
-		sessionsDir: t.TempDir(),
-		chatSender:  &fakeSender{},
-		clients:     make([]*sseClient, 0),
-		lastKnown:   map[string]struct{}{"a.jsonl": {}},
-		now:         time.Now,
-	}
-	c := s.addClient(globalSessID)
-	defer s.removeClient(c)
-
-	s.recomputeAndBroadcastStatus("a.jsonl")
-
-	want := "event: status-delta\ndata: {\"id\":\"a.jsonl\",\"running\":false}"
-	select {
-	case msg := <-c.ch:
-		if msg != want {
-			t.Fatalf("msg = %q want %q", msg, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("expected idle delta")
-	}
-	if _, ok := s.lastKnown["a.jsonl"]; ok {
-		t.Fatalf("lastKnown should no longer contain a.jsonl")
+		t.Fatal("missing stale-state event")
 	}
 }

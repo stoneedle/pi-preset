@@ -1,4 +1,9 @@
 // Minimal mock of pi-coding-agent types used by the extension tests.
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+export function getAgentDir(): string {
+  return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
+}
 export interface ExtensionAPI {
   exec: (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
   setSessionName: (name: string) => void;
