@@ -3,7 +3,7 @@
   import { SvelteMap, SvelteURL, SvelteURLSearchParams } from 'svelte/reactivity';
   import { icon, ChevronDown, X } from '../shared/icons.js';
 
-  let { title } = $props();
+  let { title, subtitle = '' } = $props();
   const origin = window.location.origin;
   const hostname = window.location.host;
   const storageKey = 'pi-web:hosts';
@@ -129,7 +129,9 @@
 >
   <strong>{title}</strong>
   <small
-    ><span id="remote-current-host" title={hostname}>{hostname}</span>{@html icon(ChevronDown, {
+    ><span id="remote-current-host" title={hostname}
+      >{subtitle ? subtitle + ' · ' : ''}{hostname}</span
+    >{@html icon(ChevronDown, {
       size: 14,
     })}</small
   >
@@ -209,8 +211,8 @@
     color: var(--text);
     background: var(--surface);
     border: 1px solid var(--dim);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: 24px;
+    padding: 20px;
   }
   .host-dialog::backdrop {
     background: #0009;

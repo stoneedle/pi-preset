@@ -104,9 +104,12 @@ test('one real merged extension owns native controls, snapshots, branch results 
   assert.equal((await snapshot()).state, 'idle');
   assert.equal((await snapshot()).replyId, firstReply);
   assert.equal((await snapshot()).completed, true);
+  const firstCompletedAt = (await snapshot()).completedAt;
+  assert.ok(firstCompletedAt > 0, 'completion time comes from the successful native settle');
   assert.equal((await snapshot()).unread, true);
   assert.equal((await call('acknowledge', { replyId: firstReply })).status, 200);
   assert.equal((await snapshot()).unread, false);
+  assert.equal((await snapshot()).completedAt, firstCompletedAt, 'acknowledgement cannot reorder a session');
   for (const outcome of ['error', 'aborted']) {
     await session.extensionRunner!.emit({ type: 'agent_start' });
     manager.appendMessage({ role: 'assistant', content: [], api: 'test', model: 'test', provider: 'test', stopReason: outcome, timestamp: Date.now() } as any);
@@ -118,6 +121,7 @@ test('one real merged extension owns native controls, snapshots, branch results 
   manager.branch(firstReply);
   await session.extensionRunner!.emit({ type: 'session_tree', newLeafId: firstReply } as any);
   assert.equal((await snapshot()).outcome, 'stop', 'a later abort must not overwrite an earlier branch result outcome');
+  assert.equal((await snapshot()).completedAt, firstCompletedAt, 'branch navigation preserves the original completion time');
   manager.appendMessage({ role: 'user', content: 'Next', timestamp: Date.now() });
   await session.extensionRunner!.emit({ type: 'agent_start' });
   const secondReply = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Second result' }],

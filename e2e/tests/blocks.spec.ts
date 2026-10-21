@@ -225,7 +225,7 @@ test("signature-only thinking never creates an empty expandable row or message",
   const payload = await response.json();
   expect(
     payload.window.messages.every(
-      (message) => message.blocks.length > 0 || message.error,
+      (message: { blocks: unknown[]; error?: string }) => message.blocks.length > 0 || message.error,
     ),
   ).toBe(true);
   expect(JSON.stringify(payload)).not.toContain("opaque-provider-signature");

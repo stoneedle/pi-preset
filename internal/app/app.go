@@ -84,7 +84,6 @@ func Main(version string) {
 		os.Exit(1)
 	}
 
-	ui.SetThemeProvider(srv.ThemeSetting)
 	ui.SetFontProvider(srv.FontStyles)
 
 	mux := http.NewServeMux()

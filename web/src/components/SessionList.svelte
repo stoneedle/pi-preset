@@ -1,7 +1,9 @@
 <script>
   import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import { SvelteSet } from 'svelte/reactivity';
-  import { icon, Folder, ChevronRight } from '../shared/icons.js';
+  import { icon, Folder, ChevronRight, Search } from '../shared/icons.js';
   import { request, createRefreshCoordinator, createRuntimeStateStore } from '../remote-api.js';
   import { subscribeEvents } from '../remote-events.js';
   import { readView, rememberView } from '../remote-cache.js';
@@ -13,26 +15,53 @@
   let query = $state('');
   let connected = $state(false);
   let loading = $state(!cached);
-  let loadingMore = $state(false);
+  const loadingProjects = new SvelteSet();
+  let projectInfos = $state(cached?.projects || []);
+  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   let error = $state('');
   const collapsedProjects = new SvelteSet();
   const searchCollapsedProjects = new SvelteSet();
   const collapsed = $derived(query.trim() ? searchCollapsedProjects : collapsedProjects);
   const projects = $derived.by(() => {
     const groups = Object.create(null);
+    for (const info of projectInfos) groups[info.path] = { ...info, sessions: [] };
     for (const session of sessions) {
       const path = session.project || '';
-      if (!groups[path]) {
-        groups[path] = {
-          path,
-          name: path.split(/[\\/]/).filter(Boolean).at(-1) || path || '未知项目',
-          sessions: [],
-        };
-      }
+      if (!groups[path]) groups[path] = { path, count: 0, lastActivity: '', sessions: [] };
       groups[path].sessions.push(session);
     }
-    return Object.values(groups);
+    const result = Object.values(groups);
+    for (const project of result) {
+      const parts = project.path.split(/[\\\\/]/).filter(Boolean);
+      project.name = parts.at(-1) || project.path || '未知项目';
+      project.parentName = parts.at(-2) || '';
+      project.sessions.sort(
+        (a, b) => (b.sortTime || 0) - (a.sortTime || 0) || b.id.localeCompare(a.id),
+      );
+    }
+    for (const project of result)
+      project.duplicateName = result.some(
+        (other) => other.path !== project.path && other.name === project.name,
+      );
+    return result.sort(
+      (a, b) => collator.compare(a.name, b.name) || collator.compare(a.path, b.path),
+    );
   });
+  function activityLabel(value) {
+    const at = new Date(value);
+    if (!Number.isFinite(at.getTime())) return '无活动';
+    const today = new Date();
+    const days = Math.max(
+      0,
+      Math.round(
+        (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) -
+          Date.UTC(at.getFullYear(), at.getMonth(), at.getDate())) /
+          86400000,
+      ),
+    );
+    return days === 0 ? '今天' : days + ' 天前';
+  }
   let listQuery = '';
   let searchTimer;
   let refreshList;
@@ -44,7 +73,11 @@
 
   function rememberList() {
     if (loading) return;
-    rememberView(`list:${listQuery}`, { sessions: $state.snapshot(sessions), total });
+    rememberView(`list:${listQuery}`, {
+      sessions: $state.snapshot(sessions),
+      projects: $state.snapshot(projectInfos),
+      total,
+    });
   }
 
   function toggleProject(path) {
@@ -78,21 +111,32 @@
         : data.sessions;
     listQuery = requestedQuery;
     total = data.total;
+    projectInfos = (data.projects || []).map((project) => {
+      const previous = projectInfos.find((item) => item.path === project.path);
+      return previous?.unreadEpoch > readEpoch
+        ? { ...project, unread: previous.unread, unreadEpoch: previous.unreadEpoch }
+        : project;
+    });
     loading = false;
     error = '';
     rememberList();
   }
 
-  async function loadMore() {
-    if (loadingMore) return;
-    const readEpoch = runtimeStates.mark();
-    loadingMore = true;
+  async function loadProject(project) {
+    if (loadingProjects.has(project.path)) return;
+    loadingProjects.add(project.path);
     const requestedQuery = query;
+    const readEpoch = runtimeStates.mark();
     try {
       const data = await request(
-        `/api/sessions?limit=30&offset=${sessions.length}&q=${encodeURIComponent(requestedQuery)}`,
+        '/api/sessions?limit=30&project=' +
+          encodeURIComponent(project.path) +
+          '&offset=' +
+          project.sessions.length +
+          '&q=' +
+          encodeURIComponent(query),
       );
-      if (disposed || requestedQuery !== query) return;
+      if (disposed || query !== requestedQuery) return;
       const ids = new Set(sessions.map((session) => session.id));
       sessions = [
         ...sessions,
@@ -103,19 +147,42 @@
             return { ...session, ...runtime, runtime };
           }),
       ];
-      total = data.total;
       rememberList();
     } catch (err) {
       if (!disposed) error = err.message;
     } finally {
-      loadingMore = false;
+      loadingProjects.delete(project.path);
     }
+  }
+
+  function mergeRuntime(snapshot) {
+    const previous = runtimeStates.get(snapshot.id);
+    const current = runtimeStates.merge(snapshot);
+    const resultChanged =
+      current.replyId !== previous?.replyId || current.unread !== previous?.unread;
+    const completed = (current.completedAt || 0) > (previous?.completedAt || 0);
+    if (resultChanged)
+      projectInfos = projectInfos.map((project) =>
+        project.path === current.cwd
+          ? {
+              ...project,
+              unread: project.unread || current.unread === true,
+              unreadEpoch: runtimeStates.mark(),
+            }
+          : project,
+      );
+    if (completed || resultChanged) refreshList?.run();
   }
 
   function updateRuntime() {
     sessions = sessions.map((session) => {
       const runtime = runtimeStates.get(session.id) || session.runtime;
-      return { ...session, ...runtime, runtime };
+      return {
+        ...session,
+        ...runtime,
+        runtime,
+        sortTime: Math.max(session.sortTime || 0, runtime.completedAt || 0),
+      };
     });
   }
 
@@ -158,11 +225,11 @@
         if (event.data === 'reload' || event.data === 'new-session') refreshList.run();
       },
       'status-snapshot'(event) {
-        for (const snapshot of Object.values(JSON.parse(event.data))) runtimeStates.merge(snapshot);
+        for (const snapshot of Object.values(JSON.parse(event.data))) mergeRuntime(snapshot);
         updateRuntime();
       },
       'status-delta'(event) {
-        runtimeStates.merge(JSON.parse(event.data));
+        mergeRuntime(JSON.parse(event.data));
         updateRuntime();
       },
     });
@@ -187,6 +254,10 @@
 
 <section class="remote-session-list" aria-label="会话列表">
   <div class="remote-search">
+    <span>
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -- trusted Lucide icon -->
+      {@html icon(Search, { size: 18 })}
+    </span>
     <input
       type="search"
       aria-label="搜索会话"
@@ -227,19 +298,28 @@
             </span>
             <span class="remote-project-label">
               <strong>{project.name}</strong>
-              <small title={project.path}><bdi dir="ltr">{project.path || '未知项目'}</bdi></small>
+              {#if project.duplicateName}<small>{project.parentName}</small>{/if}
             </span>
-            {#if project.sessions.some((session) => session.unread)}<span
+            {#if project.unread || project.sessions.some((session) => session.unread)}<span
                 class="remote-project-unread"
                 aria-label="项目有未读回复"
               ></span>{/if}
-            <span class="remote-project-count" title="已加载会话数">{project.sessions.length}</span>
+            <time class="remote-project-activity" datetime={project.lastActivity || undefined}
+              >{activityLabel(project.lastActivity)}</time
+            >
+            <span class="remote-project-count" title="会话数"
+              >{project.count || project.sessions.length}</span
+            >
           </button>
           {#if !collapsed.has(project.path)}
-            <div class="remote-project-sessions">
+            <div
+              class="remote-project-sessions"
+              transition:slide={{ duration: motion.matches ? 0 : 180 }}
+            >
               {#each project.sessions as session (session.id)}
                 <a
                   class="remote-session"
+                  animate:flip={{ duration: motion.matches ? 0 : 220 }}
                   class:remote-current={session.id === currentSessionId}
                   href={`/session?id=${encodeURIComponent(session.id)}`}
                   aria-current={session.id === currentSessionId ? 'page' : undefined}
@@ -257,7 +337,7 @@
                   }}
                 >
                   <div>
-                    <strong>{session.name}</strong>{#if session.unread}<span
+                    <strong title={session.name}>{session.name}</strong>{#if session.unread}<span
                         class="remote-unread"
                         aria-label="未读回复"
                       ></span>{/if}
@@ -267,6 +347,20 @@
                   >
                 </a>
               {/each}
+              {#if project.sessions.length < project.count}
+                <button
+                  class="remote-more"
+                  type="button"
+                  disabled={loadingProjects.has(project.path)}
+                  onclick={() => loadProject(project)}
+                >
+                  {loadingProjects.has(project.path)
+                    ? '加载中…'
+                    : project.sessions.length
+                      ? '更多会话'
+                      : '查看会话'}
+                </button>
+              {/if}
             </div>
           {/if}
         </section>
@@ -275,12 +369,6 @@
     {#if !loading && !error && !sessions.length}<p class="remote-empty">
         {query ? '没有匹配的会话' : '还没有会话'}
       </p>{/if}
-    {#if sessions.length < total}<button
-        type="button"
-        class="remote-more"
-        disabled={loadingMore}
-        onclick={loadMore}>更多会话</button
-      >{/if}
   </div>
 </section>
 
@@ -293,40 +381,62 @@
     min-height: 0;
   }
   .remote-search {
-    padding: 10px 12px;
+    position: relative;
+    padding: 8px 20px 16px;
     flex: none;
+  }
+  .remote-search > span {
+    position: absolute;
+    top: 22px;
+    left: 33px;
+    display: flex;
+    color: var(--muted);
+    pointer-events: none;
   }
   .remote-search input {
     width: 100%;
-    font-size: 16px;
+    min-height: 44px;
+    padding: 10px 14px 10px 40px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--surface-2);
+    font-size: 15px;
+  }
+  .remote-search input::placeholder {
+    color: var(--muted);
   }
   .remote-list-main {
     overflow: auto;
     overscroll-behavior: contain;
     flex: 1;
     min-height: 0;
-    padding: 0 12px 12px;
-    overflow-wrap: anywhere;
+    padding: 0 16px 24px;
+    scrollbar-width: thin;
   }
   .remote-project + .remote-project {
-    margin-top: 12px;
+    margin-top: 16px;
   }
   .remote-project-toggle {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 9px;
     width: 100%;
     min-width: 0;
-    padding: 10px 0;
+    min-height: 48px;
+    padding: 10px 4px;
     text-align: left;
     border: 0;
+    border-radius: 12px;
     background: transparent;
   }
   .remote-project-chevron,
   .remote-project-folder {
     display: flex;
     flex: none;
-    color: var(--muted);
+    color: var(--text-soft);
+  }
+  .remote-project-chevron {
+    transition: transform 180ms var(--ease-out);
   }
   .remote-project-expanded {
     transform: rotate(90deg);
@@ -343,56 +453,70 @@
     text-overflow: ellipsis;
   }
   .remote-project-label strong {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 550;
   }
   .remote-project-label small {
-    direction: rtl;
-    text-align: left;
     margin-top: 2px;
     color: var(--muted);
     font-size: 11px;
   }
   .remote-project-count {
     flex: none;
+    min-width: 15px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: 11px;
+    text-align: right;
+  }
+  .remote-project-activity {
+    flex: none;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
   }
   .remote-project-sessions {
-    padding-left: 22px;
+    padding-left: 26px;
   }
   .remote-session {
-    display: block;
     position: relative;
-    padding: 10px 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 10px 10px;
     border: 0;
+    border-radius: 12px;
     color: inherit;
     text-decoration: none;
   }
+  .remote-session:hover {
+    background: var(--surface-2);
+  }
   .remote-current {
     background: var(--surface-2);
-    border-radius: 8px;
   }
   .remote-session > div {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding-right: 70px;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
   }
   .remote-session strong {
+    display: block;
+    min-width: 0;
     font-size: 14px;
-    font-weight: 550;
-  }
-  .remote-current strong {
-    color: var(--accent);
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .remote-state {
-    position: absolute;
-    right: 8px;
-    top: 12px;
+    flex: none;
     white-space: nowrap;
-    color: var(--text-soft);
-    font-size: 12px;
+    color: var(--muted);
+    font-size: 11px;
   }
   .remote-state[data-state='running'],
   .remote-state[data-state='background'] {
@@ -406,20 +530,34 @@
   .remote-project-unread {
     display: inline-block;
     flex: none;
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     background: var(--accent);
     border-radius: 50%;
   }
   .remote-more {
     display: block;
-    width: 100%;
-    margin: 6px 0 14px;
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
   }
   .remote-error {
     color: var(--danger);
+    font-size: 13px;
   }
-  .remote-empty {
+  .remote-empty,
+  .remote-warning {
+    font-size: 13px;
     color: var(--muted);
+    padding: 8px 6px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .remote-project-chevron {
+      transition: none;
+    }
   }
 </style>

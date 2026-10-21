@@ -8,6 +8,7 @@ const sessionPath = process.argv[process.argv.indexOf('--session') + 1];
 if (!sessionPath || !fs.existsSync(sessionPath)) process.exit(1);
 let model = { id: 'test-model', name: 'Test model', provider: 'test' };
 let thinkingLevel = 'medium';
+let speed = 'off';
 let state = 'idle';
 let sequence = 0;
 let timer;
@@ -39,12 +40,13 @@ function prompt(message, images, delivery) {
 }
 function abort() { clearTimeout(timer); followUps.length = 0; state = 'idle'; owner.publish(); send({ type: 'agent_settled', aborted: true }); }
 const owner = await openFixtureOwner({ agentDir: process.env.PI_CODING_AGENT_DIR, sessionPath,
-  getState: () => ({ state, thinking: thinkingLevel, model: model.id, provider: model.provider }),
+  getState: () => ({ state, thinking: thinkingLevel, model: model.id, provider: model.provider, fast:{mode:speed,availableModes:['off','fast','ultrafast'],serviceTier:speed === 'off' ? null : speed === 'fast' ? 'priority' : 'ultrafast'} }),
   control: (input) => {
     switch (input.action) {
       case 'send': prompt(input.chat.message, input.chat.images || [], input.chat.delivery); break;
       case 'abort': abort(); break;
       case 'thinking': thinkingLevel = input.level; break;
+      case 'speed': speed = input.mode; break;
       case 'model': model = { id: input.modelId, name: input.modelId, provider: input.provider }; break;
       case 'commands': return { commands: commands.filter((command) => command.source === 'skill') };
       case 'models': return { models: [model, { id: 'other-model', name: 'Other model', provider: 'test' }] };

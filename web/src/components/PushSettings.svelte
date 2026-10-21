@@ -1,6 +1,6 @@
 <script>
   import { request } from '../remote-api.js';
-  import { icon, Bell, X } from '../shared/icons.js';
+  import { icon, X } from '../shared/icons.js';
 
   const stateText = {
     off: '此浏览器的通知已关闭。',
@@ -215,6 +215,11 @@
     }
   }
 
+  export function open() {
+    dialog.showModal();
+    refresh();
+  }
+
   async function testNotification() {
     busy = true;
     error = '';
@@ -231,16 +236,6 @@
 </script>
 
 <!-- eslint-disable svelte/no-at-html-tags -- trusted Lucide icons -->
-<button
-  type="button"
-  aria-label="通知"
-  aria-haspopup="dialog"
-  onclick={() => {
-    dialog.showModal();
-    refresh();
-  }}>{@html icon(Bell)}</button
->
-
 <dialog class="push-dialog" aria-label="通知" bind:this={dialog}>
   <header>
     <h2>通知</h2>
@@ -273,8 +268,8 @@
     color: var(--text);
     background: var(--surface);
     border: 1px solid var(--dim);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: 24px;
+    padding: 20px;
     overflow-wrap: anywhere;
   }
   .push-dialog::backdrop {

@@ -13,10 +13,12 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
   const instanceId = randomUUID();
   let revision = 1;
   const listeners = new Set();
+  let closed = false;
   const db = new DatabaseSync(join(agentDir, 'pi-web.sqlite'));
   db.exec(`PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS session_results (
     session_id TEXT NOT NULL,result_id TEXT NOT NULL,acknowledged INTEGER NOT NULL DEFAULT 0,
-    completed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,result_id))`);
+    completed INTEGER NOT NULL DEFAULT 0,completed_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,result_id))`);
+  if (!db.prepare('PRAGMA table_info(session_results)').all().some((column) => column.name === 'completed_at')) db.exec('ALTER TABLE session_results ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0');
   const snapshot = () => {
     const entries = native();
     const state = getState();
@@ -34,15 +36,21 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
       }
       leaf = entry.parentId;
     }
-    const read = db.prepare('SELECT acknowledged FROM session_results WHERE session_id=? AND result_id=?').get(sessionId, replyId);
+    const read = db.prepare('SELECT acknowledged,completed_at FROM session_results WHERE session_id=? AND result_id=?').get(sessionId, replyId);
     return { id, sessionId, instanceId, revision, state: state.state, mainRunning: state.state === 'running',
       children: state.state === 'background' ? 1 : 0, availability: 'connected', canControl: true,
       chatAvailable: true, cwd: entries[0].cwd,
       replyId, leafId, unread: Boolean(replyId && !read?.acknowledged),
-      completed: state.state === 'idle' && ['stop', 'length'].includes(outcome), outcome,
+      completed: state.state === 'idle' && ['stop', 'length'].includes(outcome), completedAt:read?.completed_at || 0, outcome,
       model: 'test-model', provider: 'test', thinking: 'medium', context: null, fast: null, cacheHit, ...state };
   };
-  const publish = () => { revision++; for (const listener of listeners) listener(); };
+  const publish = () => {
+    const current = snapshot();
+    if (current.completed && current.replyId) db.prepare(`INSERT INTO session_results(session_id,result_id,completed,completed_at) VALUES(?,?,1,?)
+      ON CONFLICT(session_id,result_id) DO UPDATE SET completed=1,completed_at=CASE WHEN completed_at=0 THEN excluded.completed_at ELSE completed_at END`)
+      .run(sessionId,current.replyId,current.completedAt || Date.now());
+    revision++; for (const listener of listeners) listener();
+  };
   const server = createServer(async (request, response) => {
     if (request.headers.authorization !== `Bearer ${token}` || request.headers.origin) { response.writeHead(401).end(); return; }
     if (request.method === 'GET' && request.url === `/snapshot?sessionId=${encodeURIComponent(sessionId)}`) {
@@ -75,6 +83,8 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
   const file = join(directory, id + '.json');
   writeFileSync(file, JSON.stringify({ pid: process.pid, port: server.address().port, token, sessionId }));
   return { publish, snapshot, async close() {
+    if (closed) return;
+    closed = true;
     try { unlinkSync(file); } catch {}
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

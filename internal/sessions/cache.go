@@ -238,7 +238,8 @@ func (c *Cache) ResolveHeader(sessionsDir, id string) (ResolvedSession, error) {
 	}
 	summary := newSessionSummary(filepath.Base(filepath.Dir(path)), id)
 	summary.SessionUUID = header.ID
-	applySummaryContext(&summary, path, id, "", header.Name, "", header.CWD)
+	summary.CreatedAt = header.Timestamp
+	applySummaryContext(&summary, id, "", header.Name, "", header.CWD)
 	return ResolvedSession{Session: Session{SessionSummary: summary, Header: map[string]any{"cwd": header.CWD}}, Path: path}, nil
 }
 

@@ -45,6 +45,7 @@ type SessionSummary struct {
 	SessionUUID        string
 	Project            string
 	LastActivity       string
+	CreatedAt          string
 	Name               string
 	LastReplyID        string
 	ChatAvailable      bool
@@ -111,12 +112,10 @@ func newSessionSummary(dirName, fileName string) SessionSummary {
 	}
 }
 
-// applySummaryContext finalizes native naming, activity fallback and CWD availability.
-func applySummaryContext(s *SessionSummary, path, fileName, sessionInfoName, headerName, firstUserText, headerCwd string) {
+// applySummaryContext finalizes native naming, activity and CWD availability.
+func applySummaryContext(s *SessionSummary, fileName, sessionInfoName, headerName, firstUserText, headerCwd string) {
 	if s.LastActivity == "" {
-		if info, err := os.Stat(path); err == nil {
-			s.LastActivity = info.ModTime().Format(time.RFC3339)
-		}
+		s.LastActivity = s.CreatedAt
 	}
 
 	switch {
@@ -327,7 +326,7 @@ func sessionHeaderCWD(path string) string {
 	return ""
 }
 
-func CreateSessionFile(sessionsDir, directory string) (string, error) {
+func ResolveDirectory(directory string) (string, error) {
 	directory = strings.TrimSpace(directory)
 	if strings.HasPrefix(directory, "~/") {
 		home, err := os.UserHomeDir()
@@ -346,7 +345,15 @@ func CreateSessionFile(sessionsDir, directory string) (string, error) {
 	if !info.IsDir() {
 		return "", errors.New("working directory is not a directory")
 	}
-	project := filepath.Join(sessionsDir, EncodeProjectName(filepath.Clean(directory)))
+	return filepath.Clean(directory), nil
+}
+
+func CreateSessionFile(sessionsDir, directory string) (string, error) {
+	directory, err := ResolveDirectory(directory)
+	if err != nil {
+		return "", err
+	}
+	project := filepath.Join(sessionsDir, EncodeProjectName(directory))
 	if err := os.MkdirAll(project, 0755); err != nil {
 		return "", err
 	}

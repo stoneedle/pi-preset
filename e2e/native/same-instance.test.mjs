@@ -117,7 +117,7 @@ test('authenticated phone controls the installed merged extension in the same na
   assert.equal(completedEvents(historicalResult).length, 0, 'historical restore must not enter the notification outbox');
   assert.equal((await fetch(server.baseURL + '/api/status?id=' + encodeURIComponent(id))).status, 401);
   await page.goto(`${server.baseURL}/session?id=${encodeURIComponent(id)}&token=${token}`);
-  await expect(page.locator('.remote-info summary')).toContainText('one');
+  await expect(page.locator('.model-trigger')).toContainText('one');
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('phone text');
   await page.getByRole('button', { name: "发送", exact: true }).click();
   await expect(page.locator('article').last()).toContainText('Native reply: phone text');
@@ -203,9 +203,12 @@ test('authenticated phone controls the installed merged extension in the same na
   const nativeImageChunks = [];
   for await (const chunk of await (await nativeImagePromise).createReadStream()) nativeImageChunks.push(chunk);
   assert.deepEqual(Buffer.concat(nativeImageChunks), Buffer.from(photoEntry.message.content.find((part) => part.type === 'image').data, 'base64'));
+  await page.getByRole('button', {name:'模型设置',exact:true}).click();
+  const modelSettings = page.getByRole('dialog', {name:'模型设置',exact:true});
+  await modelSettings.getByRole('group', {name:'模型',exact:true}).getByRole('button', {name:'two remote-test',exact:true}).click();
+  await modelSettings.getByRole('group', {name:'思考强度',exact:true}).getByRole('button', {name:'高',exact:true}).click();
+  await modelSettings.getByRole('button', {name:'关闭模型设置',exact:true}).click();
   await page.locator('.remote-info summary').click();
-  await page.locator('.remote-info label').filter({ hasText: "模型" }).locator('select').selectOption('remote-test/two');
-  await page.locator('.remote-info label').filter({ hasText: "思考" }).locator('select').selectOption('high');
   await expect.poll(() => session.model.id).toBe('two');
   await expect.poll(() => session.thinkingLevel).toBe('high');
   const savedSettings = JSON.parse(readFileSync(join(root, 'settings.json'), 'utf8'));

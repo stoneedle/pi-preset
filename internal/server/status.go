@@ -30,6 +30,7 @@ type runtimeSnapshot struct {
 	LeafID        *string         `json:"leafId"`
 	Unread        *bool           `json:"unread"`
 	Completed     bool            `json:"completed"`
+	CompletedAt   int64           `json:"completedAt"`
 	Outcome       string          `json:"outcome,omitempty"`
 	AttentionID   string          `json:"attentionId,omitempty"`
 	AttentionKind string          `json:"attentionKind,omitempty"`
@@ -37,6 +38,7 @@ type runtimeSnapshot struct {
 	CWD           string          `json:"cwd,omitempty"`
 	ChatAvailable bool            `json:"chatAvailable"`
 	Model         string          `json:"model,omitempty"`
+	ModelName     string          `json:"modelName,omitempty"`
 	Provider      string          `json:"provider,omitempty"`
 	Thinking      string          `json:"thinking,omitempty"`
 	Context       json.RawMessage `json:"context,omitempty"`

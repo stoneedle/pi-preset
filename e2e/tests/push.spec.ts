@@ -75,6 +75,7 @@ test("subscription UI handles explicit permission, metadata-only setup, test acc
   const id = writeSession(sessionsDir, uniqueSessionName(info, "push-ui"), entries);
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   await page.getByRole("textbox", { name: "给 Pi 发消息…" }).fill("Private unsent draft, never notification content");
+  await page.locator(".remote-info summary").click();
   await page.getByRole("button", { name: "通知", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "通知", exact: true });
   await expect(dialog.getByRole("button", { name: "为此浏览器启用" })).toBeEnabled();

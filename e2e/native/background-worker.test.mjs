@@ -58,8 +58,14 @@ test('phone explicit continue and new-session run actual installed native Pi wor
   assert.equal(owner(firstID).pid, firstOwner.pid, 'repeated explicit continue reuses one actual worker');
 
   await page.getByRole('button', { name: "新建会话", exact: true }).click();
-  await page.getByRole('combobox', { name: "工作目录", exact: true }).fill(newCWD);
-  await page.getByRole('button', { name: "创建", exact: true }).click();
+  const editor = page.getByRole('dialog', {name:'新对话',exact:true});
+  await editor.getByRole('button', {name:'选择项目',exact:true}).click();
+  const picker = page.getByRole('dialog', {name:'选择项目',exact:true});
+  await picker.getByRole('textbox', {name:'文件夹路径',exact:true}).fill(newCWD);
+  await picker.getByRole('button', {name:'前往',exact:true}).click();
+  await picker.getByRole('button', {name:'使用此文件夹',exact:true}).click();
+  await editor.getByRole('textbox', {name:'给 Pi 发消息…',exact:true}).fill('Actual newly created background session');
+  await editor.getByRole('button', {name:'发送',exact:true}).click();
   await expect.poll(() => new URL(page.url()).searchParams.get('id'), { timeout: 45000 }).not.toBe(firstID);
   const nextID = new URL(page.url()).searchParams.get('id'); assert.ok(nextID);
   await expect.poll(() => existsSync(ownerFile(nextID)), { timeout: 45000 }).toBe(true);
@@ -67,8 +73,6 @@ test('phone explicit continue and new-session run actual installed native Pi wor
   assert.notEqual(nextOwner.pid, firstOwner.pid); process.kill(nextOwner.pid, 0);
   await expect.poll(async () => (await api('/api/status?id=' + encodeURIComponent(nextID))).canControl).toBe(true);
   assert.equal((await api('/api/status?id=' + encodeURIComponent(nextID))).cwd, newCWD);
-  await page.getByRole('textbox', { name: "给 Pi 发消息…", exact: true }).fill('Actual newly created background session');
-  await page.getByRole('button', { name: "发送", exact: true }).click();
   await expect(page.getByText('Native lifecycle reply: Actual newly created background session', { exact: true })).toBeVisible();
   assert.equal(readdirSync(join(root, 'pi-web', 'owners')).length, 2);
   console.log(JSON.stringify({ phoneProductionUI: true, authenticatedGo: true, nativeCLIWorkers: true, passiveHistory: true,

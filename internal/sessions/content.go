@@ -65,6 +65,9 @@ func readContentIndex(path, dirName, fileName string) (*Content, error) {
 			continue
 		}
 		if raw.Type == "session" {
+			if raw.Timestamp != "" && c.CreatedAt == "" {
+				c.CreatedAt = raw.Timestamp
+			}
 			key := raw.ID + "\x00" + raw.Timestamp + "\x00" + raw.CWD
 			if raw.ID != "" && raw.Timestamp != "" {
 				if seenHeaders[key] {
@@ -83,7 +86,7 @@ func readContentIndex(path, dirName, fileName string) (*Content, error) {
 			}
 			continue
 		}
-		if raw.Type != "session_info" && raw.Timestamp != "" {
+		if raw.Message != nil && (raw.Message.Role == "user" || raw.Message.Role == "assistant") && raw.Timestamp != "" {
 			c.LastActivity = raw.Timestamp
 		}
 		if raw.Type == "session_info" && raw.Name != "" {
@@ -129,7 +132,7 @@ func readContentIndex(path, dirName, fileName string) (*Content, error) {
 			}
 		}
 	}
-	applySummaryContext(&c.SessionSummary, path, fileName, sessionInfoName, headerName, firstUserText, c.CWD)
+	applySummaryContext(&c.SessionSummary, fileName, sessionInfoName, headerName, firstUserText, c.CWD)
 	return c, nil
 }
 

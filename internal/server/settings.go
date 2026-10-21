@@ -35,8 +35,6 @@ func (s *Server) getSetting(key, fallback string) string {
 	return value
 }
 
-func (s *Server) ThemeSetting() string { return s.getSetting("pi-web-theme", "dark") }
-
 var fontKeywords = map[string]string{
 	"mono":   "ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
 	"system": "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
@@ -77,10 +75,10 @@ func sanitizeFontSize(value, fallback string) string {
 }
 
 func (s *Server) FontStyles() (uiStack, contentStack, codeStack, uiSize, contentSize string) {
-	uiStack = resolveFontStack(s.getSetting("pi-web:v1:font-ui", "mono"))
-	contentStack = resolveFontStack(s.getSetting("pi-web:v1:font-content", "mono"))
+	uiStack = resolveFontStack(s.getSetting("pi-web:v1:font-ui", "system"))
+	contentStack = resolveFontStack(s.getSetting("pi-web:v1:font-content", "system"))
 	codeStack = resolveFontStack(s.getSetting("pi-web:v1:font-code", "mono"))
-	uiSize = sanitizeFontSize(s.getSetting("pi-web:v1:font-ui-size", "12"), "12")
-	contentSize = sanitizeFontSize(s.getSetting("pi-web:v1:font-content-size", "13"), "13")
+	uiSize = sanitizeFontSize(s.getSetting("pi-web:v1:font-ui-size", "16"), "16")
+	contentSize = sanitizeFontSize(s.getSetting("pi-web:v1:font-content-size", "16"), "16")
 	return
 }

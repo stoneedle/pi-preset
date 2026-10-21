@@ -1,0 +1,168 @@
+import { test, expect } from '../lib/test';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { buildSession, uniqueSessionName, writeSession, appendEntry, assistantTextEntry } from '../lib/sessions';
+import { openFixtureOwner } from '../lib/runtime-owner.mjs';
+
+// Network gates must intercept reads; the real service worker is covered in push.spec.ts.
+test.use({serviceWorkers:'block'});
+
+test('首页单行入口展开为全屏草稿，选择无历史项目后发送才创建会话', async ({ page, request, workingDir }) => {
+  let holdOptions = false, releaseOptions: (() => void) | undefined;
+  await page.route(/\/api\/project-options\?/,async (route) => {
+    if (!holdOptions) return route.continue();
+    await new Promise<void>((resolve) => { releaseOptions = resolve; });
+    await route.fulfill({json:{provider:'test',model:'test-model',thinking:'off',models:[
+      {provider:'test',id:'test-model',name:'Test model',thinking:'off',thinkingLevels:['off','minimal','low','medium','high','xhigh']},
+    ]}});
+  });
+  const projectSessions = '/api/sessions?project=' + encodeURIComponent(workingDir) + '&limit=100';
+  const before = (await (await request.get(projectSessions)).json()).total;
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '模型设置', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '开始新任务', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '新对话', exact: true });
+  await expect(editor).toBeVisible();
+  await editor.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('A draft that must survive closing');
+  expect((await (await request.get(projectSessions)).json()).total).toBe(before);
+  await editor.getByRole('button', { name: '选择项目', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: '选择项目', exact: true });
+  await picker.getByRole('textbox', { name: '文件夹路径', exact: true }).fill(workingDir);
+  await picker.getByRole('button', { name: '前往', exact: true }).click();
+  await picker.getByRole('button', { name: '使用此文件夹', exact: true }).click();
+  await expect(editor.getByRole('button', { name: '选择项目', exact: true })).not.toContainText(workingDir);
+  await editor.getByRole('button', { name: '关闭新对话', exact: true }).click();
+  await page.getByRole('button', { name: '开始新任务', exact: true }).click();
+  await expect(editor.getByRole('textbox', { name: '给 Pi 发消息…' })).toHaveValue('A draft that must survive closing');
+  holdOptions = true;
+  await editor.getByRole('button', { name: '模型设置', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: '模型设置', exact: true });
+  await expect(settings).toBeVisible();
+  await settings.getByRole('group', {name:'思考强度',exact:true}).getByRole('button', {name:'高',exact:true}).click();
+  await settings.getByRole('group', {name:'速度',exact:true}).getByRole('button', {name:'快速',exact:true}).click();
+  await expect.poll(() => Boolean(releaseOptions)).toBe(true);
+  releaseOptions!();
+  await expect(settings.getByRole('button',{name:'Test model test',exact:true})).toBeVisible();
+  await expect(settings.getByRole('group', {name:'思考强度',exact:true}).getByRole('button',{name:'高',exact:true})).toHaveAttribute('aria-pressed','true');
+  expect((await (await request.get(projectSessions)).json()).total).toBe(before);
+  await page.keyboard.press('Escape');
+  await editor.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page).toHaveURL(/\/session\?id=/);
+  await expect(page.locator('article').last()).toContainText('Stub reply: A draft that must survive closing');
+  await expect.poll(async () => {
+    const status = await (await request.get('/api/status?id=' + encodeURIComponent(new URL(page.url()).searchParams.get('id')!))).json();
+    return {thinking:status.thinking,mode:status.fast?.mode};
+  }).toEqual({thinking:'high',mode:'fast'});
+  expect((await (await request.get(projectSessions)).json()).total).toBe(before + 1);
+});
+
+test('配色随系统实时切换且首页与全屏编辑器在320px均不横向溢出', async ({ page }, info) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('/');
+  await expect.poll(() => page.locator('body').evaluate((node) => getComputedStyle(node).backgroundColor)).toBe('rgb(255, 255, 255)');
+  await page.screenshot({path:info.outputPath('home-light.png'),animations:'disabled'});
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect.poll(() => page.locator('body').evaluate((node) => getComputedStyle(node).backgroundColor)).toBe('rgb(0, 0, 0)');
+  await page.getByRole('button', { name: '开始新任务', exact: true }).click();
+  await page.screenshot({path:info.outputPath('editor-dark.png'),animations:'disabled'});
+  await page.getByRole('dialog', { name: '新对话', exact: true }).getByRole('textbox').fill('Long input '.repeat(120));
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const send = page.getByRole('dialog', { name: '新对话', exact: true }).getByRole('button', { name: '发送', exact: true });
+  await expect(send).toBeInViewport();
+});
+
+test('项目固定按名称排序，工具活动和失败不移动会话，成功完成的置顶跨刷新保留', async ({page,request,sessionsDir,workingDir,agentDir}, info) => {
+  const prefix = uniqueSessionName(info,'stable-sort').replace(/\.jsonl$/,'');
+  const alpha = join(workingDir,'Alpha'), zulu = join(workingDir,'Zulu');
+  mkdirSync(alpha); mkdirSync(zulu);
+  const make = (cwd:string, label:string, timestamp:string) => {
+    const native = buildSession({cwd});
+    native.entries[0].timestamp = timestamp;
+    const id = writeSession(sessionsDir,prefix + '-' + label + '.jsonl',native.entries);
+    return {...native,id};
+  };
+  const older = make(alpha,'older','2026-01-01T00:00:00Z');
+  const newer = make(alpha,'newer','2026-01-02T00:00:00Z');
+  make(zulu,'other','2026-01-03T00:00:00Z');
+  let state = 'running';
+  let completed = false;
+  const owner = await openFixtureOwner({agentDir,sessionPath:join(sessionsDir,'--home-user-demo-project--',older.id),
+    getState:() => ({state,completed})});
+  try {
+    await page.goto('/');
+    await page.getByRole('searchbox').fill(prefix);
+    const projects = page.locator('.remote-project-label strong');
+    await expect(projects).toHaveText(['Alpha','Zulu']);
+    const group = page.getByRole('region',{name:alpha,exact:true});
+    const order = () => group.locator('a.remote-session').evaluateAll((links) => links.map((link) => new URL((link as HTMLAnchorElement).href).searchParams.get('id')));
+    await expect.poll(order).toEqual([newer.id,older.id]);
+    expect(await group.locator('.remote-project-label').innerText()).not.toContain(workingDir);
+    for (let index=0;index<3;index++) {
+      appendEntry(sessionsDir,older.id,{type:'message',id:'tool-' + index,parentId:index ? 'tool-' + (index-1) : older.lastId,
+        timestamp:new Date().toISOString(),message:{role:'toolResult',toolCallId:'test-call',content:[{type:'text',text:'Tool activity ' + index}]}});
+      owner.publish();
+      await request.get('/api/sessions?q=' + encodeURIComponent(prefix));
+      await expect.poll(order).toEqual([newer.id,older.id]);
+    }
+    state = 'idle'; owner.publish();
+    await expect.poll(order).toEqual([newer.id,older.id]);
+    const result = assistantTextEntry('tool-2','Stable completion');
+    appendEntry(sessionsDir,older.id,result.entry);
+    completed = true; owner.publish();
+    await expect.poll(order).toEqual([older.id,newer.id]);
+    await expect(projects).toHaveText(['Alpha','Zulu']);
+    await owner.close();
+    await page.reload();
+    await page.getByRole('searchbox').fill(prefix);
+    await expect.poll(order).toEqual([older.id,newer.id]);
+    await expect(projects).toHaveText(['Alpha','Zulu']);
+  } finally { await owner.close(); }
+});
+
+test('模型、思考强度和闪电速度入口修改原生状态，而非仅更换显示', async ({page,request,sessionsDir,workingDir},info) => {
+  const native = buildSession({cwd:workingDir});
+  const id = writeSession(sessionsDir,uniqueSessionName(info,'model-popover'),native.entries);
+  await request.post('/api/session/continue?id=' + encodeURIComponent(id),{data:{}});
+  await page.goto('/session?id=' + encodeURIComponent(id));
+  await page.getByRole('button',{name:'模型设置',exact:true}).click();
+  const picker = page.getByRole('dialog',{name:'模型设置',exact:true});
+  await picker.getByRole('group',{name:'模型',exact:true}).getByRole('button',{name:'Other model test',exact:true}).click();
+  await picker.getByRole('group',{name:'思考强度',exact:true}).getByRole('button',{name:'高',exact:true}).click();
+  await picker.getByRole('group',{name:'速度',exact:true}).getByRole('button',{name:'快速',exact:true}).click();
+  await expect.poll(async () => (await (await request.get('/api/status?id=' + encodeURIComponent(id))).json()).fast?.mode).toBe('fast');
+  await picker.getByRole('button',{name:'关闭模型设置',exact:true}).click();
+  await expect(page.locator('.model-trigger')).toContainText('Other model');
+  await expect(page.locator('.model-trigger')).toContainText('高');
+  await expect(page.locator('.model-fast')).toHaveAttribute('title','快速');
+});
+
+test('分页外项目仍显示未读，子任务仅发完成状态时也会加载并置顶', async ({page,sessionsDir,workingDir,agentDir,request},info) => {
+  const prefix = uniqueSessionName(info,'unloaded-completion').replace(/\.jsonl$/,'');
+  const inboxPath = join(workingDir,'Inbox'), otherPath = join(workingDir,'Other');
+  mkdirSync(inboxPath); mkdirSync(otherPath);
+  const inbox = buildSession({cwd:inboxPath});
+  inbox.entries[0].timestamp = '2026-01-01T00:00:00Z';
+  const id = writeSession(sessionsDir,prefix + '-inbox.jsonl',inbox.entries);
+  for (let index=0;index<31;index++) {
+    const native = buildSession({cwd:otherPath});
+    native.entries[0].timestamp = '2026-01-02T00:00:00Z';
+    writeSession(sessionsDir,prefix + '-other-' + index + '.jsonl',native.entries);
+  }
+  let state = 'background', completed = false;
+  const owner = await openFixtureOwner({agentDir,sessionPath:join(sessionsDir,'--home-user-demo-project--',id),getState:() => ({state,completed})});
+  try {
+    await page.goto('/');
+    await page.getByRole('searchbox').fill(prefix);
+    const project = page.getByRole('region',{name:inboxPath,exact:true});
+    await expect(project.locator('.remote-project-unread')).toBeVisible();
+    await expect(project.locator('.remote-session')).toHaveCount(0);
+    const reply = assistantTextEntry(inbox.lastId,'Work done, awaiting children');
+    appendEntry(sessionsDir,id,reply.entry); owner.publish();
+    await expect.poll(async () => (await (await request.get('/api/session?id=' + encodeURIComponent(id))).json()).window.messages.at(-1).id).toBe(reply.id);
+    await expect(project.locator('.remote-session')).toHaveCount(0);
+    state = 'idle'; completed = true; owner.publish();
+    await expect(project.locator('.remote-session')).toHaveCount(1);
+    await expect(page.locator('.remote-project-label strong')).toHaveText(['Inbox','Other']);
+  } finally { await owner.close(); }
+});

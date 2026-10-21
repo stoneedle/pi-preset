@@ -68,7 +68,7 @@ export class SessionState {
     prompts.changed = promptChanged;
     this.unsubscribes.push(() => { if (prompts.changed === promptChanged) prompts.changed = undefined; });
     this.unsubscribes.push(pi.events.on('pi-codex-fast:changed', (event) => {
-      if (event && typeof event === 'object' && (event as { version?: number }).version === 1) this.publish();
+      if (event && typeof event === 'object' && (event as { version?: number }).version === 2) this.publish();
     }));
     this.publish();
   }
@@ -196,9 +196,9 @@ export class SessionState {
       id: this.id, name: (this.ctx.sessionManager.getSessionName() || '').slice(0, 160), sessionId: this.sessionId, instanceId: this.instanceId,
       state, mainRunning, children: this.children, replyId: result.id, leafId: this.ctx.sessionManager.getLeafId(),
       unread: result.id ? (receiptKnown ? !record?.acknowledged : null) : false,
-      completed: Boolean(record?.completed), outcome: childFailure ? 'error' : result.outcome,
+      completed: Boolean(record?.completed), completedAt: record?.completed_at || 0, outcome: childFailure ? 'error' : result.outcome,
       attentionId: prompt?.id ?? null, attentionKind: prompt?.kind ?? null, availability: 'connected', canControl: true,
-      model: this.ctx.model?.id, provider: this.ctx.model?.provider,
+      model: this.ctx.model?.id, modelName: this.ctx.model?.name, provider: this.ctx.model?.provider,
       thinking: this.pi.getThinkingLevel(), context: this.ctx.getContextUsage() ?? null,
       cwd: this.ctx.cwd, chatAvailable: this.ctx.mode === 'tui' || this.ctx.mode === 'rpc',
       cacheHit, fast: readFastState(this.pi, this.ctx.model), diagnostic: this.diagnostic,

@@ -28,6 +28,8 @@ export class Receipts {
         this.db.exec("ALTER TABLE session_results ADD COLUMN completion_children TEXT NOT NULL DEFAULT '[]'");
         this.db.exec("UPDATE session_results SET completion_children='null' WHERE completion_pending=1");
       }
+      if (!columns.some((column) => column.name === 'completed_at'))
+        this.db.exec('ALTER TABLE session_results ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0');
       this.db.exec('COMMIT');
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch { /* Initialization may have failed before the transaction. */ }
@@ -36,8 +38,8 @@ export class Receipts {
   }
 
   read(sessionId: string, resultId: string) {
-    return this.db.prepare('SELECT acknowledged, completed, completion_pending, completion_children FROM session_results WHERE session_id=? AND result_id=?')
-      .get(sessionId, resultId) as { acknowledged: number; completed: number; completion_pending: number; completion_children: string } | undefined;
+    return this.db.prepare('SELECT acknowledged, completed, completed_at, completion_pending, completion_children FROM session_results WHERE session_id=? AND result_id=?')
+      .get(sessionId, resultId) as { acknowledged: number; completed: number; completed_at: number; completion_pending: number; completion_children: string } | undefined;
   }
 
   settled(sessionId: string, resultId: string, children: string[] | null) {
@@ -47,8 +49,8 @@ export class Receipts {
   }
 
   complete(sessionId: string, resultId: string) {
-    this.db.prepare(`UPDATE session_results SET completed=1,completion_pending=0
-      WHERE session_id=? AND result_id=? AND completion_pending=1`).run(sessionId, resultId);
+    this.db.prepare(`UPDATE session_results SET completed=1,completion_pending=0,completed_at=?
+      WHERE session_id=? AND result_id=? AND completion_pending=1 AND completed=0`).run(Date.now(), sessionId, resultId);
   }
 
   cancelCompletion(sessionId: string, resultId: string) {

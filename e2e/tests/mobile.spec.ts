@@ -386,7 +386,7 @@ test("a shrunken visual viewport keeps expanded information and typing controls 
   const owner = await openFixtureOwner({ agentDir,
     sessionPath: join(sessionsDir, "--home-user-demo-project--", id),
     getState: () => ({ state: "running", model: "a-long-native-model-name-with-a-meaningful-suffix", cacheHit: 67,
-      context: { tokens: 123456, contextWindow: 1048576 }, fast: { mode: "fast", supported: true, serviceTier: "priority" } }),
+      context: { tokens: 123456, contextWindow: 1048576 }, fast: { mode: "fast", availableModes: ["off","fast","ultrafast"], serviceTier: "priority" } }),
     control: (input: any) => input.action === "commands" ? { commands: Array.from({ length: 6 }, (_, i) => ({ name: `skill-${i}`, description: "A detailed native skill description that wraps rather than widening the screen." })) } : { models: [] },
   });
   try {
@@ -620,7 +620,7 @@ test("Fast is read-only native metadata and disconnect never leaves it looking a
 }, info) => {
   const { entries } = buildSession({ cwd: workingDir });
   const id = writeSession(sessionsDir, uniqueSessionName(info, "fast"), entries);
-  let fast: null | { mode: string; supported: boolean; serviceTier: string | null } = null;
+  let fast: null | { mode: string; availableModes: readonly string[]; serviceTier: string | null } = null;
   const owner = await openFixtureOwner({ agentDir,
     sessionPath: join(sessionsDir, "--home-user-demo-project--", id),
     getState: () => ({ state: 'idle', fast }),
@@ -633,10 +633,10 @@ test("Fast is read-only native metadata and disconnect never leaves it looking a
     const value = page.locator(".remote-info dl dd").nth(4);
     await expect(value).toHaveText("未知");
     for (const [snapshot, label] of [
-      [{ mode: "off", supported: false, serviceTier: null }, "关闭"],
-      [{ mode: "fast", supported: true, serviceTier: "priority" }, "快速"],
-      [{ mode: "ultrafast", supported: false, serviceTier: null }, "极速 — 对此模型不生效"],
-      [{ mode: "ultrafast", supported: true, serviceTier: "ultrafast" }, "极速"],
+      [{ mode: "off", availableModes: ["off","fast","ultrafast"], serviceTier: null }, "关闭"],
+      [{ mode: "fast", availableModes: ["off","fast","ultrafast"], serviceTier: "priority" }, "快速"],
+      [{ mode: "ultrafast", availableModes: ["off"], serviceTier: null }, "极速 — 对此模型不生效"],
+      [{ mode: "ultrafast", availableModes: ["off","fast","ultrafast"], serviceTier: "ultrafast" }, "极速"],
     ] as const) {
       fast = snapshot; owner.publish();
       await expect(value).toHaveText(label);
@@ -673,7 +673,7 @@ test("bursty live updates stay incremental and never overlap session downloads",
       paths.push(request.url());
     }
   });
-  const finish = (request) => {
+  const finish = (request: import("@playwright/test").Request) => {
     if (new URL(request.url()).pathname === "/api/session") active--;
   };
   page.on("requestfinished", finish);

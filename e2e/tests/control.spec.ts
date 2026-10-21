@@ -68,18 +68,17 @@ test("browse is passive; explicit continue reuses one worker for text, pictures,
     native.some(
       (entry) =>
         entry.message?.role === "user" &&
-        entry.message.content.some((block) => block.type === "image"),
+        entry.message.content.some((block: { type: string }) => block.type === "image"),
     ),
   ).toBe(true);
   expect(readdirSync(join(agentDir, "pi-web", "owners")).filter((name) => name === id + ".json")).toHaveLength(1);
   expect(existsSync(join(agentDir, "session-status"))).toBe(false);
   await page.locator(".remote-info summary").click();
   await expect(page.locator(".remote-info dl dt")).toHaveCount(7);
-  await page
-    .locator(".remote-info label")
-    .filter({ hasText: "思考" })
-    .locator("select")
-    .selectOption("high");
+  await page.getByRole("button", { name: "模型设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "模型设置", exact: true });
+  await settings.getByRole("group", { name: "思考强度", exact: true }).getByRole("button", { name: "高", exact: true }).click();
+  await settings.getByRole("button", { name: "关闭模型设置", exact: true }).click();
   await expect(page.locator(".remote-info dd").last()).toHaveText("high");
 });
 
@@ -167,15 +166,17 @@ test("new sessions use an existing directory and unread clears on click", async 
     ),
   ).toHaveCount(0);
   await page.getByRole("dialog", { name: "会话", exact: true }).getByRole("button", { name: "新建会话", exact: true }).click();
-  await page.getByLabel("工作目录", { exact: true }).fill(workingDir);
-  await page.getByRole("button", { name: "创建", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "新对话", exact: true });
+  await editor.getByRole("button", { name: "选择项目", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "选择项目", exact: true });
+  await picker.getByRole("textbox", { name: "文件夹路径", exact: true }).fill(workingDir);
+  await picker.getByRole("button", { name: "前往", exact: true }).click();
+  await picker.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+  await editor.getByRole("textbox", { name: "给 Pi 发消息…" }).fill("new work");
+  await expect(editor.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+  await editor.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page).not.toHaveURL(`/session?id=${encodeURIComponent(id)}`);
   await expect(page).toHaveURL(/\/session\?id=/);
-  await page.getByRole("textbox", { name: "给 Pi 发消息…" }).fill("new work");
-  await expect(
-    page.getByRole("button", { name: "发送", exact: true }),
-  ).toBeEnabled();
-  await page.getByRole("button", { name: "发送", exact: true }).click();
   const created = new URL(page.url()).searchParams.get("id")!;
   const nativePath = readdirSync(sessionsDir)
     .map((directory) => join(sessionsDir, directory, created))

@@ -112,11 +112,7 @@ func (a *Middleware) Wrap(h http.HandlerFunc) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusUnauthorized)
-				themeCookie := ""
-				if c, err := r.Cookie("pi-web-theme"); err == nil {
-					themeCookie = c.Value
-				}
-				ui.RenderAuthPrompt(w, themeCookie)
+				ui.RenderAuthPrompt(w)
 				return
 			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

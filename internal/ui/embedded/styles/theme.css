@@ -1,51 +1,42 @@
 :root {
-  --font-sans: ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+  color-scheme: light;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-content: var(--font-sans);
-  --font-code: ui-monospace, monospace;
-  --font-size-ui: 14px;
-  --font-content-size: 14px;
-  --body-bg: #111116;
-  --surface: #15151b;
-  --surface-2: #191920;
-  --text: #e6e7eb;
-  --text-soft: #b7bbc4;
-  --muted: #858a96;
-  --dim: #292a33;
-  --accent: #9cc7c0;
-  --danger: #ef767a;
-  --warning: #ffd38b;
-}
-[data-theme='light'] {
-  --body-bg: #f6f5f2;
+  --font-code: ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+  --font-size-ui: 16px;
+  --font-content-size: 16px;
+  --body-bg: #fff;
   --surface: #fff;
-  --surface-2: #f1f0ec;
-  --text: #1f2328;
-  --text-soft: #3f4650;
-  --muted: #747b85;
-  --dim: #d8d5cc;
-  --accent: #496f69;
-  --danger: #b23b42;
-  --warning: #855d12;
+  --surface-2: #f5f5f5;
+  --composer-bg: #f7f7f7;
+  --text: #0d0d0d;
+  --text-soft: #5d5d5d;
+  --muted: #8f8f8f;
+  --dim: #e8e8e8;
+  --accent: #a477ef;
+  --link: #1677d2;
+  --danger: #c43d3d;
+  --warning: #9b6800;
+  --floating-shadow: 0 8px 32px #0000000c;
+  --popover-shadow: 0 12px 56px #00000020;
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
 }
-[data-theme='nord'] {
-  --body-bg: #2e3440;
-  --surface: #3b4252;
-  --surface-2: #434c5e;
-  --text: #d8dee9;
-  --text-soft: #e5e9f0;
-  --muted: #88c0d0;
-  --dim: #4c566a;
-  --accent: #88c0d0;
-  --danger: #bf616a;
-}
-[data-theme='dracula'] {
-  --body-bg: #282a36;
-  --surface: #1e1f29;
-  --surface-2: #343746;
-  --text: #f8f8f2;
-  --text-soft: #eaeaea;
-  --muted: #a0a8ca;
-  --dim: #44475a;
-  --accent: #ff79c6;
-  --danger: #ff5555;
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --body-bg: #000;
+    --surface: #171717;
+    --surface-2: #232323;
+    --composer-bg: #232323;
+    --text: #f3f3f3;
+    --text-soft: #b4b4b4;
+    --muted: #8f8f8f;
+    --dim: #383838;
+    --accent: #ad7eee;
+    --link: #72a9ff;
+    --danger: #ff8585;
+    --warning: #e4ba73;
+    --floating-shadow: 0 8px 32px #00000030;
+    --popover-shadow: 0 12px 56px #00000070;
+  }
 }

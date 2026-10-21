@@ -1,16 +1,28 @@
 <script>
   import { onMount, tick, untrack } from 'svelte';
   import { Marked } from 'marked';
-  import { icon, ArrowDown, Menu, Plus, Paperclip, Send, Square, X } from '../shared/icons.js';
+  import {
+    icon,
+    ArrowDown,
+    ArrowUp,
+    Menu,
+    Plus,
+    SquarePen,
+    Ellipsis,
+    Bell,
+    X,
+  } from '../shared/icons.js';
   import { escapeHtml } from '../shared/escape.js';
   import RemoteBlock from '../components/RemoteBlock.svelte';
   import SessionList from '../components/SessionList.svelte';
   import HostSwitcher from '../components/HostSwitcher.svelte';
   import PushSettings from '../components/PushSettings.svelte';
+  import NewTask from '../components/NewTask.svelte';
+  import RemoteComposer from '../components/RemoteComposer.svelte';
   import { localFileReference, fileLinksHTML, fileDownloadURL, fileName } from '../remote-files.js';
   import { subscribeEvents } from '../remote-events.js';
   import { readView, rememberView } from '../remote-cache.js';
-  import { sessionComposer } from '../remote-drafts.svelte.js';
+  import { sessionComposer, rememberSubmittedProject } from '../remote-drafts.svelte.js';
   import {
     request,
     createRefreshCoordinator,
@@ -67,15 +79,17 @@
   let drawerTrigger = $state(null);
   let drawer = $state(null);
   let drawerOpen = $state(false);
-  let newDialog = $state(null);
+  let newTask = $state(null);
+  let pushSettings = $state(null);
+  let info = $state(null);
+  let modelsLoading = $state(false);
+  let modelsError = $state('');
   let previewDialog = $state(null);
   let preview = $state(null);
   let previewPath = $state('');
   let previewError = $state('');
   let previewLoading = $state(false);
   let previewEpoch = 0;
-  let newPath = $state('');
-  let recent = $state([]);
   let models = $state([]);
   let skills = $state([]);
   let skillsLoaded = false;
@@ -241,6 +255,7 @@
     for (const image of submittedImages) form.append('images', image);
     try {
       await request(endpoint('/api/chat'), { method: 'POST', body: form });
+      rememberSubmittedProject(cwd);
       if (composer.text === submittedDraft) composer.text = '';
       composer.images = composer.images.filter((image) => !submittedImages.includes(image));
       composer.notice = '已接受 — 尚未确认处理';
@@ -264,12 +279,16 @@
     }
   }
 
-  async function loadModels(event) {
-    if (!event.currentTarget.open || models.length || !status.canControl) return;
+  async function loadModels() {
+    if (modelsLoading || !status.canControl) return;
+    modelsLoading = true;
+    modelsError = '';
     try {
       models = (await request(endpoint('/api/models'))).models || [];
     } catch (err) {
-      error = err.message;
+      modelsError = err.message;
+    } finally {
+      modelsLoading = false;
     }
   }
 
@@ -320,46 +339,8 @@
     }
   }
 
-  async function openNew() {
-    newPath = cwd;
-    newDialog.showModal();
-    try {
-      recent = (await request('/api/recent-locations')).locations || [];
-    } catch {
-      recent = [];
-    }
-  }
-
-  async function createSession(event) {
-    event.preventDefault();
-    if (!newPath.trim() || composer.sending) return;
-    composer.sending = true;
-    try {
-      const data = await post('/api/new-session', { path: newPath.trim() });
-      window.location.assign(`/session?id=${encodeURIComponent(data.id)}`);
-    } catch (err) {
-      error = err.message;
-      composer.sending = false;
-    }
-  }
-
-  function growTextarea(node) {
-    const resize = () => {
-      const scrollTop = node.scrollTop;
-      const atEnd = node.selectionEnd === node.value.length;
-      node.style.height = 'auto';
-      node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
-      node.scrollTop = atEnd ? node.scrollHeight : scrollTop;
-    };
-    let width;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry.contentRect.width === width) return;
-      width = entry.contentRect.width;
-      resize();
-    });
-    observer.observe(node);
-    resize();
-    return { update: resize, destroy: () => observer.disconnect() };
+  function openNew() {
+    newTask.open();
   }
 
   onMount(() => {
@@ -427,6 +408,7 @@
     window.addEventListener('online', onVisible);
     window.addEventListener('focus', onVisible);
     const onFilePreview = (event) => {
+      if (info?.open && !info.contains(event.target)) info.open = false;
       const button = event.target.closest?.('button[data-preview-path]');
       if (button) openPreview(button.dataset.previewPath);
     };
@@ -463,7 +445,7 @@
 </script>
 
 <!-- eslint-disable svelte/no-at-html-tags -- Lucide icons and escaped Markdown renderer -->
-<div class="remote-app">
+<div class="remote-app" class:remote-home={!sessionId}>
   <header class="remote-header">
     {#if sessionId}<button
         type="button"
@@ -478,85 +460,88 @@
           drawer.showModal();
         }}>{@html icon(Menu)}</button
       >{/if}
-    <div class="remote-heading"><HostSwitcher {title} /></div>
+    <div class="remote-heading">
+      <HostSwitcher
+        {title}
+        subtitle={sessionId ? cwd?.split(/[\\/]/).filter(Boolean).at(-1) : ''}
+      />
+    </div>
     {#if sessionId}<span class="remote-state" data-state={activeState}
         >{stateLabels[activeState] || '未知'}</span
       >{/if}
-    <PushSettings />
-    <button type="button" onclick={openNew} aria-label="新建会话">{@html icon(Plus)}</button>
+    {#if sessionId}
+      <details class="remote-info" bind:this={info}>
+        <summary
+          aria-label="会话信息"
+          onkeydown={(event) => {
+            if (event.key === 'Escape') info.open = false;
+          }}>{@html icon(Ellipsis)}</summary
+        >
+        <div class="remote-info-panel">
+          <dl>
+            <dt>项目</dt>
+            <dd>{cwd}</dd>
+            <dt>分支</dt>
+            <dd>{branch || '未知'}</dd>
+            <dt>缓存命中</dt>
+            <dd>
+              {runtimeKnown && status.cacheHit != null ? `${Math.round(status.cacheHit)}%` : '未知'}
+            </dd>
+            <dt>上下文</dt>
+            <dd>
+              {runtimeKnown && status.context?.tokens != null
+                ? status.context.tokens.toLocaleString('zh-CN')
+                : '未知'} / {runtimeKnown && status.context?.contextWindow
+                ? status.context.contextWindow.toLocaleString('zh-CN')
+                : '未知'}
+            </dd>
+            <dt>加速</dt>
+            <dd>
+              {#if runtimeKnown && ['off', 'fast', 'ultrafast'].includes(status.fast?.mode)}
+                {fastLabels[status.fast.mode] || '未知'}
+                {#if status.fast.mode !== 'off' && status.fast.serviceTier == null}
+                  — 对此模型不生效
+                {/if}
+              {:else}未知{/if}
+            </dd>
+            <dt>模型</dt>
+            <dd>{runtimeKnown ? status.model || '未知' : '未知'}</dd>
+            <dt>思考</dt>
+            <dd>{runtimeKnown ? status.thinking || '未知' : '未知'}</dd>
+          </dl>
+          <button
+            type="button"
+            class="remote-info-notifications"
+            aria-label="通知"
+            aria-haspopup="dialog"
+            onclick={() => {
+              info.open = false;
+              pushSettings.open();
+            }}>{@html icon(Bell)}<span>通知设置</span></button
+          >
+        </div>
+      </details>
+    {:else}<button
+        type="button"
+        aria-label="通知"
+        aria-haspopup="dialog"
+        onclick={() => pushSettings.open()}>{@html icon(Bell)}</button
+      >{/if}
+    <button type="button" class="remote-new-button" onclick={openNew} aria-label="新建会话"
+      >{@html icon(SquarePen, { size: 23 })}</button
+    >
   </header>
 
   {#if !sessionId}
     <SessionList {stateLabels} />
+    <footer class="remote-home-composer">
+      <button type="button" class="remote-home-input" aria-label="开始新任务" onclick={openNew}>
+        {@html icon(Plus, { size: 24 })}<span>给 Pi 一个新任务</span><span class="home-send"
+          >{@html icon(ArrowUp, { size: 22 })}</span
+        >
+      </button>
+    </footer>
   {:else}
-    <details class="remote-info" ontoggle={loadModels}>
-      <summary
-        >{branch || cwd?.split(/[\\/]/).at(-1) || '会话信息'}
-        <span>{runtimeKnown ? status.model || '未知' : '未知'}</span></summary
-      >
-      <dl>
-        <dt>项目</dt>
-        <dd>{cwd}</dd>
-        <dt>分支</dt>
-        <dd>{branch || '未知'}</dd>
-        <dt>缓存命中</dt>
-        <dd>
-          {runtimeKnown && status.cacheHit != null ? `${Math.round(status.cacheHit)}%` : '未知'}
-        </dd>
-        <dt>上下文</dt>
-        <dd>
-          {runtimeKnown && status.context?.tokens != null
-            ? status.context.tokens.toLocaleString('zh-CN')
-            : '未知'} / {runtimeKnown && status.context?.contextWindow
-            ? status.context.contextWindow.toLocaleString('zh-CN')
-            : '未知'}
-        </dd>
-        <dt>加速</dt>
-        <dd>
-          {#if runtimeKnown && ['off', 'fast', 'ultrafast'].includes(status.fast?.mode)}
-            {fastLabels[status.fast.mode] || '未知'}
-            {#if status.fast.mode !== 'off' && status.fast.serviceTier == null}
-              — 对此模型不生效
-            {/if}
-          {:else}未知{/if}
-        </dd>
-        <dt>模型</dt>
-        <dd>{runtimeKnown ? status.model || '未知' : '未知'}</dd>
-        <dt>思考</dt>
-        <dd>{runtimeKnown ? status.thinking || '未知' : '未知'}</dd>
-      </dl>
-      {#if status.canControl && runtimeKnown}
-        <label
-          >模型<select
-            value={`${status.provider}/${status.model}`}
-            onchange={(event) => {
-              const model = models.find(
-                (item) => `${item.provider}/${item.id}` === event.currentTarget.value,
-              );
-              if (model) control('/api/set-model', { provider: model.provider, modelId: model.id });
-            }}
-          >
-            <option value={`${status.provider}/${status.model}`}>{status.model || '未知'}</option>
-            {#each models.filter((model) => model.id !== status.model || model.provider !== status.provider) as model (model.provider + '/' + model.id)}<option
-                value={`${model.provider}/${model.id}`}
-                >{model.provider}/{model.name || model.id}</option
-              >{/each}
-          </select></label
-        >
-        <label
-          >思考<select
-            value={status.thinking || 'off'}
-            onchange={(event) =>
-              control('/api/set-thinking-level', { level: event.currentTarget.value })}
-            >{#each ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as level (level)}<option
-                value={level}>{level}</option
-              >{/each}</select
-          ></label
-        >
-        <small>模型和思考设置的更改对后续请求生效。</small>
-      {/if}
-    </details>
-
     <main
       class="remote-main"
       aria-busy={loading || historyLoading}
@@ -631,52 +616,39 @@
               }}>{skill.name}<small>{skill.description}</small></button
             >{/each}
         </div>{/if}
-      {#if composer.images.length}<div class="remote-images">
-          {#each composer.images as image, i (image)}<button
-              type="button"
-              title={image.name}
-              aria-label={`移除 ${image.name}`}
-              onclick={() => (composer.images = composer.images.filter((_, index) => index !== i))}
-              ><span>{image.name}</span> {@html icon(X, { size: 14 })}</button
-            >{/each}
-        </div>{/if}
     </div>
     <footer class="remote-composer">
-      <form onsubmit={sendMessage}>
-        <textarea
-          bind:this={textarea}
-          aria-label="给 Pi 发消息…"
-          placeholder="给 Pi 发消息…"
-          rows="1"
-          bind:value={composer.text}
-          use:growTextarea={composer.text}
-          oninput={searchSkills}
-        ></textarea>
-        <div class="remote-actions">
-          <label class="remote-attach" aria-label="拍照或选择图片"
-            >{@html icon(Paperclip)}<input
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              multiple
-              onchange={(event) => {
-                composer.images = [...composer.images, ...event.currentTarget.files];
-                event.currentTarget.value = '';
-              }}
-            /></label
-          >
-          <span></span>
-          {#if status.mainRunning || activeState === 'running'}<button
-              type="button"
-              aria-label="停止主代理"
-              onclick={() => control('/api/chat/cancel', {})}>{@html icon(Square)}</button
-            >{/if}
-          <button
-            type="submit"
-            disabled={!canSend || (!composer.text.trim() && !composer.images.length)}
-            aria-label="发送">{@html icon(Send)}</button
-          >
-        </div>
-      </form>
+      <RemoteComposer
+        {composer}
+        {canSend}
+        running={status.mainRunning || activeState === 'running'}
+        onsend={sendMessage}
+        onstop={() => control('/api/chat/cancel', {})}
+        oninput={() => {
+          if (info) info.open = false;
+          searchSkills();
+        }}
+        onfocus={() => {
+          if (info) info.open = false;
+        }}
+        status={{
+          ...status,
+          model: runtimeKnown ? status.model : '未知',
+          modelName: runtimeKnown ? status.modelName : '',
+          thinking: runtimeKnown ? status.thinking : '',
+          fast: runtimeKnown ? status.fast : null,
+          disabled: !runtimeKnown || !status.canControl,
+        }}
+        {models}
+        {modelsLoading}
+        {modelsError}
+        onmodelopen={loadModels}
+        onmodel={(model) =>
+          control('/api/set-model', { provider: model.provider, modelId: model.id })}
+        onthinking={(level) => control('/api/set-thinking-level', { level })}
+        onspeed={(mode) => control('/api/set-speed', { mode })}
+        bind:textarea
+      />
     </footer>
   {/if}
 </div>
@@ -703,7 +675,7 @@
     }}
     onclose={() => {
       drawerOpen = false;
-      if (!newDialog.open) drawerTrigger?.focus({ preventScroll: true });
+      if (!newTask?.isOpen()) drawerTrigger?.focus({ preventScroll: true });
       refreshAcknowledgement.run();
     }}
     onclick={(event) => {
@@ -765,29 +737,8 @@
   {/if}
 </dialog>
 
-<dialog class="remote-new" bind:this={newDialog}>
-  <form onsubmit={createSession}>
-    <h2>新建会话</h2>
-    <label
-      >工作目录<input
-        required
-        bind:value={newPath}
-        list="remote-recent"
-        placeholder="/path/to/project"
-      /></label
-    >
-    <datalist id="remote-recent"
-      >{#each recent as path (path)}<option value={path}></option>{/each}</datalist
-    >
-    {#if error}<p role="alert">{error}</p>{/if}
-    <div class="remote-actions">
-      <button type="button" onclick={() => newDialog.close()}>取消</button><button
-        type="submit"
-        disabled={composer.sending}>创建</button
-      >
-    </div>
-  </form>
-</dialog>
+<NewTask bind:this={newTask} />
+<PushSettings bind:this={pushSettings} />
 
 <style>
   :global(html),
@@ -817,7 +768,7 @@
   :global(textarea) {
     border: 1px solid var(--dim);
     background: var(--surface-2);
-    border-radius: 8px;
+    border-radius: 12px;
   }
   :global(button),
   :global(select),
@@ -827,13 +778,41 @@
   }
   :global(button) {
     cursor: pointer;
+    transition:
+      background 150ms ease,
+      opacity 150ms ease,
+      transform 150ms ease;
+    -webkit-tap-highlight-color: transparent;
   }
+  :global(button:not(:disabled):active) {
+    transform: scale(0.97);
+  }
+  :global(button:hover) {
+    filter: brightness(0.98);
+  }
+  :global(input:focus-visible) {
+    outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+    outline-offset: 2px;
+  }
+  :global(dialog) {
+    overscroll-behavior: contain;
+  }
+  :global(body) {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(button) {
+      transition: none;
+    }
+  }
+
   :global(button:disabled) {
     opacity: 0.4;
     cursor: default;
   }
   :global(a) {
-    color: var(--accent);
+    color: var(--link);
   }
   :global(button:focus-visible),
   :global(a:focus-visible),
@@ -843,51 +822,68 @@
   }
   .remote-app {
     height: var(--remote-height, 100dvh);
-    max-width: 860px;
+    max-width: 800px;
     margin: auto;
     display: flex;
     flex-direction: column;
     padding-top: env(safe-area-inset-top);
   }
   .remote-header {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--dim);
+    gap: 8px;
+    padding: 10px 16px;
     flex: none;
+    z-index: 2;
+    background: var(--body-bg);
   }
-  .remote-menu {
-    min-width: 44px;
-    padding: 9px;
-    border-color: transparent;
-    background: transparent;
+  .remote-home .remote-header {
+    padding: 22px 20px 18px;
+  }
+  .remote-header :global(.host-heading strong) {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .remote-home .remote-header :global(.host-heading strong) {
+    font-size: 30px;
+    font-weight: 500;
+  }
+  .remote-header > button {
+    display: grid;
+    place-items: center;
+    min-width: 42px;
+    width: 42px;
+    min-height: 42px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--surface-2);
     flex: none;
   }
   .remote-heading {
     flex: 1;
     min-width: 0;
   }
-  .remote-compose-context small {
-    color: var(--muted);
-    font-size: 12px;
+  .remote-header .remote-state {
+    display: block;
+    width: 6px;
+    height: 6px;
+    margin-right: 2px;
+    flex: none;
+    font-size: 0;
+    border-radius: 50%;
+    background: var(--muted);
   }
-  .remote-header button {
-    display: grid;
-    place-items: center;
+  .remote-header .remote-state[data-state='running'],
+  .remote-header .remote-state[data-state='background'] {
+    background: var(--accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
   }
-  .remote-state {
-    white-space: nowrap;
-    color: var(--text-soft);
-    font-size: 12px;
+  .remote-header .remote-state[data-state='needs-you'] {
+    background: var(--warning);
   }
-  .remote-state[data-state='running'] {
-    color: var(--accent);
-  }
-  .remote-state[data-state='background'] {
-    color: var(--accent);
-  }
-  .remote-state[data-state='needs-you'],
   .remote-warning {
     color: var(--warning);
   }
@@ -896,33 +892,51 @@
     overscroll-behavior: contain;
     flex: 1;
     min-height: min(80px, calc(var(--remote-height, 100dvh) * 0.18));
-    padding: 12px;
+    padding: 14px 20px 24px;
     overflow-wrap: anywhere;
+    scrollbar-width: thin;
   }
   .remote-info {
-    flex: 0 1 auto;
-    min-height: 40px;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--dim);
-    max-height: 42vh;
-    overflow: auto;
-    font-size: 12px;
+    flex: none;
   }
   .remote-info summary {
+    display: grid;
+    place-items: center;
     cursor: pointer;
-    padding: 7px 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    list-style: none;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--surface-2);
   }
-  .remote-info summary span {
-    color: var(--text-soft);
-    margin-left: 8px;
+  .remote-info summary::-webkit-details-marker {
+    display: none;
+  }
+  .remote-info:not([open]) .remote-info-panel {
+    display: none;
+  }
+  .remote-info-panel {
+    position: absolute;
+    top: 66px;
+    right: 12px;
+    z-index: 5;
+    width: min(360px, calc(100vw - 24px));
+    max-height: calc(var(--remote-height, 100dvh) - 100px);
+    overflow: auto;
+    padding: 18px;
+    background: var(--surface);
+    border: 1px solid var(--dim);
+    border-radius: 22px;
+    box-shadow: var(--popover-shadow);
+    font-size: 12px;
+    animation: info-in 150ms var(--ease-out);
   }
   .remote-info dl {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    gap: 6px 14px;
+    gap: 10px 18px;
+    margin: 0;
   }
   .remote-info dt {
     color: var(--muted);
@@ -931,26 +945,82 @@
     margin: 0;
     overflow-wrap: anywhere;
   }
-  .remote-info label {
-    display: block;
-    margin: 8px 0;
-  }
-  .remote-info select {
+  .remote-info-notifications {
     width: 100%;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--dim);
+    color: var(--text-soft);
+  }
+  .remote-home-composer {
+    flex: none;
+    padding: 12px 12px max(14px, env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, var(--body-bg) 20%);
+  }
+  .remote-home-input {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 58px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--dim) 65%, transparent);
+    border-radius: 30px;
+    background: var(--composer-bg);
+    box-shadow: var(--floating-shadow);
+    text-align: left;
+  }
+  .remote-home-input > span:first-of-type {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 16px;
+  }
+  .home-send {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    flex: none;
+    border-radius: 50%;
+    color: var(--body-bg);
+    background: var(--muted);
+    opacity: 0.35;
+  }
+  @keyframes info-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
   article {
     min-width: 0;
   }
   article.remote-user {
-    margin: 24px 0 16px;
-    color: var(--text-soft);
+    width: fit-content;
+    max-width: 92%;
+    margin: 24px 0 22px auto;
+    padding: 12px 16px;
+    border-radius: 22px;
+    background: var(--surface-2);
+    color: var(--text);
   }
   article.remote-user:first-child {
     margin-top: 0;
   }
   .remote-markdown {
     margin: 12px 0;
-    font: var(--font-content-size)/1.6 var(--font-content);
+    font: var(--font-content-size)/1.65 var(--font-content);
   }
   .remote-user .remote-markdown {
     margin: 0;
@@ -1009,8 +1079,7 @@
   .remote-composer {
     position: relative;
     flex: none;
-    padding: 8px 12px max(8px, env(safe-area-inset-bottom));
-    border-top: 1px solid var(--dim);
+    padding: 8px 12px max(12px, env(safe-area-inset-bottom));
   }
   .remote-compose-context {
     flex: 0 1 auto;
@@ -1023,70 +1092,11 @@
     margin: 0 0 8px;
     font-size: 12px;
   }
-  .remote-composer textarea {
-    display: block;
-    resize: none;
-    width: 100%;
-    min-height: 46px;
-    max-height: max(46px, min(240px, calc(var(--remote-height, 100dvh) * 0.24)));
-    overflow-y: auto;
-    padding: 10px;
-    font-size: 16px;
-    line-height: 1.5;
-  }
-  .remote-actions {
-    display: flex;
-    flex: none;
-    align-items: center;
-    gap: 8px;
-    margin-top: 6px;
-  }
-  .remote-actions > span {
-    flex: 1;
-  }
-  .remote-actions button {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .remote-attach {
-    display: grid;
-    place-items: center;
-    min-width: 44px;
-    min-height: 44px;
-    cursor: pointer;
-  }
-  .remote-attach input {
-    display: none;
-  }
-  .remote-images {
-    display: flex;
-    flex: none;
-    gap: 6px;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-  }
-  .remote-images button {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: none;
-    max-width: min(100%, 280px);
-  }
-  .remote-images button span {
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .remote-images :global(svg) {
-    flex: none;
-  }
   .remote-error {
     color: var(--danger);
   }
   .remote-skills {
-    background: var(--bg);
+    background: var(--surface);
     border: 1px solid var(--dim);
     border-radius: 8px;
   }
@@ -1268,24 +1278,5 @@
     .remote-drawer[open] {
       animation: none;
     }
-  }
-  .remote-new {
-    background: var(--surface);
-    color: var(--text);
-    border: 1px solid var(--dim);
-    border-radius: 12px;
-    width: min(440px, calc(100vw - 24px));
-  }
-  .remote-new::backdrop {
-    background: #0009;
-  }
-  .remote-new label,
-  .remote-new input {
-    display: block;
-    width: 100%;
-  }
-  .remote-new .remote-actions {
-    justify-content: flex-end;
-    margin-top: 16px;
   }
 </style>

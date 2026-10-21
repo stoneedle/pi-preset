@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"net/http"
@@ -110,7 +111,53 @@ func initDB(agentDir string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	if err := migrateCompletionTime(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func migrateCompletionTime(db *sql.DB) error {
+	ctx := context.Background()
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	defer connection.ExecContext(ctx, "ROLLBACK")
+	rows, err := connection.QueryContext(ctx, "PRAGMA table_info(session_results)")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "completed_at" {
+			found = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if !found {
+		if _, err := connection.ExecContext(ctx, "ALTER TABLE session_results ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	_, err = connection.ExecContext(ctx, "COMMIT")
+	return err
 }
 
 func (s *Server) Shutdown() {
@@ -142,7 +189,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 		"/api/set-model":           s.handleSetModel, "/api/set-thinking-level": s.handleSetThinkingLevel,
 		"/api/models": s.handleAvailableModels, "/api/commands": s.handleCommands,
 		"/api/new-session": s.handleNewSession, "/api/recent-locations": s.handleRecentLocations,
-		"/api/git/info": s.handleGitInfo, "/events": s.handleEvents,
+		"/api/directories": s.handleDirectories, "/api/project-options": s.handleProjectOptions,
+		"/api/set-speed": s.handleSetSpeed,
+		"/api/git/info":  s.handleGitInfo, "/events": s.handleEvents,
 		"/api/push/config": s.handlePushConfig, "/api/push/subscription": s.handlePushSubscription,
 		"/api/push/status": s.handlePushStatus, "/api/push/test": s.handlePushTest,
 		"/api/push/eligibility": s.handlePushEligibility,
@@ -150,7 +199,6 @@ func (s *Server) Register(mux *http.ServeMux) {
 		mux.HandleFunc(path, s.auth.Wrap(handler))
 	}
 	mux.HandleFunc("/preview/", s.handlePreview)
-	mux.HandleFunc("/custom-themes.css", s.handleCustomThemes)
 }
 
 func (s *Server) loadSummaries() ([]sessions.SessionSummary, error) {

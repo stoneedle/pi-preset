@@ -4,6 +4,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { SessionState } from './session-state.ts';
 import type { SessionTitle } from './title/session-title.ts';
+import { setFastState } from './fast-state.ts';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai/compat';
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { basename, join } from "node:path";
@@ -210,11 +212,16 @@ export async function openRemote(pi: ExtensionAPI, ctx: ExtensionContext, agentD
             state.updateContext(current);
             reply(200, { status: "accepted" });
             return;
+          case "speed":
+            setFastState(pi, current.model, input.mode);
+            state.updateContext(current);
+            reply(200, { status: "accepted" });
+            return;
           case "models":
             reply(200, {
               models: current.modelRegistry
                 .getAvailable()
-                .map(({ id, name, provider }) => ({ id, name, provider })),
+                .map((model) => ({ id:model.id, name:model.name, provider:model.provider, thinkingLevels:getSupportedThinkingLevels(model) })),
             });
             return;
           case "commands":

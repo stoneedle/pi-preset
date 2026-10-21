@@ -45,6 +45,8 @@ func (s *Server) controlSession(ctx context.Context, resolved sessions.ResolvedS
 		err = s.chatSender.SetModel(ctx, id, path, action["provider"].(string), action["modelId"].(string))
 	case "thinking":
 		err = s.chatSender.SetThinkingLevel(ctx, id, path, action["level"].(string))
+	case "speed":
+		return nil, errors.New("当前 Pi 未提供速度控制桥接")
 	case "models":
 		return map[string]any{"models": []any{}}, nil
 	case "commands":
@@ -160,6 +162,20 @@ func (s *Server) handleSetModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleControl(w, r, map[string]any{"action": "model", "provider": body.Provider, "modelId": body.ModelID})
+}
+
+func (s *Server) handleSetSpeed(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	if body.Mode != "off" && body.Mode != "fast" && body.Mode != "ultrafast" {
+		writeJSONError(w, 400, "invalid speed")
+		return
+	}
+	s.handleControl(w, r, map[string]any{"action": "speed", "mode": body.Mode})
 }
 
 func (s *Server) handleSetThinkingLevel(w http.ResponseWriter, r *http.Request) {
