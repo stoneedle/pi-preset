@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"time"
 
 	"pi-web/internal/chat"
 	"pi-web/internal/sessions"
@@ -66,13 +65,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	resolved, err := s.cache.ResolveHeader(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}
 	if !resolved.Session.ChatAvailable {
-		writeJSONError(w, http.StatusConflict, resolved.Session.ChatDisabledReason)
-		return
+		owner, ownerErr := s.remoteOwner(resolved.Session)
+		if ownerErr != nil || owner == nil {
+			writeJSONError(w, http.StatusConflict, resolved.Session.ChatDisabledReason)
+			return
+		}
 	}
 	req, err := chat.ParseRequest(r, chat.DefaultMaxImageBytes, chat.DefaultMaxRequestBytes)
 	if r.MultipartForm != nil {
@@ -103,7 +105,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action ma
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	resolved, err := s.cache.ResolveHeader(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}
@@ -116,43 +118,24 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action ma
 }
 
 func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	id := r.URL.Query().Get("id")
+	header, err := s.cache.ResolveHeader(s.sessionsDir, id)
 	if resolveOrWriteError(w, err) {
 		return
 	}
-	id := resolved.Session.ID
-	state := s.sessionState(id)
-	reply := map[string]any{"state": state, "canControl": false}
-	owner, err := s.remoteOwner(resolved.Session)
-	if err == nil && owner != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
-		defer cancel()
-		data, callErr := owner.call(ctx, map[string]any{"action": "state", "sessionId": resolved.Session.SessionUUID})
-		if callErr == nil {
-			reply = data
-			reply["state"] = state
-			reply["canControl"] = true
-		} else {
-			reply["state"] = "unknown"
-			reply["error"] = callErr.Error()
-		}
-	} else if err == nil && s.chatSender != nil && s.chatSender.HasWorker(id) {
-		status, stateErr := s.chatSender.GetState(r.Context(), id)
-		if stateErr == nil {
-			reply["canControl"] = true
-			reply["model"] = status.Model
-			reply["provider"] = status.ModelProvider
-			reply["thinking"] = status.ThinkingLevel
-		}
+	if snapshot := s.runtimeState(id); snapshot.Availability == "connected" && snapshot.SessionID == header.Session.SessionUUID {
+		writeJSON(w, 0, snapshot)
+		return
 	}
-	if err != nil {
-		reply["error"] = err.Error()
+	resolved, err := s.cache.ResolveMetadata(s.sessionsDir, id)
+	if resolveOrWriteError(w, err) {
+		return
 	}
-	writeJSON(w, 0, reply)
+	writeJSON(w, 0, s.sessionSnapshot(resolved.Session.SessionSummary))
 }
 
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	resolved, err := s.cache.ResolveHeader(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}

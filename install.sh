@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# pi-web source-fork installer — installs the local build and auto-start.
-# From the checkout: node scripts/run-lifecycle.mjs install
-# Via Pi: pi install git:github.com/stoneedle/pi-web
-# Updates use the same Git source and build the matching binary.
+# 安装当前仓库的构建产物和登录启动配置。
+# 入口：node scripts/run-lifecycle.mjs install
 
 if [[ -n "${PI_WEB_INSTALL_DIR:-}" ]]; then
   INSTALL_DIR="$PI_WEB_INSTALL_DIR"
@@ -13,7 +11,6 @@ else
 fi
 BINARY="$INSTALL_DIR/pi-web"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION_FILE="${HOME}/.pi/agent/pi-web-version"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -24,63 +21,6 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}→${NC} $*" >&2; }
 warn()  { echo -e "${YELLOW}⚠${NC} $*" >&2; }
 err()   { echo -e "${RED}✗${NC} $*" >&2; }
-
-# ── Detect platform ─────────────────────────────────────────────────
-detect_platform() {
-  local os arch
-  case "$(uname -s)" in
-    Darwin) os="darwin" ;;
-    Linux)  os="linux" ;;
-    *)
-      err "Unsupported OS: $(uname -s)"
-      exit 1
-      ;;
-  esac
-
-  case "$(uname -m)" in
-    x86_64|amd64) arch="amd64" ;;
-    arm64|aarch64) arch="arm64" ;;
-    *)
-      err "Unsupported architecture: $(uname -m)"
-      exit 1
-      ;;
-  esac
-
-  echo "${os}-${arch}"
-}
-
-# ── Get installed version ───────────────────────────────────────────
-installed_version() {
-  if [[ -x "$BINARY" ]]; then
-    "$BINARY" -version 2>/dev/null || true
-  elif [[ -f "$VERSION_FILE" ]]; then
-    # Binary not executable yet (e.g., partial install); fall back to version file
-    cat "$VERSION_FILE"
-  fi
-}
-
-# ── Check if update is needed ───────────────────────────────────────
-needs_update() {
-  local latest="$1"
-
-  if [[ ! -f "$BINARY" ]]; then
-    return 0  # not installed yet
-  fi
-
-  local installed
-  installed="$(installed_version)"
-  if [[ -n "$installed" ]] && [[ "$installed" == "$latest" ]]; then
-    return 1  # already up-to-date
-  fi
-
-  if [[ -n "$installed" ]]; then
-    info "Update available: ${installed} → ${latest}"
-  else
-    info "Existing binary found (unknown version). Installing ${latest}."
-  fi
-
-  return 0  # needs update
-}
 
 # ── Install binary ──────────────────────────────────────────────────
 install_binary() {
@@ -99,10 +39,7 @@ install_binary() {
     fi
   fi
 
-  # Stop running instance before replacing. Skipped for in-place self-updates:
-  # pi-web spawned this script (via `pi install`), so stopping the service here
-  # would kill the very npm process running it. pi-web triggers its own detached
-  # restart afterward (see internal/app/update.go).
+  # 原位更新保留旧进程，由调用方通过现有服务入口重启。
   if [[ -f "$BINARY" && -z "$inplace" ]]; then
     if [[ "$(uname -s)" == "Linux" ]]; then
       systemctl --user stop pi-web.service 2>/dev/null || true
@@ -131,35 +68,10 @@ install_binary() {
     cp "$src" "$BINARY"
   fi
 
-  # Record version
-  mkdir -p "$(dirname "$VERSION_FILE")"
-  echo "$tag" > "$VERSION_FILE"
-
   info "pi-web ${tag} installed to ${BINARY}"
   return 0
 }
 
-# Copy the skill CLI next to the binary so `pi-web-ctl` works from any cwd.
-# Missing source (standalone binary-only install) is a no-op — skills ship
-# with the npm package, not the GitHub release tarball.
-install_ctl() {
-  local src="${SRC_DIR}/.pi/skills/common/pi_web.py"
-  if [[ ! -f "$src" ]]; then
-    return 0
-  fi
-  mkdir -p "$INSTALL_DIR"
-  local dest="${INSTALL_DIR}/pi-web-ctl"
-  if [[ ! -w "$INSTALL_DIR" ]]; then
-    sudo cp "$src" "$dest"
-    sudo chmod +x "$dest"
-  else
-    cp "$src" "$dest"
-    chmod +x "$dest"
-  fi
-  info "pi-web-ctl installed to ${dest}"
-}
-
-# ── Fetch config file from repo (for standalone installs) ──────────
 # ── macOS auto-start ─────────────────────────────────────────────────
 setup_macos() {
   local plist_dst="${HOME}/Library/LaunchAgents/com.pi-web.plist"
@@ -323,8 +235,10 @@ main() {
   info "pi-web installer"
   echo ""
 
-  local platform
-  platform="$(detect_platform)"
+  case "$(uname -s)" in
+    Darwin|Linux) ;;
+    *) err "此安装入口仅支持 macOS 和 Linux。"; exit 1 ;;
+  esac
 
   local tag
   local source_binary="${PI_WEB_SOURCE_BINARY:-${SRC_DIR}/pi-web}"
@@ -334,9 +248,8 @@ main() {
   fi
   tag="${PI_WEB_SOURCE_VERSION:-$("$source_binary" -version)}"
 
-  if ! needs_update "$tag"; then
-    install_ctl
-    info "Already up-to-date (${tag})."
+  if [[ -f "$BINARY" ]] && cmp -s "$source_binary" "$BINARY"; then
+    info "已是当前构建（${tag}）。"
     echo ""
     exit 0
   fi
@@ -345,7 +258,7 @@ main() {
 
   # Check if running interactively
   local is_update=false
-  if [[ ! -t 0 ]]; then
+  if [[ ! -t 0 || -n "${PI_WEB_INPLACE_UPDATE:-}" ]]; then
     is_update=true  # non-interactive → update mode (no prompts)
   fi
 
@@ -354,17 +267,13 @@ main() {
     exit 0
   fi
 
-  # In-place self-update: pi-web triggered this and restarts itself afterward
-  # via its own /api/restart. Skip env/service setup so we don't restart (and
-  # kill) the npm process running this script, or clobber the service's PATH.
+  # 原位更新不改环境和启动配置，由调用方重启。
   if [[ -n "${PI_WEB_INPLACE_UPDATE:-}" ]]; then
-    install_ctl
     info "Binary updated to ${tag}; pi-web will restart to apply it."
     echo ""
     exit 0
   fi
 
-  install_ctl
   setup_env
 
   case "$(uname -s)" in

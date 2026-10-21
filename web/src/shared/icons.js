@@ -1,4 +1,23 @@
-import { ArrowDown, ChevronLeft, Plus, Paperclip, Send, Square, X } from 'lucide';
+import {
+  Code,
+  ArrowDown,
+  Menu,
+  ChevronDown,
+  Folder,
+  Plus,
+  Paperclip,
+  Send,
+  Square,
+  Bell,
+  X,
+  Brain,
+  Terminal,
+  Wrench,
+  Check,
+  CircleDashed,
+  CircleAlert,
+  ChevronRight,
+} from 'lucide';
 
 export function icon(node, { size = 20 } = {}) {
   const children = node
@@ -12,4 +31,23 @@ export function icon(node, { size = 20 } = {}) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${children}</svg>`;
 }
 
-export { ArrowDown, ChevronLeft, Plus, Paperclip, Send, Square, X };
+export {
+  Code,
+  ArrowDown,
+  Menu,
+  ChevronDown,
+  Folder,
+  Plus,
+  Paperclip,
+  Send,
+  Square,
+  Bell,
+  X,
+  Brain,
+  Terminal,
+  Wrench,
+  Check,
+  CircleDashed,
+  CircleAlert,
+  ChevronRight,
+};

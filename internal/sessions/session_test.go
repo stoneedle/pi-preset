@@ -593,7 +593,7 @@ func TestParseSummaryExtractsSessionUUID(t *testing.T) {
 	}
 }
 
-func TestParseFileMarksSessionBrokenWhenCwdMissing(t *testing.T) {
+func TestContentMarksSessionBrokenWhenCwdMissing(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.jsonl")
 	content := `{"type":"session","version":3,"id":"sid","timestamp":"2026-05-06T00:00:00.000Z","cwd":"/definitely/missing/path"}` + "\n"
@@ -601,9 +601,9 @@ func TestParseFileMarksSessionBrokenWhenCwdMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sess, err := ParseFile(path, "--tmp-project--", "session.jsonl")
+	sess, err := readContentIndex(path, "--tmp-project--", "session.jsonl")
 	if err != nil {
-		t.Fatalf("ParseFile failed: %v", err)
+		t.Fatal(err)
 	}
 	if sess.ChatAvailable {
 		t.Fatal("expected chat to be disabled for missing cwd")
@@ -649,7 +649,7 @@ func TestParseSummaryFallsBackToDirNameWhenCwdMissing(t *testing.T) {
 	}
 }
 
-func TestParseFileUsesHeaderCwdAsProject(t *testing.T) {
+func TestContentUsesHeaderCwdAsProject(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "project")
 	if err := os.MkdirAll(cwd, 0755); err != nil {
@@ -666,7 +666,7 @@ func TestParseFileUsesHeaderCwdAsProject(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := ParseFile(path, "--tmp-project--", "s.jsonl")
+	sess, err := readContentIndex(path, "--tmp-project--", "s.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +675,7 @@ func TestParseFileUsesHeaderCwdAsProject(t *testing.T) {
 	}
 }
 
-func TestParseFileDeduplicatesRepeatedSessionHeader(t *testing.T) {
+func TestContentIgnoresRepeatedSessionHeader(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.jsonl")
 	rootJSON, err := json.Marshal(root)
@@ -689,19 +689,20 @@ func TestParseFileDeduplicatesRepeatedSessionHeader(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := ParseFile(path, "--tmp-project--", "session.jsonl")
+	sess, err := readContentIndex(path, "--tmp-project--", "session.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sess.Entries) != 2 {
-		t.Fatalf("entries = %d, want 2 (%#v)", len(sess.Entries), sess.Entries)
+	window, err := sess.Window("", "", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if sess.Entries[0]["type"] != "session" || sess.Entries[1]["type"] != "message" {
-		t.Fatalf("unexpected entries: %#v", sess.Entries)
+	if len(window.Messages) != 1 || window.Cursor != "u1" || window.Messages[0].Blocks[0].Text != "hello" {
+		t.Fatalf("repeated header changed the conversation: %+v", window)
 	}
 }
 
-func TestParseFileLeavesChatEnabledWhenCwdExists(t *testing.T) {
+func TestContentLeavesChatEnabledWhenCwdExists(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "project")
 	if err := os.MkdirAll(cwd, 0755); err != nil {
@@ -717,9 +718,9 @@ func TestParseFileLeavesChatEnabledWhenCwdExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sess, err := ParseFile(path, "--tmp-project--", "session.jsonl")
+	sess, err := readContentIndex(path, "--tmp-project--", "session.jsonl")
 	if err != nil {
-		t.Fatalf("ParseFile failed: %v", err)
+		t.Fatal(err)
 	}
 	if !sess.ChatAvailable {
 		t.Fatalf("expected chat to be enabled, reason = %q", sess.ChatDisabledReason)

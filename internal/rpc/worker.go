@@ -47,11 +47,8 @@ func (w *piRPCWorker) IdleSince(now time.Time) time.Duration {
 	return now.Sub(time.Unix(0, last))
 }
 
-// workerDir is the cwd for `pi --mode rpc`. Extensions load at process start
-// from cwd, so inheriting pi-web's own checkout would load this repo's
-// .pi/extensions on top of the globally installed package and crash on a
-// duplicate tool (pi_web_ask_user_question). Prefer the session's project
-// directory; fall back to temp so the server cwd is never inherited.
+// workerDir loads the session's own project resources instead of inheriting
+// the web service's checkout. Missing native directories fall back to temp.
 func workerDir(sessionPath string) string {
 	if cwd := sessionHeaderCWD(sessionPath); cwd != "" {
 		if info, err := os.Stat(cwd); err == nil && info.IsDir() {
@@ -61,9 +58,7 @@ func workerDir(sessionPath string) string {
 	return detachedPiDir()
 }
 
-// detachedPiDir is a cwd with no project .pi/extensions. The installed
-// LaunchAgent uses /tmp for the same reason: pi loads project extensions from
-// cwd, and this repo's tools collide with `pi install npm:@ygncode/pi-web`.
+// detachedPiDir avoids loading project configuration from the server checkout.
 func detachedPiDir() string {
 	return os.TempDir()
 }
@@ -90,7 +85,9 @@ func sessionHeaderCWD(sessionPath string) string {
 
 func NewPiWorker(sessionPath string) (workers.ChatWorker, error) {
 	cmd, err := piCommand("--mode", "rpc", "--session", sessionPath)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = workerDir(sessionPath)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -114,11 +111,14 @@ func NewPiWorker(sessionPath string) (workers.ChatWorker, error) {
 	}
 	go worker.consume(stdout)
 	go worker.wait()
-	// Best-effort: refresh model/thinking-level from pi so a respawned worker
-	// doesn't show stale defaults after the in-memory cache was lost on reap.
-	stateCtx, stateCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_, _ = worker.GetState(stateCtx)
+	// Startup is only accepted after the native RPC loop actually responds.
+	stateCtx, stateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, stateErr := worker.GetState(stateCtx)
 	stateCancel()
+	if stateErr != nil {
+		_ = worker.Close()
+		return nil, fmt.Errorf("Pi worker failed to initialize: %w", stateErr)
+	}
 	worker.touch()
 	return worker, nil
 }
@@ -226,6 +226,7 @@ func (w *piRPCWorker) GetState(ctx context.Context) (workers.WorkerStatus, error
 	w.writeMu.Unlock()
 	if err != nil {
 		w.removePending(id)
+		w.setError(err)
 		return workers.WorkerStatus{}, err
 	}
 

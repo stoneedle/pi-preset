@@ -1,8 +1,5 @@
-# pi-web source-fork installer for Windows — installs the local build and auto-start.
-#
-# From the checkout: node scripts/run-lifecycle.mjs install
-# Via Pi: pi install git:github.com/stoneedle/pi-web
-# Updates use the same Git source and build the matching binary.
+# 安装当前仓库的构建产物和 Windows 登录启动配置。
+# 入口：node scripts/run-lifecycle.mjs install
 #
 # Auto-start model (the Windows counterpart of install.sh's launchd/systemd
 # setup, kept admin-free): a HKCU Run-key entry launches pi-web-start.vbs at
@@ -22,7 +19,6 @@ if ($env:PI_WEB_INSTALL_DIR) {
   $InstallDir = Join-Path $HOME '.pi\agent\bin'
 }
 $Binary = Join-Path $InstallDir 'pi-web.exe'
-$VersionFile = Join-Path $HOME '.pi\agent\pi-web-version'
 $ConfigDir = Join-Path $HOME '.config\pi-web'
 $EnvFile = Join-Path $ConfigDir 'env'
 $LauncherPs1 = Join-Path $ConfigDir 'pi-web-start.ps1'
@@ -32,23 +28,8 @@ $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 function Info($msg) { Write-Host "-> $msg" }
 function Warn($msg) { Write-Host "!  $msg" -ForegroundColor Yellow }
 
-function Get-InstalledVersion {
-  if (Test-Path $Binary) {
-    try {
-      $v = & $Binary -version 2>$null
-      if ($v) { return "$v".Trim() }
-    } catch {}
-  }
-  # Binary missing or not runnable (e.g. partial install); fall back to the
-  # version file.
-  if (Test-Path $VersionFile) { return (Get-Content $VersionFile -First 1) }
-  return $null
-}
-
 function Stop-PiWeb {
-  # Stop the running instance before swapping the binary. Skipped for in-place
-  # self-updates: pi-web spawned this script (via `pi install`) and restarts
-  # itself afterward (see internal/app/update.go).
+  # 原位更新保留旧进程，由调用方通过现有启动器重启。
   Get-Process -Name 'pi-web' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 1
 }
@@ -63,34 +44,7 @@ function Install-Binary($src, $tag) {
   Copy-Item $src $Binary -Force
   Remove-Item $old -Force -ErrorAction SilentlyContinue
 
-  New-Item -ItemType Directory -Force -Path (Split-Path $VersionFile) | Out-Null
-  Set-Content -Path $VersionFile -Value $tag
   Info "pi-web $tag installed to $Binary"
-}
-
-function Install-Ctl {
-  if (-not $PSScriptRoot) { return }
-  $src = Join-Path $PSScriptRoot '.pi\skills\common\pi_web.py'
-  if (-not (Test-Path $src)) { return }
-  New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-  $py = Join-Path $InstallDir 'pi-web-ctl.py'
-  Copy-Item $src $py -Force
-  $cmdPath = Join-Path $InstallDir 'pi-web-ctl.cmd'
-  @"
-@echo off
-setlocal
-where python >nul 2>nul && (
-  python "%~dp0pi-web-ctl.py" %*
-  exit /b %ERRORLEVEL%
-)
-where py >nul 2>nul && (
-  py -3 "%~dp0pi-web-ctl.py" %*
-  exit /b %ERRORLEVEL%
-)
-echo pi-web-ctl requires Python 3 >&2
-exit /b 1
-"@ | Set-Content -Path $cmdPath -Encoding ASCII
-  Info "pi-web-ctl installed to $cmdPath"
 }
 
 function Set-EnvFileVar($file, $key, $value) {
@@ -168,24 +122,18 @@ function Main {
   $tag = $env:PI_WEB_SOURCE_VERSION
   if (-not $tag) { $tag = (& $sourceBinary -version).Trim() }
 
-  $installed = Get-InstalledVersion
-  if ((Test-Path $Binary) -and $installed -eq $tag) {
-    Install-Ctl
-    Info "Already up-to-date ($tag)."
+  if ((Test-Path $Binary) -and (Get-FileHash $Binary -Algorithm SHA256).Hash -eq (Get-FileHash $sourceBinary -Algorithm SHA256).Hash) {
+    Info "Already at the current build ($tag)."
     Write-Host ''
     return
   }
-  if ($installed) { Info "Update available: $installed -> $tag" }
 
   $inplace = [bool]$env:PI_WEB_INPLACE_UPDATE
   if ((Test-Path $Binary) -and -not $inplace) { Stop-PiWeb }
 
   Install-Binary $sourceBinary $tag
-  Install-Ctl
 
-  # In-place self-update: pi-web triggered this and restarts itself afterward.
-  # Skip env/auto-start setup so we don't kill the npm process running this
-  # script or clobber the launcher's PATH.
+  # 原位更新不改环境和启动配置，由调用方重启。
   if ($inplace) {
     Info "Binary updated to $tag; pi-web will restart to apply it."
     Write-Host ''

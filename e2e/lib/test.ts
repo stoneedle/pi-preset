@@ -1,10 +1,12 @@
-import { readFileSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect } from "@playwright/test";
-import { STATE_FILE, type ServerState } from "./paths";
+import type { ServerState } from "./paths";
 
 function readState(): ServerState {
-  return JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  const state = process.env.PI_WEB_E2E_SERVER;
+  if (!state) throw new Error("Playwright global setup did not start the server");
+  return JSON.parse(state);
 }
 
 export const test = base.extend<{

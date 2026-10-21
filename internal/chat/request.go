@@ -22,9 +22,8 @@ type Image struct {
 }
 
 type Request struct {
-	Message  string  `json:"message"`
-	Images   []Image `json:"images"`
-	Delivery string  `json:"delivery"`
+	Message string  `json:"message"`
+	Images  []Image `json:"images"`
 }
 
 func ParseRequest(r *http.Request, maxImageBytes, maxRequestBytes int64) (Request, error) {
@@ -33,14 +32,7 @@ func ParseRequest(r *http.Request, maxImageBytes, maxRequestBytes int64) (Reques
 		return Request{}, err
 	}
 
-	delivery := r.FormValue("delivery")
-	if delivery == "" {
-		delivery = "steer"
-	}
-	if delivery != "steer" && delivery != "followUp" {
-		return Request{}, errors.New("invalid delivery mode")
-	}
-	chat := Request{Message: strings.TrimSpace(r.FormValue("message")), Delivery: delivery}
+	chat := Request{Message: strings.TrimSpace(r.FormValue("message"))}
 	if r.MultipartForm == nil {
 		if chat.Message == "" {
 			return Request{}, ErrEmptyRequest

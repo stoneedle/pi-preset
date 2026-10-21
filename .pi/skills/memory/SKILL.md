@@ -1,75 +1,24 @@
 ---
 name: memory
-description: Manages project-local long-term memory in SQLite for pi-web users. Use when storing, searching, correcting, or listing memories.
+description: 管理当前项目的 SQLite 长期记忆。用户要求保存、搜索、修正或列出项目记忆时使用。
 ---
 
-# Memory
+# 项目记忆
 
-Use this skill for project memory tasks. Every memory is scoped to a specific project (working directory) so facts stay relevant to the right context.
+使用 `.pi/skills/memory/scripts/memory.py`，数据库为 `$PI_CODING_AGENT_DIR/pi-web-memory.sqlite`，默认位于 `~/.pi/agent/`，首次操作自动初始化。结构定义在 `data/schema.sql`。
 
-## Core files
-- `$PI_CODING_AGENT_DIR/pi-web-memory.sqlite` (default `~/.pi/agent/`) — primary memory database, auto-initialized on first use
-- `.pi/skills/memory/data/schema.sql` — schema definition (shipped with the skill)
-- `.pi/skills/memory/scripts/memory.py` — CLI implementation
+## 保存与搜索
 
-## Project context
-
-Memories are associated with a project via `--cwd` and `--project`. This allows the same database to serve multiple projects without cross-polluting recall. When a pi session is active, also capture session info so you can trace which conversation produced a memory.
-
-| Context field | Source | Example |
-|---|---|---|
-| `--cwd` | `pwd` / pi session header `cwd` | `/Users/setkyar/pi-web` |
-| `--project` | basename of cwd | `pi-web` |
-| `--session-id` | pi session header `id` (8-char UUID) | `a1b2c3d4` |
-| `--session-name` | `/name` or `session_info` entry | `Refactor auth module` |
-
-Pi sessions are stored as JSONL trees in `getSessionsDir()` (default `~/.pi/agent/sessions/<encoded-cwd>/`). Each session file has a header with `id`, `cwd`, `timestamp`, and optional `parentSession`. Entries form a tree via `id`/`parentId`; use `/tree` to navigate branches, `/fork` to split into a new session, and `/name` to set a display name.
-
-When the user says "remember that" or "save this for later", record:
-- The fact itself (`add-memory`)
-- `--cwd` of the current project
-- `--project` (derived from cwd basename)
-- Current pi session ID and name if a pi session is active
-
-## Common commands
 ```bash
-# Optional: initialize explicitly (normal commands also auto-initialize)
-python3 .pi/skills/memory/scripts/memory.py init
+python3 .pi/skills/memory/scripts/memory.py add-memory "需要记住的项目事实" \
+  --category decision --importance 4 --cwd /absolute/project/path --project project-name \
+  --session-id current-session-id --session-name "当前会话名称"
 
-# Remember a project fact
-python3 .pi/skills/memory/scripts/memory.py add-memory "Prefers tabs over spaces" \
-  --category preference --importance 4 --cwd /Users/setkyar/pi-web --project pi-web
-
-# Remember with session context
-python3 .pi/skills/memory/scripts/memory.py add-memory "Decided to use Go 1.25 for the backend" \
-  --category decision --importance 5 --cwd /Users/setkyar/pi-web --project pi-web \
-  --session-id a1b2c3d4 --session-name "pi-web backend refactor"
-
-# Search across all projects or filter by project
-python3 .pi/skills/memory/scripts/memory.py search "tabs" --project pi-web
+python3 .pi/skills/memory/scripts/memory.py search "关键词" --project project-name
 ```
 
-## Rules
-- Store explicit remember requests without asking again, unless sensitive.
-- **Always capture `--cwd` and `--project`** when adding a memory. Derive `--project` from the basename of cwd.
-- When a pi session is active, also capture `--session-id` and `--session-name` so memories are traceable to the conversation that produced them.
-- Ask before storing sensitive domains like finance, health, legal, identity, addresses, or private documents.
-- Never store passwords, API keys, seed phrases, OTPs, or full card numbers.
-- Prefer additive schema changes only.
-- Use `schema-change` for schema updates.
-
-## Outdated memories
-
-Memories are point-in-time snapshots. A memory recorded three months ago may no longer reflect reality — the codebase changed, the decision was reversed, or the preference shifted.
-
-When recalling memories:
-- **Check the timestamp** — `created_at` tells you when the memory was recorded. Older memories carry less weight.
-- **Verify against code** — use `read`, `bash`, `rg` to confirm a memory still reflects the current codebase before acting on it.
-- **Treat old memories as hints, not facts** — if a memory from March says "Auth uses JWT", but the current code has session cookies, the code wins.
-- **Correct stale memories** — when you detect a memory is outdated, use `add-memory` with updated info (the new memory naturally supersedes the old one in search recency). Optionally archive the old entry if needed.
-- **Surfacing staleness** — when presenting a recalled memory to the user, note its age: "I recall from [March 2026] that we decided X — let me verify that's still the case."
-
-## When to use
-- Remember project-specific facts, decisions, conventions, or patterns
-- Save user preferences or personal facts
-- Check existing stored context before answering a question about the current project
+- 新增时必须带当前 `--cwd` 和由目录名得到的 `--project`，不能把不同项目的事实混在一起。
+- 有活动 Pi 会话时，从原生会话头与命名元数据取得 `--session-id`、`--session-name`，保留事实来源；没有会话时省略。
+- 用户明确要求记住的普通项目事实直接保存。财务、健康、法律、身份、地址和私密文档等敏感信息先确认；不保存密码、密钥、验证码、助记词或完整卡号。
+- 召回结果先看 `created_at` 并用当前代码验证，旧记忆只是线索。发现过时时新增修正事实，必要时归档旧项。
+- 结构调整通过 `schema-change`，保留已有记忆，优先采用增量变更。

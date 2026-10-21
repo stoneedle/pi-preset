@@ -2,20 +2,30 @@ package sessions
 
 import (
 	"encoding/json"
-	"fmt"
+	"os"
+	"slices"
 	"strings"
+
+	"github.com/buger/jsonparser"
 )
 
 const windowMessages = 30
 const windowBytes = 64 << 10
 
+type ViewImage struct {
+	Entry string `json:"entry"`
+	Index int    `json:"index"`
+}
+
 type ViewBlock struct {
-	Type    string `json:"type"`
-	Index   int    `json:"index"`
-	Text    string `json:"text,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Summary string `json:"summary,omitempty"`
-	State   string `json:"state,omitempty"`
+	Type    string      `json:"type"`
+	Index   int         `json:"index"`
+	Text    string      `json:"text,omitempty"`
+	Name    string      `json:"name,omitempty"`
+	Summary string      `json:"summary,omitempty"`
+	State   string      `json:"state,omitempty"`
+	Files   []string    `json:"files,omitempty"`
+	Images  []ViewImage `json:"images,omitempty"`
 }
 
 type ViewMessage struct {
@@ -34,67 +44,36 @@ type Window struct {
 	ReplyID  string        `json:"replyId"`
 }
 
-// ActiveEntries follows native parent links, not the physical order of abandoned branches.
-func ActiveEntries(entries []map[string]any) []map[string]any {
-	byID := make(map[string]map[string]any, len(entries))
-	leaf := ""
-	for _, entry := range entries {
-		id, _ := entry["id"].(string)
-		if id == "" || entry["type"] == "session" {
-			continue
-		}
-		byID[id] = entry
-		leaf = id
+func (c *Content) Window(before, after string, leaf *string) (Window, error) {
+	path, err := c.activePath(leaf)
+	if err != nil {
+		return Window{}, err
 	}
-	path := make([]map[string]any, 0, len(entries))
-	seen := make(map[string]bool)
-	for leaf != "" && !seen[leaf] {
-		entry := byID[leaf]
-		if entry == nil {
-			break
-		}
-		seen[leaf] = true
-		path = append(path, entry)
-		leaf, _ = entry["parentId"].(string)
-	}
-	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-		path[i], path[j] = path[j], path[i]
-	}
-	return path
-}
-
-func MessageWindow(entries []map[string]any, before, after string) Window {
-	path := ActiveEntries(entries)
 	window := Window{Messages: []ViewMessage{}}
 	if len(path) == 0 {
 		window.Reset = after != "" || before != ""
-		return window
+		return window, nil
 	}
-	window.Cursor, _ = path[len(path)-1]["id"].(string)
-	for _, entry := range entries {
-		msg, _ := entry["message"].(map[string]any)
-		if isAssistantReply(msg["role"], msg["stopReason"]) {
-			window.ReplyID, _ = entry["id"].(string)
-		}
-	}
-	results := make(map[string]map[string]any)
+	window.Cursor = path[len(path)-1].id
 	for _, entry := range path {
-		msg, _ := entry["message"].(map[string]any)
-		if msg["role"] == "toolResult" {
-			id, _ := msg["toolCallId"].(string)
-			results[id] = msg
+		if isAssistantReply(entry.role, entry.outcome) {
+			window.ReplyID = ""
+			if entry.readable {
+				window.ReplyID = entry.id
+			}
 		}
 	}
+	results := resultEntries(path)
 	start, end := 0, len(path)
 	changedTools := make(map[string]bool)
 	if before != "" || after != "" {
 		found := false
 		for i, entry := range path {
-			if before != "" && entry["id"] == before {
+			if before != "" && entry.id == before {
 				end, found = i, true
 				break
 			}
-			if after != "" && entry["id"] == after {
+			if after != "" && entry.id == after {
 				start, found = i+1, true
 				break
 			}
@@ -104,168 +83,126 @@ func MessageWindow(entries []map[string]any, before, after string) Window {
 			after = ""
 		} else if after != "" {
 			for _, entry := range path[start:] {
-				msg, _ := entry["message"].(map[string]any)
-				if msg["role"] == "toolResult" {
-					id, _ := msg["toolCallId"].(string)
-					changedTools[id] = true
+				if entry.role == "toolResult" {
+					changedTools[entry.callID] = true
 				}
 			}
 		}
 	}
+	f, err := c.open()
+	if err != nil {
+		return Window{}, err
+	}
+	defer f.Close()
 	bytes := 0
 	for i := end - 1; i >= 0; i-- {
 		entry := path[i]
-		msg, _ := entry["message"].(map[string]any)
-		role, _ := msg["role"].(string)
-		if role != "user" && role != "assistant" {
+		if entry.role != "user" && entry.role != "assistant" {
 			continue
 		}
-		if after != "" && i < start {
-			affected := false
-			for _, block := range contentBlocks(msg["content"]) {
-				id, _ := block["id"].(string)
-				if block["type"] == "toolCall" && changedTools[id] {
-					affected = true
-				}
-			}
-			if !affected {
-				continue
-			}
+		if after != "" && i < start && !slices.ContainsFunc(entry.calls, func(id string) bool { return changedTools[id] }) {
+			continue
 		}
-		view := projectMessage(entry, msg, results)
 		if after == "" && len(window.Messages) > 0 && (len(window.Messages) >= windowMessages || bytes >= windowBytes) {
 			window.Before = window.Messages[len(window.Messages)-1].ID
 			break
+		}
+		view, err := c.project(f, entry, results)
+		if err != nil {
+			return Window{}, err
+		}
+		if len(view.Blocks) == 0 && view.Error == "" {
+			continue
 		}
 		raw, _ := json.Marshal(view)
 		bytes += len(raw)
 		window.Messages = append(window.Messages, view)
 	}
-	for i, j := 0, len(window.Messages)-1; i < j; i, j = i+1, j-1 {
-		window.Messages[i], window.Messages[j] = window.Messages[j], window.Messages[i]
-	}
-	return window
+	slices.Reverse(window.Messages)
+	return window, nil
 }
 
-func contentBlocks(content any) []map[string]any {
-	if text, ok := content.(string); ok {
-		return []map[string]any{{"type": "text", "text": text}}
+func (c *Content) project(f *os.File, entry *nativeEntry, results map[string]*nativeEntry) (ViewMessage, error) {
+	line, err := c.record(f, entry)
+	if err != nil {
+		return ViewMessage{}, err
 	}
-	var blocks []map[string]any
-	if list, ok := content.([]any); ok {
-		for _, item := range list {
-			if block, ok := item.(map[string]any); ok {
-				blocks = append(blocks, block)
-			}
+	view := ViewMessage{ID: entry.id, Role: entry.role, Timestamp: entry.timestamp, Blocks: []ViewBlock{}}
+	var projectionError error
+	eachPart(line, func(part contentPart) {
+		if projectionError != nil {
+			return
 		}
-	}
-	return blocks
-}
-
-func projectMessage(entry, msg map[string]any, results map[string]map[string]any) ViewMessage {
-	id, _ := entry["id"].(string)
-	role, _ := msg["role"].(string)
-	ts, _ := entry["timestamp"].(string)
-	view := ViewMessage{ID: id, Role: role, Timestamp: ts, Blocks: []ViewBlock{}}
-	for index, block := range contentBlocks(msg["content"]) {
-		kind, _ := block["type"].(string)
-		b := ViewBlock{Type: kind, Index: index}
-		switch kind {
+		block := ViewBlock{Type: part.kind, Index: part.index}
+		switch part.kind {
 		case "text":
-			b.Text, _ = block["text"].(string)
-		case "thinking", "image":
+			block.Text = part.text()
+			if strings.TrimSpace(block.Text) == "" {
+				return
+			}
+		case "thinking":
+			value, kind, _, _ := jsonparser.Get(part.raw, "thinking")
+			if kind != jsonparser.String {
+				return
+			}
+			block.Summary = blockSummary(value)
+			if block.Summary == "" {
+				return
+			}
+		case "image":
 		case "toolCall":
-			b.Type = "tool"
-			b.Name, _ = block["name"].(string)
-			args, _ := block["arguments"].(map[string]any)
-			for _, key := range []string{"command", "file_path", "path", "query"} {
-				if text, ok := args[key].(string); ok && text != "" {
-					b.Summary = strings.Join(strings.Fields(text), " ")
-					if len(b.Summary) > 160 {
-						b.Summary = string([]rune(b.Summary)[:min(80, len([]rune(b.Summary)))]) + "…"
-					}
+			block.Type = "tool"
+			block.Name = stringField(part.raw, "name")
+			for _, key := range []string{"file_path", "path"} {
+				value, kind, _, _ := jsonparser.Get(part.raw, "arguments", key)
+				if kind != jsonparser.String || len(value) > 4096*6 {
+					continue
+				}
+				path := decodeString(value)
+				if path != "" && len(path) <= 4096 && !strings.ContainsAny(path, "\x00\r\n") {
+					block.Files = append(block.Files, path)
 					break
 				}
 			}
-			callID, _ := block["id"].(string)
-			b.State = "pending"
-			if result := results[callID]; result != nil {
-				b.State = "done"
-				if result["isError"] == true {
-					b.State = "error"
-				}
-			}
-		default:
-			continue
-		}
-		view.Blocks = append(view.Blocks, b)
-	}
-	if msg["stopReason"] == "error" || msg["stopReason"] == "aborted" {
-		view.Error, _ = msg["errorMessage"].(string)
-		if view.Error == "" {
-			view.Error, _ = msg["stopReason"].(string)
-		}
-	}
-	return view
-}
-
-// BlockContent is the only path that exposes a folded body. Images stay separate.
-func BlockContent(entries []map[string]any, entryID string, index int) (map[string]any, error) {
-	path := ActiveEntries(entries)
-	for _, entry := range path {
-		if entry["id"] != entryID {
-			continue
-		}
-		msg, _ := entry["message"].(map[string]any)
-		blocks := contentBlocks(msg["content"])
-		if index < 0 || index >= len(blocks) {
-			break
-		}
-		block := blocks[index]
-		switch block["type"] {
-		case "thinking":
-			return map[string]any{"text": block["thinking"]}, nil
-		case "toolCall":
-			out := map[string]any{"input": block["arguments"]}
-			for _, candidate := range path {
-				result, _ := candidate["message"].(map[string]any)
-				if result["role"] != "toolResult" || result["toolCallId"] != block["id"] {
+			for _, key := range []string{"command", "file_path", "path", "query", "code"} {
+				value, kind, _, _ := jsonparser.Get(part.raw, "arguments", key)
+				if kind != jsonparser.String || len(value) == 0 {
 					continue
 				}
-				var texts []string
-				var images []map[string]any
-				for i, part := range contentBlocks(result["content"]) {
-					if text, ok := part["text"].(string); ok {
-						texts = append(texts, text)
-					}
-					if part["type"] == "image" {
-						images = append(images, map[string]any{"entry": candidate["id"], "index": i})
-					}
-				}
-				out["text"] = strings.Join(texts, "\n")
-				out["images"] = images
-				out["details"] = result["details"]
+				block.Summary = blockSummary(value)
 				break
 			}
-			return out, nil
+			block.State = "pending"
+			if result := results[stringField(part.raw, "id")]; result != nil {
+				block.State = "done"
+				if result.failed {
+					block.State = "error"
+				}
+				resultLine, err := c.record(f, result)
+				if err != nil {
+					projectionError = err
+					return
+				}
+				eachPart(resultLine, func(image contentPart) {
+					if image.kind == "image" {
+						block.Images = append(block.Images, ViewImage{Entry: result.id, Index: image.index})
+					}
+				})
+			}
+		default:
+			return
 		}
-		break
+		view.Blocks = append(view.Blocks, block)
+	})
+	if entry.outcome == "error" || entry.outcome == "aborted" {
+		view.Error = stringField(line, "message", "errorMessage")
+		if view.Error == "" {
+			view.Error = entry.outcome
+		}
 	}
-	return nil, fmt.Errorf("block not found")
+	return view, projectionError
 }
 
-func ImageContent(entries []map[string]any, entryID string, index int) (string, string, error) {
-	for _, entry := range ActiveEntries(entries) {
-		if entry["id"] != entryID {
-			continue
-		}
-		msg, _ := entry["message"].(map[string]any)
-		blocks := contentBlocks(msg["content"])
-		if index >= 0 && index < len(blocks) && blocks[index]["type"] == "image" {
-			data, _ := blocks[index]["data"].(string)
-			mime, _ := blocks[index]["mimeType"].(string)
-			return data, mime, nil
-		}
-	}
-	return "", "", fmt.Errorf("image not found")
+func blockSummary(value []byte) string {
+	return truncate(strings.Join(strings.Fields(stringPrefix(value, 256)), " "), 80)
 }

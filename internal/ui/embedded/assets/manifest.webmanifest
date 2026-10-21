@@ -1,14 +1,33 @@
 {
-  "name": "Pi Sessions",
+  "name": "Pi 会话",
+  "lang": "zh-CN",
   "short_name": "Pi",
-  "description": "Browse and chat with Pi/Claude Code sessions on your machine.",
+  "description": "在手机上阅读和控制自己的 Pi 会话。",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone"],
   "background_color": "#0e0e13",
   "theme_color": "#0e0e13",
   "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
     {
       "src": "/icon.svg",
       "sizes": "any",

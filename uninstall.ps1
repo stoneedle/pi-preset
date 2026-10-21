@@ -1,9 +1,7 @@
-# pi-web uninstaller for Windows — removes binary, auto-start, and runtime
-# state. Triggered as npm preuninstall hook when `pi remove npm:@ygncode/pi-web@beta`
-# is run. The npm package directory itself is removed by npm after this script.
+# 移除 Windows 程序、登录启动和运行地址，保留用户数据与环境配置。
 #
 # Kept intact (survives uninstall — preserves data for reinstall):
-#   - ~/.pi/agent/pi-web.sqlite          (settings, scratchpads, project prefs)
+#   - ~/.pi/agent/pi-web.sqlite          (共享确认、设置和通知)
 #   - ~/.pi/agent/pi-web-memory.sqlite   (memory skill data)
 #   - ~/.config/pi-web/env               (PI_WEB_TOKEN, PATH, etc.)
 #   - ~/.pi/agent/sessions/              (session files)
@@ -40,24 +38,7 @@ if (Test-Path $Binary) {
 } else {
   Skip "binary not found at $Binary"
 }
-Remove-Item "$Binary.old" -Force -ErrorAction SilentlyContinue
-$ctlDir = Split-Path $Binary
-foreach ($name in @('pi-web-ctl', 'pi-web-ctl.py', 'pi-web-ctl.cmd')) {
-  $ctl = Join-Path $ctlDir $name
-  if (Test-Path $ctl) {
-    Info "Removing skill CLI: $ctl"
-    Remove-Item $ctl -Force -ErrorAction SilentlyContinue
-  }
-}
-
-# Remove version file
-$versionFile = Join-Path $HOME '.pi\agent\pi-web-version'
-if (Test-Path $versionFile) {
-  Info "Removing version file: $versionFile"
-  Remove-Item $versionFile -Force
-} else {
-  Skip 'version file not found'
-}
+Remove-Item "$Binary.old*" -Force -ErrorAction SilentlyContinue
 
 # Remove runtime state
 $stateFile = Join-Path $HOME '.pi\agent\pi-web\pi-web-state.json'
@@ -71,11 +52,6 @@ $stateDir = Join-Path $HOME '.pi\agent\pi-web'
 if ((Test-Path $stateDir) -and -not (Get-ChildItem $stateDir)) {
   Remove-Item $stateDir -Force
 }
-
-# Clean up stale npm temp dirs
-$temps = @(Get-Item (Join-Path $HOME '.pi\agent\npm\node_modules\@ygncode\.pi-web-*') -ErrorAction SilentlyContinue)
-foreach ($t in $temps) { Remove-Item $t.FullName -Recurse -Force -ErrorAction SilentlyContinue }
-if ($temps.Count -gt 0) { Info "Cleaned up $($temps.Count) stale npm temp dir(s)" }
 
 # Remove auto-start (Run key + hidden launcher; the env file is kept)
 Remove-ItemProperty -Path $RunKey -Name 'pi-web' -ErrorAction SilentlyContinue

@@ -1,4 +1,4 @@
-.PHONY: e2e-stub build setup frontend-setup go-setup root-setup frontend-build frontend-test frontend-knip frontend-lint frontend-format-check extension-test memory-test go-test install-test vet test check clean dev docs docs-dev release-patch release-minor release-major release-beta e2e e2e-setup
+.PHONY: e2e-stub build setup frontend-setup go-setup root-setup frontend-build frontend-test frontend-knip frontend-lint frontend-format-check extension-test memory-test go-test install-test vet test check clean dev e2e e2e-setup
 
 ifeq ($(OS),Windows_NT)
 BINARY ?= pi-web.exe
@@ -88,7 +88,7 @@ version:
 	@echo $(VERSION)
 
 # End-to-end browser tests (Playwright). Kept out of `test`/`check` because they
-# need browser binaries and the built server. See docs/dev/e2e-testing.md.
+# need browser binaries and the built server. See docs/testing.md.
 e2e-setup:
 	cd $(E2E_DIR) && npm ci && npx playwright install --with-deps chromium firefox webkit
 
@@ -99,36 +99,9 @@ ifeq ($(OS),Windows_NT)
 endif
 
 e2e: build e2e-stub
+	cd $(E2E_DIR) && node --test native/*.test.mjs
 	cd $(E2E_DIR) && npx playwright test
 
 clean:
 	rm -f $(BINARY)
 	rm -rf $(WEB_DIR)/dist
-
-# Docs site (VitePress). Assemble the generated srcDir from user-docs + authored
-# pages, then build/preview. Not part of `make check` — never gates the app.
-docs:
-	$(PYTHON) scripts/build_site.py
-	cd website && npm install && npm run build
-
-docs-dev:
-	$(PYTHON) scripts/build_site.py
-	cd website && npm install && npm run dev
-
-# Release helpers — bump package.json, commit, tag, and push.
-# Uses npm version which auto-creates a vX.Y.Z git tag.
-release-patch:
-	npm version patch
-	git push --follow-tags
-
-release-minor:
-	npm version minor
-	git push --follow-tags
-
-release-major:
-	npm version major
-	git push --follow-tags
-
-release-beta:
-	npm version prerelease --preid=beta
-	git push --follow-tags

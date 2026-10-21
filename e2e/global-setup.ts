@@ -1,9 +1,8 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { STATE_FILE, TMP_DIR, type ServerState } from "./lib/paths";
+import { rm } from 'node:fs/promises';
+import type { ServerState } from "./lib/paths";
 import { startServer, stopServer } from "./lib/server";
 
 export default async function globalSetup() {
-  mkdirSync(TMP_DIR, { recursive: true });
   const { baseURL, agentDir, sessionsDir, child } = await startServer();
   const state: ServerState = {
     baseURL,
@@ -11,18 +10,15 @@ export default async function globalSetup() {
     sessionsDir,
     pid: child.pid!,
   };
-  writeFileSync(STATE_FILE, JSON.stringify(state));
+  process.env.PI_WEB_E2E_SERVER = JSON.stringify(state);
   return async () => {
-    try {
-      await stopServer(child);
-      rmSync(agentDir, {
-        recursive: true,
-        force: true,
-        maxRetries: 3,
-        retryDelay: 100,
-      });
-    } finally {
-      rmSync(STATE_FILE, { force: true });
-    }
+    await stopServer(child);
+    delete process.env.PI_WEB_E2E_SERVER;
+    await rm(agentDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 250,
+    });
   };
 }

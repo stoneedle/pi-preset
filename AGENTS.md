@@ -1,63 +1,32 @@
-# Development Rules
+# 项目约定
 
-- Only create an abstraction if it's actually needed
-- Prefer clear function/variable names over inline comments
-- Avoid helper functions when a simple inline expression would suffice
-- Use knip to remove unused code if making large changes
+这是个人自用的 Pi 手机远程界面，以实际体验和维护成本为准，不维护面向公众发布的产品配套。
 
-## Docs
+## 实现
 
-Read the relevant doc in `@docs/` before structural changes, and update the matching doc whenever your change makes it out of date.
+- 界面只支持中文，文案直接写在所属模块；不保留语言选择、翻译字典、翻译生成或语言兼容层。会话内容、文件、模型名称和底层错误保留原文。
+- 只为实际共享的规则建立抽象，每项状态和规则由唯一模块负责。重构采用硬切，更新全部调用方，删除旧接口和无用代码。
+- 保留已有用户改动、会话、登录态和设置。核心功能不能因为精简而悄悄消失。
+- `RemoteApp.svelte` 是唯一会话界面；正文、折叠内容、图片和运行状态分别按需读取。窄屏不允许工具名或状态竖排，工具和思考使用无边框单行摘要。
+- 原生 Pi 拥有执行、命名和运行状态。浏览历史不启动执行器；只有明确新建或继续会话才创建后台 worker，每个会话最多一个。
+- 图标统一使用 `web/src/shared/icons.js` 导出的 Lucide 图标。
+- 修改结构前阅读 [架构](docs/architecture.md)，修改行为后同步更新必要说明。
 
-### Localized docs
+## 验证
 
-The root `README.md` and everything under `user-docs/en/` are the English source of truth. Translations are machine-drafted, never hand-written:
+- 使用 `make build` 构建，不能只运行 `go build`，因为 Go 嵌入的是当前前端产物。
+- `make check` 检查格式、lint、无用代码、前后端测试、构建和 vet。大改必须通过 knip。
+- `make e2e` 验证真实生产界面、原生集成和移动端操作，入口与隔离方式见 [测试](docs/testing.md)。
+- 保持真实窄屏尺寸，检查内容、展开/收起、发送/停止及键盘缩小时的可用性；不靠放宽容器或删弱断言掩盖问题。
+- 前端使用 2 空格缩进、单引号，遵循现有 ESLint 和 Prettier 配置。
 
-- Edit only the English source. Never edit `user-docs/readme/README.<lang>.md` or `user-docs/<lang>/*.md` by hand.
-- Regenerate translations with the scripts (they translate via `pi`):
-  - `python3 scripts/build_readmes.py` — root `README.md` → `user-docs/readme/README.<lang>.md`
-  - `python3 scripts/build_userdocs.py` — `user-docs/en/*.md` → `user-docs/<lang>/*.md`
-  - Pass language codes to rebuild a subset, e.g. `python3 scripts/build_userdocs.py es ja`.
-- To add a language: write the English first, add the code + native name to the `LANGS` (and `TRANSLATE_TARGET`) lists in both scripts and the nav, then run the scripts for the new code.
+## 服务
 
-## Testing
+- 可以按需自主启动、更新和重启 pi-web，无需再次确认。
+- 复用现有构建、安装器和平台启动器或服务管理入口，不为普通重启另写脚本。
+- 保留端口、令牌、登录、会话和配置；重启后验证服务可用且加载了预期前端产物。
+- 默认端口 `31415`，运行状态文件为 `~/.pi/agent/pi-web/pi-web-state.json`。SSE 的全局主题为 `__all__`，会话主题为会话 ID。
 
-```bash
-make test   # vitest + go test ./...
-make check  # lint + format-check + test + build + vet (run before pushing)
-make e2e    # Playwright E2E; needs `make e2e-setup` once. Not in test/check
-```
+## 文档
 
-- **Go:** table-driven tests in `*_test.go` alongside source.
-- **Frontend:** tests next to source (`foo.js` → `foo.test.js`); DOM helpers take `{ documentImpl, windowImpl }` for DI.
-- **Lint/format (frontend):** ESLint (`eslint-plugin-svelte`) + Prettier, config in `web/`. `make check` runs `frontend-lint` + `frontend-format-check`. Fix locally with `cd web && npm run format` (auto-format) and `npm run lint`. Style is 2-space indent, single quotes (enforced by Prettier).
-- **E2E:** lives in `e2e/` (Playwright, built binary across desktop/mobile/iPad, stub `pi`). See `docs/dev/e2e-testing.md`.
-- **Always `make build`, never `go build` alone** — `//go:embed` needs the current `web/dist` from the frontend build.
-
-## Critical Rules
-
-1. **One mobile interface.** `RemoteApp.svelte` renders the session list and conversation. The HTML shell contains no conversation data. Session windows, folded bodies, images, and runtime state have separate HTTP responsibilities; there is no workspace, export, or alternate interface mode.
-2. **Native Pi owns execution and names.** `pi-title-glyphs` owns automatic naming; the browser displays native names. Active controls go to the authenticated in-process `pi-remote` owner. Only explicit continue/new-session actions may create a background RPC worker.
-3. **One worker per session.** Reused; crashed = evicted + replaced; idle reaped after 10 min.
-4. **Icons:** Lucide only, via `web/src/shared/icons.js` — no hand-drawn SVG or unicode glyphs.
-5. **i18n:** user-facing strings go through `t()` from `web/src/shared/i18n.js`. Edit **only** `web/src/shared/locales/en.js` — it is the source of truth; add/change keys there. Never hand-write the other locale files (`de.js`, `es.js`, …); they are machine-drafted by translating `en.js` via `pi`, the same English-source-only approach as the localized docs (see [Localized docs](#localized-docs)). Session content is never translated.
-6. **Default port `31415`.** State: `~/.pi/agent/pi-web/pi-web-state.json`. SSE topics: `__all__` for index-wide, session ID per-session.
-7. **Never start pi-web yourself** (`make dev`, `./pi-web`, etc.). The user runs it. Build/test with `make build` / `make test` / `make check`, but leave running the server to the user.
-
-## User Override
-
-If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
-
-## Agent skills
-
-### Issue tracker
-
-Issues, specs, maps, and implementation tickets live in this fork's GitHub Issues. Read `docs/agents/issue-tracker.md` before tracker operations.
-
-### Triage labels
-
-Use the five default triage roles. Read `docs/agents/triage-labels.md` before triaging or changing triage labels.
-
-### Domain docs
-
-Single-context: root `GLOSSARY.md` and `docs/adr/`, created only when needed. Read `docs/agents/domain.md` before domain exploration or modeling.
+只维护中文的 `README.md`、架构和测试说明，以及确有必要的模块/技能说明。不要恢复文档站、多语言副本、营销页面或公开发布流水线；临时调查材料放在 `.dev/`。

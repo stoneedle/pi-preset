@@ -1,22 +1,18 @@
 {
   "name": "@stoneedle/pi-web",
-  "description": "Remote control your pi coding agent from any browser on your network",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "description": "个人自用的 Pi 手机远程界面",
   "version": "0.0.1-beta.38-stoneedle.1",
-  "keywords": [
-    "pi-package"
-  ],
   "pi": {
-    "extensions": [
-      "./.pi/extensions"
-    ],
-    "skills": [
-      "./.pi/skills"
-    ]
+    "extensions": ["./.pi/extensions/index.ts"],
+    "skills": ["./.pi/skills"]
   },
   "scripts": {
     "postinstall": "node scripts/run-lifecycle.mjs install",
     "preuninstall": "node scripts/run-lifecycle.mjs uninstall",
-    "test:extensions": "vitest run --config tests/extensions/vitest.config.ts"
+    "test:extensions": "vitest run --config tests/extensions/vitest.config.ts && node --test tests/native/*.test.ts"
   },
   "dependencies": {
     "qrcode": "^1.5.4"
@@ -24,10 +20,6 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.3.0",
     "@earendil-works/pi-tui": "*"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/stoneedle/pi-web"
   },
   "license": "MIT",
   "devDependencies": {

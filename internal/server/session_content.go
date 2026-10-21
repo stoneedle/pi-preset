@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/base64"
+	"errors"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +12,7 @@ import (
 )
 
 func (s *Server) handleSessionBlock(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	content, err := s.cache.OpenContent(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}
@@ -19,9 +21,12 @@ func (s *Server) handleSessionBlock(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid block index")
 		return
 	}
-	block, err := sessions.BlockContent(resolved.Session.Entries, r.URL.Query().Get("entry"), index)
-	if err != nil {
+	block, err := content.Block(r.URL.Query().Get("entry"), index, s.activeLeaf(content.SessionSummary))
+	if errors.Is(err, sessions.ErrBlockNotFound) {
 		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if resolveOrWriteError(w, err) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -29,7 +34,7 @@ func (s *Server) handleSessionBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	content, err := s.cache.OpenContent(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}
@@ -38,18 +43,26 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid block index")
 		return
 	}
-	data, mime, err := sessions.ImageContent(resolved.Session.Entries, r.URL.Query().Get("entry"), index)
-	if err != nil {
+	data, mediaType, err := content.Image(r.URL.Query().Get("entry"), index, s.activeLeaf(content.SessionSummary))
+	if errors.Is(err, sessions.ErrImageNotFound) {
 		writeJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	if resolveOrWriteError(w, err) {
+		return
+	}
 	body, err := base64.StdEncoding.DecodeString(data)
-	if err != nil || !strings.HasPrefix(mime, "image/") || mime == "image/svg+xml" {
+	if err != nil || !strings.HasPrefix(mediaType, "image/") || mediaType == "image/svg+xml" {
 		writeJSONError(w, http.StatusUnprocessableEntity, "invalid image")
 		return
 	}
-	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
+	if r.URL.Query().Get("download") == "1" {
+		extension := map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif"}[mediaType]
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "image" + extension}))
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	_, _ = w.Write(body)
 }

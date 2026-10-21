@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Deterministic native RPC fixture. It owns both its JSONL and runtime heartbeat.
+// Deterministic native RPC fixture. One process owns both its JSONL and loopback snapshot stream.
 import fs from 'node:fs';
-import path from 'node:path';
 import readline from 'node:readline';
+import { openFixtureOwner } from '../runtime-owner.mjs';
 
 const sessionPath = process.argv[process.argv.indexOf('--session') + 1];
 if (!sessionPath || !fs.existsSync(sessionPath)) process.exit(1);
@@ -11,27 +11,10 @@ let thinkingLevel = 'medium';
 let state = 'idle';
 let sequence = 0;
 let timer;
-let heartbeatRetry;
 const followUps = [];
-const statusDirectory = path.join(process.env.PI_CODING_AGENT_DIR, 'session-status');
-fs.mkdirSync(statusDirectory, { recursive: true });
-const statusFile = path.join(statusDirectory, `${path.basename(sessionPath)}.${process.pid}.json`);
+const commands = [{ name: 'skill:memory', description: 'Project memory', source: 'skill' }, { name: 'reload', source: 'extension' }];
 const send = (data) => process.stdout.write(JSON.stringify(data) + '\n');
 const respond = (id, command, data = {}) => send({ type: 'response', id, command, success: true, data });
-function heartbeat(attempt = 0) {
-  const temporary = statusFile + '.tmp';
-  try {
-    fs.writeFileSync(temporary, JSON.stringify({ id: path.basename(sessionPath), state, updatedAt: new Date().toISOString() }));
-    fs.renameSync(temporary, statusFile);
-  } catch (error) {
-    if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
-    if (attempt < 3 && !heartbeatRetry) {
-      heartbeatRetry = setTimeout(() => { heartbeatRetry = undefined; heartbeat(attempt + 1); }, 25 * (attempt + 1));
-    }
-  }
-}
-heartbeat();
-const heartbeatTimer = setInterval(heartbeat, 3000);
 function append(role, text, images = []) {
   const entries = fs.readFileSync(sessionPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
   const parent = entries.filter((entry) => entry.type !== 'session').at(-1)?.id || null;
@@ -41,35 +24,47 @@ function append(role, text, images = []) {
 function run(message, images = []) {
   const delay = /\[\[slow:(\d+)\]\]/.exec(message);
   const text = message.replace(/\s*\[\[slow:\d+\]\]\s*/, '').trim();
-  state = 'running'; heartbeat(); send({ type: 'agent_start' }); append('user', text, images);
+  state = 'running'; send({ type: 'agent_start' }); append('user', text, images); owner.publish();
   timer = setTimeout(() => {
     append('assistant', `Stub reply: ${text}`);
     send({ type: 'agent_end' });
     if (followUps.length) { const next = followUps.shift(); run(next.message, next.images); }
-    else { state = 'idle'; heartbeat(); send({ type: 'agent_settled' }); }
+    else { state = 'idle'; owner.publish(); send({ type: 'agent_settled' }); }
   }, delay ? Number(delay[1]) : 40);
 }
+function prompt(message, images, delivery) {
+  if (state === 'running' && delivery === 'followUp') followUps.push({ message, images });
+  else if (state === 'running') { append('user', message, images); append('assistant', `Stub reply: ${message}`); owner.publish(); }
+  else run(message, images);
+}
+function abort() { clearTimeout(timer); followUps.length = 0; state = 'idle'; owner.publish(); send({ type: 'agent_settled', aborted: true }); }
+const owner = await openFixtureOwner({ agentDir: process.env.PI_CODING_AGENT_DIR, sessionPath,
+  getState: () => ({ state, thinking: thinkingLevel, model: model.id, provider: model.provider }),
+  control: (input) => {
+    switch (input.action) {
+      case 'send': prompt(input.chat.message, input.chat.images || [], input.chat.delivery); break;
+      case 'abort': abort(); break;
+      case 'thinking': thinkingLevel = input.level; break;
+      case 'model': model = { id: input.modelId, name: input.modelId, provider: input.provider }; break;
+      case 'commands': return { commands: commands.filter((command) => command.source === 'skill') };
+      case 'models': return { models: [model, { id: 'other-model', name: 'Other model', provider: 'test' }] };
+      default: throw new Error('unsupported control');
+    }
+    return { status: 'accepted' };
+  },
+});
 const input = readline.createInterface({ input: process.stdin });
 input.on('line', (line) => {
   let command;
   try { command = JSON.parse(line); } catch { return; }
   switch (command.type) {
     case 'get_state': respond(command.id, command.type, { model, thinkingLevel, isStreaming: state === 'running' }); break;
-    case 'get_commands': respond(command.id, command.type, { commands: [{ name: 'skill:memory', description: 'Project memory', source: 'skill' }, { name: 'reload', source: 'extension' }] }); break;
-    case 'set_model': model = { id: command.modelId, name: command.modelId, provider: command.provider }; respond(command.id, command.type, model); break;
-    case 'set_thinking_level': thinkingLevel = command.level; respond(command.id, command.type, { thinkingLevel }); break;
-    case 'abort': clearTimeout(timer); followUps.length = 0; state = 'idle'; heartbeat(); respond(command.id, command.type); send({ type: 'agent_settled' }); break;
-    case 'prompt':
-      respond(command.id, command.type);
-      if (state === 'running' && command.streamingBehavior === 'followUp') followUps.push(command);
-      else if (state === 'running') { append('user', command.message, command.images); append('assistant', `Stub reply: ${command.message}`); }
-      else run(command.message, command.images);
-      break;
+    case 'get_commands': respond(command.id, command.type, { commands }); break;
+    case 'set_model': model = { id: command.modelId, name: command.modelId, provider: command.provider }; owner.publish(); respond(command.id, command.type, model); break;
+    case 'set_thinking_level': thinkingLevel = command.level; owner.publish(); respond(command.id, command.type, { thinkingLevel }); break;
+    case 'abort': abort(); respond(command.id, command.type); break;
+    case 'prompt': respond(command.id, command.type); prompt(command.message, command.images, command.streamingBehavior); break;
     default: send({ type: 'response', id: command.id, success: false, error: 'unsupported command' });
   }
 });
-input.on('close', () => {
-  clearInterval(heartbeatTimer); clearTimeout(timer); clearTimeout(heartbeatRetry);
-  try { fs.unlinkSync(statusFile); } catch {}
-  process.exit(0);
-});
+input.on('close', async () => { clearTimeout(timer); await owner.close(); process.exit(0); });

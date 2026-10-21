@@ -25,9 +25,9 @@ type liveDocumentData struct {
 
 func renderLiveDocumentStart(data liveDocumentData) string {
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content"><title>`)
+	b.WriteString(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content"><title>`)
 	b.WriteString(template.HTMLEscapeString(data.Title))
-	b.WriteString(`</title><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#111116"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Pi"><meta name="pi-web-theme" content="`)
+	b.WriteString(`</title><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon-192.png"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#111116"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Pi"><meta name="pi-web-theme" content="`)
 	b.WriteString(template.HTMLEscapeString(themeProvider()))
 	b.WriteString(`"><style>` + liveThemeCss + `</style><link rel="stylesheet" href="/custom-themes.css">`)
 	ui, content, code, uiSize, contentSize := fontProvider()

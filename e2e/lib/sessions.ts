@@ -3,10 +3,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { TestInfo } from "@playwright/test";
 
-let sequence = 0;
 const nextId = () => randomBytes(4).toString("hex");
 export function uniqueSessionName(info: TestInfo, prefix = "mobile"): string {
-  return `${prefix}-${info.project.name.replace(/\W+/g, "-").toLowerCase()}-${Date.now()}-${sequence++}.jsonl`;
+  return `${prefix}-${info.project.name.replace(/\W+/g, "-").toLowerCase()}-${Date.now()}-${randomUUID()}.jsonl`;
 }
 
 export function assistantTextEntry(parentId: string, text: string) {

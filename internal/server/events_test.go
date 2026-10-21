@@ -25,7 +25,7 @@ func (w *syncRecorder) body() string { w.mu.Lock(); defer w.mu.Unlock(); return 
 func TestSessionAndIndexReceiveTruthfulStateSnapshot(t *testing.T) {
 	for _, topic := range []string{"__all__", "session.jsonl"} {
 		t.Run(topic, func(t *testing.T) {
-			s := &Server{lastStates: map[string]string{"session.jsonl": "background"}}
+			s := &Server{runtimeStates: map[string]runtimeSnapshot{"session.jsonl": {ID: "session.jsonl", State: "background"}}}
 			r := httptest.NewRequest("GET", "/events?id="+topic, nil)
 			ctx, cancel := context.WithCancel(r.Context())
 			defer cancel()
@@ -38,7 +38,7 @@ func TestSessionAndIndexReceiveTruthfulStateSnapshot(t *testing.T) {
 			}
 			cancel()
 			<-done
-			if !strings.Contains(w.body(), `"session.jsonl":"background"`) {
+			if !strings.Contains(w.body(), `"state":"background"`) {
 				t.Fatalf("snapshot: %s", w.body())
 			}
 		})

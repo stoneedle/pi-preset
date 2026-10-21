@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -31,9 +32,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ":ok\n\n")
 	flusher.Flush()
 
-	s.writeStatusSnapshot(w)
+	s.writeStatusSnapshot(w, sessID)
 	flusher.Flush()
 
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case msg, open := <-client.ch:
@@ -53,17 +56,24 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(w, "data: %s\n\n", msg)
 			}
 			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprint(w, "event: heartbeat\ndata: {}\n\n")
+			flusher.Flush()
+		case <-client.done:
+			return
 		case <-r.Context().Done():
 			return
 		}
 	}
 }
 
-func (s *Server) writeStatusSnapshot(w http.ResponseWriter) {
+func (s *Server) writeStatusSnapshot(w http.ResponseWriter, sessID string) {
 	s.lastKnownMu.Lock()
-	states := make(map[string]string, len(s.lastStates))
-	for id, state := range s.lastStates {
-		states[id] = state
+	states := make(map[string]runtimeSnapshot, len(s.runtimeStates))
+	for id, state := range s.runtimeStates {
+		if sessID == globalSessID || sessID == id {
+			states[id] = state
+		}
 	}
 	s.lastKnownMu.Unlock()
 	data, _ := json.Marshal(states)

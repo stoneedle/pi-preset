@@ -7,7 +7,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: isCI,
   retries: isCI ? 1 : 0,
-  workers: isCI ? 2 : undefined,
+  workers: 2,
   reporter: isCI ? [["html", { open: "never" }], ["list"]] : [["list"]],
   globalSetup: "./global-setup.ts",
   use: {

@@ -20,6 +20,9 @@ func resolveOrWriteError(w http.ResponseWriter, err error) bool {
 		writeJSONError(w, http.StatusBadRequest, "invalid session id")
 	case errors.Is(err, sessions.ErrSessionNotFound):
 		writeJSONError(w, http.StatusNotFound, "session not found")
+	case errors.Is(err, sessions.ErrContentChanged):
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
@@ -27,7 +30,7 @@ func resolveOrWriteError(w http.ResponseWriter, err error) bool {
 }
 
 func (s *Server) handleGitInfo(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	resolved, err := s.cache.ResolveHeader(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}

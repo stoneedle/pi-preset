@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
     <head>
         <meta charset="UTF-8" />
         <meta
             name="viewport"
             content="width=device-width, initial-scale=1, maximum-scale=1"
         />
-        <title>pi-web — Authentication Required</title>
+        <title>pi-web — 登录</title>
         <link rel="icon" type="image/svg+xml" href="/icon.svg" />
         <meta name="pi-web-theme" content="{{.ServerTheme}}" />
         {{.ThemeCss}}
@@ -153,28 +153,27 @@
         <div class="container">
             <div class="brand-header">
                 <span class="pi-logo-mark" aria-hidden="true"></span>
-                <h1>Pi Sessions</h1>
+                <h1>Pi 会话</h1>
             </div>
-            <p class="subtitle">Authentication Required</p>
+            <p class="subtitle">请输入访问令牌</p>
             <p class="hint">
-                Run <code>/pi-web token</code> in <code>pi</code> to retrieve
-                it.
+                在 <code>pi</code> 中运行 <code>/pi-web token</code> 获取令牌。
             </p>
             <form method="post">
                 <div class="field">
-                    <label for="token">Access Token</label>
+                    <label for="token">访问令牌</label>
                     <input
                         type="password"
                         id="token"
                         name="token"
-                        placeholder="Enter access token"
+                        placeholder="输入访问令牌"
                         required
                         autofocus
                         autocomplete="off"
                     />
                 </div>
-                <div class="error" id="error">Invalid access token.</div>
-                <button type="submit">Continue</button>
+                <div class="error" id="error">访问令牌无效。</div>
+                <button type="submit">继续</button>
             </form>
         </div>
         <script>

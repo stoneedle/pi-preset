@@ -37,11 +37,7 @@ func BuildPromptCommand(id string, chat chat.Request, streaming bool) map[string
 		cmd["images"] = chat.Images
 	}
 	if streaming {
-		behavior := "steer"
-		if chat.Delivery == "followUp" {
-			behavior = "followUp"
-		}
-		cmd["streamingBehavior"] = behavior
+		cmd["streamingBehavior"] = "steer"
 	}
 	return cmd
 }

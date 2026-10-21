@@ -208,7 +208,7 @@ func TestAuthRedirectsBrowserWithWrongQueryToken(t *testing.T) {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Invalid access token") {
+	if !strings.Contains(body, "访问令牌无效") {
 		t.Fatal("expected error message text in HTML prompt")
 	}
 }
@@ -309,7 +309,7 @@ func TestAuthRejectsCrossOriginMutationWhenTokenDisabled(t *testing.T) {
 	a := New("")
 	called := false
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/update", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/chat", nil)
 	req.Header.Set("Origin", "https://evil.example")
 	a.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -326,7 +326,7 @@ func TestAuthRejectsCrossOriginMutationWhenTokenDisabled(t *testing.T) {
 func TestAuthRejectsSameHostMutationFromDifferentPort(t *testing.T) {
 	a := New("")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/update", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/chat", nil)
 	req.Header.Set("Origin", "http://127.0.0.1:8080")
 	a.Wrap(okHandler)(rec, req)
 
@@ -338,7 +338,7 @@ func TestAuthRejectsSameHostMutationFromDifferentPort(t *testing.T) {
 func TestAuthAllowsSameOriginMutationWhenTokenDisabled(t *testing.T) {
 	a := New("")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/update", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/chat", nil)
 	req.Header.Set("Origin", "http://127.0.0.1:31415")
 	a.Wrap(okHandler)(rec, req)
 
@@ -350,7 +350,7 @@ func TestAuthAllowsSameOriginMutationWhenTokenDisabled(t *testing.T) {
 func TestAuthAllowsMutationWithoutBrowserOrigin(t *testing.T) {
 	a := New("")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/update", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/chat", nil)
 	a.Wrap(okHandler)(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -361,7 +361,7 @@ func TestAuthAllowsMutationWithoutBrowserOrigin(t *testing.T) {
 func TestAuthRejectsCrossSiteFetchWithoutOrigin(t *testing.T) {
 	a := New("")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/update", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:31415/api/chat", nil)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	a.Wrap(okHandler)(rec, req)
 
@@ -373,7 +373,7 @@ func TestAuthRejectsCrossSiteFetchWithoutOrigin(t *testing.T) {
 func TestAuthDoesNotApplyOriginCheckToSafeMethods(t *testing.T) {
 	a := New("")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:31415/api/version", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:31415/api/status", nil)
 	req.Header.Set("Origin", "https://evil.example")
 	a.Wrap(okHandler)(rec, req)
 

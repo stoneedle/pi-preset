@@ -1,29 +1,33 @@
 package sessions
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 type cacheEntry struct {
-	modTime time.Time
+	info    os.FileInfo
 	dirName string
 	summary SessionSummary
 }
 
-type sessionCacheEntry struct {
-	modTime time.Time
-	session Session
+type contentLoad struct {
+	done    chan struct{}
+	content *Content
+	err     error
 }
 
 type Cache struct {
 	mu           sync.Mutex
-	entries      map[string]cacheEntry        // keyed by full file path
-	pathIndex    map[string]string            // filename -> full file path
-	sessionCache map[string]sessionCacheEntry // path -> full parsed session
+	entries      map[string]cacheEntry // keyed by full file path
+	pathIndex    map[string]string     // filename -> full file path
+	contentCache map[string]*Content
+	contentLoads map[string]*contentLoad
 
 	parses int // diagnostic: number of ParseSummary calls
 	hits   int // diagnostic: number of cache hits
@@ -33,12 +37,13 @@ func NewCache() *Cache {
 	return &Cache{
 		entries:      make(map[string]cacheEntry),
 		pathIndex:    make(map[string]string),
-		sessionCache: make(map[string]sessionCacheEntry),
+		contentCache: make(map[string]*Content),
+		contentLoads: make(map[string]*contentLoad),
 	}
 }
 
-// LoadAll returns summaries for every session under dir. Files whose modtime
-// hasn't changed since the previous call are returned from the cache; files
+// LoadAll returns summaries for every session under dir. Unchanged native file
+// versions are returned from the cache; files
 // that are new or modified are re-parsed; files that have disappeared are
 // evicted. It also maintains a path index for O(1) lookup by filename.
 func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
@@ -52,7 +57,7 @@ func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
 		path    string
 		dirName string
 		name    string
-		modTime time.Time
+		info    os.FileInfo
 	}
 	var records []fileRecord
 	for _, e := range entries {
@@ -76,7 +81,7 @@ func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
 				path:    filepath.Join(subDir, f.Name()),
 				dirName: e.Name(),
 				name:    f.Name(),
-				modTime: info.ModTime(),
+				info:    info,
 			})
 		}
 	}
@@ -93,7 +98,7 @@ func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
 
 	for _, rec := range records {
 		seen[rec.path] = struct{}{}
-		if ce, ok := c.entries[rec.path]; ok && ce.modTime.Equal(rec.modTime) && ce.dirName == rec.dirName {
+		if ce, ok := c.entries[rec.path]; ok && sameFileVersion(ce.info, rec.info) && ce.dirName == rec.dirName {
 			c.hits++
 			cached = append(cached, ce.summary)
 		} else {
@@ -109,6 +114,11 @@ func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
 		}
 	}
 
+	for path := range c.contentCache {
+		if _, ok := seen[path]; !ok {
+			delete(c.contentCache, path)
+		}
+	}
 	c.mu.Unlock()
 
 	if len(toparse) == 0 {
@@ -154,7 +164,7 @@ func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
 		}
 		c.parses++
 		c.entries[res.rec.path] = cacheEntry{
-			modTime: res.rec.modTime,
+			info:    res.rec.info,
 			dirName: res.rec.dirName,
 			summary: res.summary,
 		}
@@ -175,6 +185,10 @@ func (c *Cache) LoadAll(dir string) ([]SessionSummary, error) {
 	return summaries, nil
 }
 
+func sameFileVersion(a, b os.FileInfo) bool {
+	return a.Size() == b.Size() && a.ModTime().Equal(b.ModTime()) && os.SameFile(a, b)
+}
+
 // FindPath returns the full filesystem path for a session filename, using the
 // in-memory path index built by LoadAll. Returns ("", false) if not found.
 func (c *Cache) FindPath(name string) (string, bool) {
@@ -184,13 +198,10 @@ func (c *Cache) FindPath(name string) (string, bool) {
 	return p, ok
 }
 
-// Resolve resolves a session by filename ID. It tries the in-memory path index
-// first (O(1)) and falls back to a directory scan if the index is cold.
-// Parsed sessions are cached by modtime so repeated reads of unchanged files
-// skip disk I/O entirely.
-func (c *Cache) Resolve(sessionsDir, id string) (ResolvedSession, error) {
+// resolvePath validates a native filename and uses the path index or a cold directory scan.
+func (c *Cache) resolvePath(sessionsDir, id string) (string, error) {
 	if id == "" || filepath.Base(id) != id || filepath.Ext(id) != ".jsonl" {
-		return ResolvedSession{}, ErrInvalidSessionID
+		return "", ErrInvalidSessionID
 	}
 
 	path, ok := c.FindPath(id)
@@ -198,35 +209,98 @@ func (c *Cache) Resolve(sessionsDir, id string) (ResolvedSession, error) {
 		var err error
 		path, err = findPathByFilename(sessionsDir, id)
 		if err != nil {
-			return ResolvedSession{}, err
+			return "", err
 		}
 		c.mu.Lock()
 		c.pathIndex[id] = path
 		c.mu.Unlock()
 	}
 
+	return path, nil
+}
+
+// ResolveHeader routes control without reading or parsing conversation bodies.
+func (c *Cache) ResolveHeader(sessionsDir, id string) (ResolvedSession, error) {
+	path, err := c.resolvePath(sessionsDir, id)
+	if err != nil {
+		return ResolvedSession{}, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ResolvedSession{}, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	var header summaryLine
+	if !scanner.Scan() || json.Unmarshal(scanner.Bytes(), &header) != nil || header.Type != "session" || header.ID == "" {
+		return ResolvedSession{}, fmt.Errorf("invalid native session header")
+	}
+	summary := newSessionSummary(filepath.Base(filepath.Dir(path)), id)
+	summary.SessionUUID = header.ID
+	applySummaryContext(&summary, path, id, "", header.Name, "", header.CWD)
+	return ResolvedSession{Session: Session{SessionSummary: summary, Header: map[string]any{"cwd": header.CWD}}, Path: path}, nil
+}
+
+// ResolveMetadata streams a branch-aware summary without constructing conversation bodies.
+func (c *Cache) ResolveMetadata(sessionsDir, id string) (ResolvedSession, error) {
+	path, err := c.resolvePath(sessionsDir, id)
+	if err != nil {
+		return ResolvedSession{}, err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return ResolvedSession{}, err
 	}
-	modTime := info.ModTime()
-
 	c.mu.Lock()
-	ce, hasCached := c.sessionCache[path]
+	cached, ok := c.entries[path]
 	c.mu.Unlock()
-
-	if hasCached && ce.modTime.Equal(modTime) {
-		return ResolvedSession{Session: ce.session, Path: path}, nil
+	if ok && sameFileVersion(cached.info, info) {
+		return ResolvedSession{Session: Session{SessionSummary: cached.summary}, Path: path}, nil
 	}
-
-	sess, err := ParseFile(path, filepath.Base(filepath.Dir(path)), id)
+	dirName := filepath.Base(filepath.Dir(path))
+	summary, err := ParseSummary(path, dirName, id)
 	if err != nil {
 		return ResolvedSession{}, err
 	}
-
 	c.mu.Lock()
-	c.sessionCache[path] = sessionCacheEntry{modTime: modTime, session: sess}
+	c.entries[path] = cacheEntry{info: info, dirName: dirName, summary: summary}
+	c.mu.Unlock()
+	return ResolvedSession{Session: Session{SessionSummary: summary}, Path: path}, nil
+}
+
+func (c *Cache) OpenContent(sessionsDir, id string) (*Content, error) {
+	path, err := c.resolvePath(sessionsDir, id)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	cached := c.contentCache[path]
+	if cached != nil && sameFileVersion(cached.info, info) {
+		c.mu.Unlock()
+		return cached, nil
+	}
+	if load := c.contentLoads[path]; load != nil {
+		c.mu.Unlock()
+		<-load.done
+		return load.content, load.err
+	}
+	load := &contentLoad{done: make(chan struct{})}
+	c.contentLoads[path] = load
 	c.mu.Unlock()
 
-	return ResolvedSession{Session: sess, Path: path}, nil
+	content, err := readContentIndex(path, filepath.Base(filepath.Dir(path)), id)
+	c.mu.Lock()
+	if err == nil {
+		c.contentCache[path] = content
+	}
+	load.content, load.err = content, err
+	delete(c.contentLoads, path)
+	close(load.done)
+	c.mu.Unlock()
+	return content, err
 }

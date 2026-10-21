@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,13 +12,20 @@ import (
 // generateLargeSessionContent creates a realistic JSONL session file with n messages.
 func generateLargeSessionContent(n int, cwd string) string {
 	var sb strings.Builder
-	sb.WriteString(`{"type":"session","version":3,"id":"bench-session-id","name":"Benchmark Session","timestamp":"2026-01-01T00:00:00Z","cwd":"` + cwd + `"}` + "\n")
+	cwdJSON, _ := json.Marshal(cwd)
+	sb.WriteString(`{"type":"session","version":3,"id":"bench-session-id","name":"Benchmark Session","timestamp":"2026-01-01T00:00:00Z","cwd":` + string(cwdJSON) + `}` + "\n")
 	for i := 0; i < n; i++ {
 		ts := fmt.Sprintf("2026-01-01T%02d:%02d:%02dZ", i/3600, (i/60)%60, i%60)
+		parent := "bench-session-id"
+		if i > 0 {
+			parent = fmt.Sprintf("msg%06d", i-1)
+		}
+		parentJSON, _ := json.Marshal(parent)
+		prefix := `{"type":"message","id":"` + fmt.Sprintf("msg%06d", i) + `","parentId":` + string(parentJSON) + `,"timestamp":"` + ts
 		if i%2 == 0 {
-			sb.WriteString(`{"type":"message","id":"` + fmt.Sprintf("msg%06d", i) + `","timestamp":"` + ts + `","message":{"role":"user","content":"This is a user message number ` + fmt.Sprintf("%d", i) + ` with some content to make it realistic in size. It might include code or questions.","usage":{"totalTokens":50,"cost":{"total":0.001}}}}` + "\n")
+			sb.WriteString(prefix + `","message":{"role":"user","content":"This is a user message number ` + fmt.Sprintf("%d", i) + ` with some content to make it realistic in size. It might include code or questions.","usage":{"totalTokens":50,"cost":{"total":0.001}}}}` + "\n")
 		} else {
-			sb.WriteString(`{"type":"message","id":"` + fmt.Sprintf("msg%06d", i) + `","timestamp":"` + ts + `","message":{"role":"assistant","content":[{"type":"text","text":"This is an assistant response number ` + fmt.Sprintf("%d", i) + `. It contains a detailed explanation with multiple sentences and technical content."}],"usage":{"totalTokens":200,"cost":{"total":0.004}}}}` + "\n")
+			sb.WriteString(prefix + `","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"This is an assistant response number ` + fmt.Sprintf("%d", i) + `. It contains a detailed explanation with multiple sentences and technical content."}],"usage":{"totalTokens":200,"cost":{"total":0.004}}}}` + "\n")
 		}
 	}
 	return sb.String()
@@ -53,7 +61,7 @@ func BenchmarkParseSummaryLarge(b *testing.B) {
 	}
 }
 
-func BenchmarkParseFileSmall(b *testing.B) {
+func BenchmarkContentWindowSmall(b *testing.B) {
 	tmp := b.TempDir()
 	cwd := filepath.Join(tmp, "project")
 	os.MkdirAll(cwd, 0755)
@@ -61,14 +69,18 @@ func BenchmarkParseFileSmall(b *testing.B) {
 	os.WriteFile(path, []byte(generateLargeSessionContent(10, cwd)), 0644)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ParseFile(path, "--bench--project--", "session.jsonl")
+		content, err := readContentIndex(path, "--bench--project--", "session.jsonl")
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, err = content.Window("", "", nil)
 		if err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-func BenchmarkParseFileLarge(b *testing.B) {
+func BenchmarkContentWindowLarge(b *testing.B) {
 	tmp := b.TempDir()
 	cwd := filepath.Join(tmp, "project")
 	os.MkdirAll(cwd, 0755)
@@ -76,7 +88,11 @@ func BenchmarkParseFileLarge(b *testing.B) {
 	os.WriteFile(path, []byte(generateLargeSessionContent(200, cwd)), 0644)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ParseFile(path, "--bench--project--", "session.jsonl")
+		content, err := readContentIndex(path, "--bench--project--", "session.jsonl")
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, err = content.Window("", "", nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -185,7 +201,7 @@ func BenchmarkResolveCold(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := NewCache().Resolve(tmp, "target-session.jsonl")
+		_, err := NewCache().OpenContent(tmp, "target-session.jsonl")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -212,7 +228,7 @@ func BenchmarkResolveCached(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := c.Resolve(tmp, "target-session.jsonl")
+		_, err := c.OpenContent(tmp, "target-session.jsonl")
 		if err != nil {
 			b.Fatal(err)
 		}

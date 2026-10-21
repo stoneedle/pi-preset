@@ -60,10 +60,13 @@ func sessionRequest(t *testing.T, s *Server, suffix string) (sessions.Window, st
 func TestMobileWindowNeverTransfersFoldedBodies(t *testing.T) {
 	root := t.TempDir()
 	large := strings.Repeat("folded-private-payload", 100000)
+	code := "const result = await tools.bash({ command: \"ls\" });\ntext(result);"
+	encodedCode, _ := json.Marshal(code)
 	writeConversation(t, root, []map[string]any{
 		{"role": "user", "content": []any{map[string]any{"type": "text", "text": "hello"}, map[string]any{"type": "image", "data": large, "mimeType": "image/png"}}},
-		{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": large}, map[string]any{"type": "toolCall", "id": "call1", "name": "bash", "arguments": map[string]any{"command": "ls", "hidden": large}}}},
+		{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "检查工具调用与移动端排版。\n" + strings.Repeat(" ", 300) + large}, map[string]any{"type": "toolCall", "id": "call1", "name": "bash", "arguments": map[string]any{"command": "ls", "hidden": large}}, map[string]any{"type": "thinking", "thinking": "", "thinkingSignature": "opaque-provider-signature"}, map[string]any{"type": "toolCall", "id": "call-code", "name": "codemode", "arguments": map[string]any{"code": code}}}},
 		{"role": "toolResult", "toolCallId": "call1", "content": []any{map[string]any{"type": "text", "text": large}}},
+		{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "", "thinkingSignature": "opaque-provider-signature"}}},
 		{"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": "complete answer"}}},
 	})
 	s := &Server{sessionsDir: root, cache: sessions.NewCache()}
@@ -74,12 +77,19 @@ func TestMobileWindowNeverTransfersFoldedBodies(t *testing.T) {
 	if len(window.Messages) != 3 || !strings.Contains(raw, "complete answer") {
 		t.Fatalf("ordinary messages missing: %s", raw)
 	}
+	if got := window.Messages[1].Blocks[0].Summary; got != "检查工具调用与移动端排版。" {
+		t.Fatalf("thinking preview missing or unbounded: %q", got)
+	}
+	blocks := window.Messages[1].Blocks
+	if len(blocks) != 3 || blocks[2].Index != 3 || blocks[2].Summary != strings.Join(strings.Fields(code), " ") {
+		t.Fatalf("signature-only thinking must disappear without shifting the native codemode index: %+v", blocks)
+	}
 	for _, block := range []struct {
 		entry    string
 		index    int
 		expected string
 	}{
-		{"entry-0001", 0, large}, {"entry-0001", 1, large},
+		{"entry-0001", 0, large}, {"entry-0001", 1, large}, {"entry-0001", 3, string(encodedCode)},
 	} {
 		w := httptest.NewRecorder()
 		s.handleSessionBlock(w, httptest.NewRequest("GET", fmt.Sprintf("/api/session/block?id=mobile.jsonl&entry=%s&index=%d", block.entry, block.index), nil))

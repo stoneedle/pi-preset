@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# pi-web uninstaller — removes binary, service config, and runtime state.
-# Triggered as npm preuninstall hook when `pi remove npm:@ygncode/pi-web@beta`
-# is run. The npm package directory itself is removed by npm after this script.
+# 移除程序、服务配置和运行地址，保留用户数据与环境配置。
 #
 # Kept intact (survives uninstall → preserves data for reinstall):
-#   - ~/.pi/agent/pi-web.sqlite          (settings, scratchpads, project prefs)
+#   - ~/.pi/agent/pi-web.sqlite          (共享确认、设置和通知)
 #   - ~/.pi/agent/pi-web-memory.sqlite   (memory skill data)
 #   - ~/.config/pi-web/env               (PI_WEB_TOKEN, PATH, etc.)
 #   - ~/.pi/agent/sessions/              (session files)
@@ -21,13 +19,7 @@ warn()  { echo -e "${YELLOW}⚠${NC} $*" >&2; }
 skip()  { echo -e "  ${YELLOW}(skipped)${NC} $*" >&2; }
 
 # Determine binary location (matches install.sh logic).
-if [[ -n "${PI_WEB_INSTALL_DIR:-}" ]]; then
-  BINARY="${PI_WEB_INSTALL_DIR}/pi-web"
-elif [[ -n "${npm_package_name:-}" ]]; then
-  BINARY="${HOME}/.pi/agent/bin/pi-web"
-else
-  BINARY="/usr/local/bin/pi-web"
-fi
+BINARY="${PI_WEB_INSTALL_DIR:-${HOME}/.pi/agent/bin}/pi-web"
 
 # ── Stop running instance ──────────────────────────────────────────
 stop_service() {
@@ -51,22 +43,6 @@ remove_binary() {
   else
     skip "binary not found at ${BINARY}"
   fi
-  local ctl="${BINARY%/*}/pi-web-ctl"
-  if [[ -f "$ctl" ]]; then
-    info "Removing skill CLI: ${ctl}"
-    rm -f "$ctl"
-  fi
-}
-
-# ── Remove version file ─────────────────────────────────────────────
-remove_version_file() {
-  local vf="${HOME}/.pi/agent/pi-web-version"
-  if [[ -f "$vf" ]]; then
-    info "Removing version file: ${vf}"
-    rm -f "$vf"
-  else
-    skip "version file not found"
-  fi
 }
 
 # ── Remove runtime state ────────────────────────────────────────────
@@ -83,21 +59,6 @@ remove_state() {
   local parent_dir="${HOME}/.pi/agent/pi-web"
   if [[ -d "$parent_dir" ]]; then
     rmdir "$parent_dir" 2>/dev/null || true
-  fi
-}
-
-# ── Clean up stale npm temp dirs ────────────────────────────────────
-cleanup_npm_temps() {
-  local pattern="${HOME}/.pi/agent/npm/node_modules/@ygncode/.pi-web-*"
-  local count=0
-  for d in $pattern; do
-    if [[ -d "$d" ]]; then
-      rm -rf "$d"
-      count=$((count + 1))
-    fi
-  done
-  if [[ $count -gt 0 ]]; then
-    info "Cleaned up ${count} stale npm temp dir(s)"
   fi
 }
 
@@ -136,9 +97,7 @@ main() {
 
   stop_service
   remove_binary
-  remove_version_file
   remove_state
-  cleanup_npm_temps
 
   case "$(uname -s)" in
     Darwin) remove_macos_plist ;;

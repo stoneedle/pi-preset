@@ -1,0 +1,268 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, basename } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { chromium, expect } from '@playwright/test';
+import { startServer, stopServer } from '../lib/server.ts';
+import { REPO_ROOT } from '../lib/paths.ts';
+
+// The provider is deterministic; Pi, package loading, queues, native persistence, auth,
+// loopback subscriptions, SQLite, Go and the production phone UI are real.
+test('authenticated phone controls the installed merged extension in the same native Pi runtime', { timeout: 120000 }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-web-integrated-'));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = root;
+  let session, server, browser;
+  t.after(async () => {
+    await browser?.close();
+    if (server) await stopServer(server.child);
+    if (session) { await session.extensionRunner.emit({ type: 'session_shutdown' }); session.dispose(); }
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  });
+  try {
+  const manager = SessionManager.create(root, join(root, 'sessions', '--native--'));
+  manager.appendMessage({ role: 'user', content: 'Native remote integration', timestamp: Date.now() });
+  const historicalResult = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Restored historical result' }], api: 'remote-test', provider: 'remote-test', model: 'one', stopReason: 'stop', timestamp: Date.now(), usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  const eventBus = createEventBus();
+  const initialSettings = { packages: [REPO_ROOT],
+    extensions: [], defaultProvider: 'remote-test', defaultModel: 'one', defaultThinkingLevel: 'medium', theme: 'dark' };
+  writeFileSync(join(root, 'settings.json'), JSON.stringify(initialSettings));
+  const settings = SettingsManager.create(root, root);
+  const modelCalls = [];
+  const provider = (pi) => pi.registerProvider('remote-test', {
+    baseUrl: 'http://127.0.0.1', apiKey: 'isolated-test-key', api: 'remote-test',
+    models: ['one', 'two'].map((id) => ({ id, name: id, reasoning: true, input: ['text', 'image'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 1000 })),
+    streamSimple(model, context, options) {
+      const stream = createAssistantMessageEventStream();
+      const user = context.messages.filter((message) => message.role === 'user').at(-1);
+      const text = typeof user.content === 'string' ? user.content : user.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
+      modelCalls.push({ model: model.id, text, images: Array.isArray(user.content) ? user.content.filter((part) => part.type === 'image').length : 0 });
+      const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id, content: [],
+        timestamp: Date.now(), stopReason: 'pending', usage: { input: 40, output: 10, cacheRead: 60, cacheWrite: 0, totalTokens: 110,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      void (async () => {
+        try {
+          await options?.onPayload?.({ text }, model);
+          stream.push({ type: 'start', partial: message });
+          await new Promise((resolve) => {
+            const timeout = setTimeout(done, text.includes('silent') ? 16000 : text === 'delivery boundary' ? 2500 : 80);
+            function done() { clearTimeout(timeout); options?.signal?.removeEventListener('abort', done); resolve(); }
+            options?.signal?.addEventListener('abort', done, { once: true });
+          });
+          if (options?.signal?.aborted) throw new Error('Aborted');
+          message.content.push({ type: 'text', text: '' });
+          stream.push({ type: 'text_start', contentIndex: 0, partial: message });
+          message.content[0].text = `Native reply: ${text}`;
+          stream.push({ type: 'text_delta', contentIndex: 0, delta: message.content[0].text, partial: message });
+          stream.push({ type: 'text_end', contentIndex: 0, content: message.content[0].text, partial: message });
+          if (text === 'photo') message.content.push({ type: 'thinking', thinking: 'Native image reasoning' });
+          message.stopReason = 'stop';
+          stream.push({ type: 'done', reason: 'stop', message });
+        } catch (error) {
+          message.stopReason = options?.signal?.aborted ? 'aborted' : 'error'; message.errorMessage = String(error);
+          stream.push({ type: 'error', reason: message.stopReason, error: message });
+        } finally { stream.end(); }
+      })();
+      return stream;
+    },
+  });
+  const skillDir = join(root, '.pi', 'skills', 'probe');
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: probe\ndescription: Native available skill\n---\nInspect this task.\n');
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, eventBus,
+    extensionFactories: [provider], noContextFiles: true, noPromptTemplates: true, noThemes: true });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  const product = loader.getExtensions().extensions.filter((extension) => extension.path.replaceAll('\\', '/').startsWith(REPO_ROOT.replaceAll('\\', '/').replace(/\/$/, '')));
+  assert.equal(product.length, 1, 'one product entrypoint is installed');
+  assert.match(product[0].path.replaceAll('\\', '/'), /\.pi\/extensions\/index\.ts$/);
+  const runtime = await ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: null, modelsStorePath: join(root, 'models.sqlite'), allowModelNetwork: false, refreshOnCreate: false });
+  ({ session } = await createAgentSession({ cwd: root, modelRuntime: runtime, resourceLoader: loader, settingsManager: settings, sessionManager: manager, noTools: true }));
+  const errors = [];
+  const bind = () => session.bindExtensions({ mode: 'rpc', uiContext: { notify: (message) => errors.push(message) }, onError: (error) => errors.push(error.error) });
+  await bind();
+  await session.setModel(session.modelRuntime.getModel('remote-test', 'one'));
+  const token = randomBytes(24).toString('hex');
+  server = await startServer({ agentDir: root, token });
+  browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: { width: 393, height: 851 } });
+  const page = await context.newPage();
+  const id = basename(manager.getSessionFile());
+  const ownerFile = join(root, 'pi-web', 'owners', id + '.json');
+  const originalOwner = JSON.parse(readFileSync(ownerFile, 'utf8'));
+  assert.equal(originalOwner.pid, process.pid);
+  const api = async (path, body) => {
+    const response = await fetch(server.baseURL + path, { method: body ? 'POST' : 'GET',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: server.baseURL }, body: body ? JSON.stringify(body) : undefined });
+    assert.equal(response.status, 200); return response.json();
+  };
+  const status = () => api(`/api/status?id=${encodeURIComponent(id)}`);
+  const pushPublicKey = (await api('/api/push/config')).publicKey;
+  const completedEvents = (resultId) => {
+    const db = new DatabaseSync(join(root, 'pi-web.sqlite'), { readOnly: true });
+    try {
+      return db.prepare("SELECT value FROM push_events WHERE json_extract(value,'$.kind')='completed' AND json_extract(value,'$.identity')=?").all(resultId).map((row) => JSON.parse(row.value));
+    } finally { db.close(); }
+  };
+  await expect.poll(async () => (await status()).availability).toBe('connected');
+  assert.equal((await status()).completed, false, 'historical restore cannot manufacture a completion');
+  assert.equal(completedEvents(historicalResult).length, 0, 'historical restore must not enter the notification outbox');
+  assert.equal((await fetch(server.baseURL + '/api/status?id=' + encodeURIComponent(id))).status, 401);
+  await page.goto(`${server.baseURL}/session?id=${encodeURIComponent(id)}&token=${token}`);
+  await expect(page.locator('.remote-info summary')).toContainText('one');
+  await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('phone text');
+  await page.getByRole('button', { name: "发送", exact: true }).click();
+  await expect(page.locator('article').last()).toContainText('Native reply: phone text');
+  assert.ok(manager.getBranch().some((entry) => entry.message?.role === 'user' && JSON.stringify(entry.message.content).includes('phone text')));
+  await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('/pro');
+  await page.getByRole('button', { name: /skill:probe/ }).click();
+  assert.ok(!readFileSync(manager.getSessionFile(), 'utf8').includes('/skill:probe'));
+  await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('photo');
+  await page.locator('input[type=file]').setInputFiles({ name: 'photo.png', mimeType: 'image/png',
+    buffer: await page.screenshot() });
+  await page.getByRole('button', { name: "发送", exact: true }).click();
+  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  assert.equal(modelCalls.at(-1).images, 1);
+  await session.waitForIdle();
+  const photoLeaf = manager.getLeafId();
+  const firstResult = manager.getBranch().find((entry) => entry.message?.role === 'assistant' && JSON.stringify(entry.message.content).includes('Native reply: phone text')).id;
+  await session.navigateTree(firstResult, { summarize: false });
+  await expect(page.locator('article').last()).toContainText('Native reply: phone text');
+  await expect(page.locator('.remote-main')).not.toContainText('Native reply: photo');
+  assert.equal((await status()).unread, false);
+  await session.navigateTree(photoLeaf, { summarize: false });
+  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  const imageEntry = manager.getBranch().find((entry) => entry.message?.role === 'user' && Array.isArray(entry.message.content) && entry.message.content.some((part) => part.type === 'image'));
+  assert.equal((await api(`/api/session/block?id=${encodeURIComponent(id)}&entry=${photoLeaf}&index=1`)).text, 'Native image reasoning');
+  manager.resetLeaf();
+  await session.extensionRunner.emit({ type: 'session_tree', newLeafId: null });
+  assert.equal(manager.getBranch().length, 0);
+  await expect.poll(async () => (await api(`/api/session?id=${encodeURIComponent(id)}`)).window.messages.length).toBe(0);
+  await expect(page.locator('article')).toHaveCount(0);
+  for (const path of [`/api/session/block?id=${encodeURIComponent(id)}&entry=${photoLeaf}&index=1`, `/api/session/image?id=${encodeURIComponent(id)}&entry=${imageEntry.id}&index=0`])
+    assert.equal((await fetch(server.baseURL + path, { headers: { authorization: `Bearer ${token}` } })).status, 404, 'known empty root must not expose previous-branch bodies');
+  await session.navigateTree(photoLeaf, { summarize: false });
+  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  const previewDir = join(root, 'native-preview');
+  mkdirSync(previewDir);
+  writeFileSync(join(previewDir, 'index.html'), '<!doctype html><h1>Native prototype</h1><button>Try prototype</button><p></p><script type="module" src="./app.mjs"></script>');
+  writeFileSync(join(previewDir, 'app.mjs'), "document.querySelector('button').onclick=async()=>document.querySelector('p').textContent=(await(await fetch('./data.json')).json()).message");
+  writeFileSync(join(previewDir, 'data.json'), JSON.stringify({ message: 'Native relative resources work' }));
+  const nativeDocument = '# Native downloadable document\n\n**Rendered in isolation**';
+  writeFileSync(join(previewDir, 'readme.md'), nativeDocument);
+  const previewPath = pathToFileURL(join(previewDir, 'index.html')).href;
+  await session.prompt(`[Native prototype](${previewPath}) and [Native document](${pathToFileURL(join(previewDir, 'readme.md')).href})`, { source: 'extension' });
+  await expect(page.locator('article').last()).toContainText('Native prototype');
+  assert.equal((await context.cookies()).find((cookie) => cookie.name === 'pi_token').value, token);
+  await page.getByRole('group', { name: 'index.html', exact: true }).last().getByRole('button', { name: "预览" }).click();
+  const previewFrame = page.frameLocator('.remote-preview iframe');
+  await previewFrame.getByRole('button', { name: 'Try prototype' }).click();
+  await expect(previewFrame.locator('p')).toHaveText('Native relative resources work');
+  const isolated = page.frames().find((frame) => frame.parentFrame());
+  assert.deepEqual(await isolated.evaluate(async (id) => {
+    let parentBlocked = false, cookiesBlocked = false, readBlocked = false, controlBlocked = false;
+    try { void parent.document.body; } catch { parentBlocked = true; }
+    try { void document.cookie; } catch { cookiesBlocked = true; }
+    try { await fetch('/api/status?id=' + id, { credentials: 'include' }); } catch { readBlocked = true; }
+    try { await fetch('/api/chat/cancel?id=' + id, { method: 'POST', credentials: 'include' }); } catch { controlBlocked = true; }
+    return { parentBlocked, cookiesBlocked, readBlocked, controlBlocked };
+  }, id), { parentBlocked: true, cookiesBlocked: true, readBlocked: true, controlBlocked: true });
+  const scopedPreview = await page.locator('.remote-preview iframe').getAttribute('src');
+  const publicPreview = await fetch(server.baseURL + scopedPreview);
+  assert.equal(publicPreview.status, 200, 'preview capability does not require the remote-control cookie');
+  assert.ok(!(await publicPreview.text()).includes(token));
+  assert.equal((await fetch(server.baseURL + '/api/status?id=' + id)).status, 401, 'preview capability has no control authority');
+  await page.getByRole('button', { name: "关闭", exact: true }).click();
+  await expect.poll(async () => (await fetch(server.baseURL + scopedPreview)).status).toBe(404);
+  const nativeDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('group', { name: 'readme.md', exact: true }).last().getByRole('link', { name: "下载" }).click();
+  const nativeDownload = await nativeDownloadPromise;
+  const nativeChunks = [];
+  for await (const chunk of await nativeDownload.createReadStream()) nativeChunks.push(chunk);
+  assert.equal(Buffer.concat(nativeChunks).toString(), nativeDocument);
+  await session.navigateTree(firstResult, { summarize: false });
+  await session.prompt('A different native branch', { source: 'extension' });
+  await expect(page.locator('article').last()).toContainText('A different native branch');
+  await session.navigateTree(photoLeaf, { summarize: false });
+  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  const returnedImageResponse = page.waitForResponse((response) => response.url().includes('/api/session/image?'));
+  await page.getByRole('button', { name: "打开图片", exact: true }).click();
+  assert.equal((await returnedImageResponse).status(), 200);
+  await expect.poll(() => page.locator('.remote-block img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+  const photoEntry = manager.getBranch().find((entry) => entry.message?.role === 'user' && Array.isArray(entry.message.content) && entry.message.content.some((part) => part.type === 'image'));
+  const nativeImagePromise = page.waitForEvent('download');
+  await page.locator('.remote-image-actions').getByRole('link', { name: "下载" }).click();
+  const nativeImageChunks = [];
+  for await (const chunk of await (await nativeImagePromise).createReadStream()) nativeImageChunks.push(chunk);
+  assert.deepEqual(Buffer.concat(nativeImageChunks), Buffer.from(photoEntry.message.content.find((part) => part.type === 'image').data, 'base64'));
+  await page.locator('.remote-info summary').click();
+  await page.locator('.remote-info label').filter({ hasText: "模型" }).locator('select').selectOption('remote-test/two');
+  await page.locator('.remote-info label').filter({ hasText: "思考" }).locator('select').selectOption('high');
+  await expect.poll(() => session.model.id).toBe('two');
+  await expect.poll(() => session.thinkingLevel).toBe('high');
+  const savedSettings = JSON.parse(readFileSync(join(root, 'settings.json'), 'utf8'));
+  assert.equal(savedSettings.defaultModel, 'one');
+  assert.equal(savedSettings.defaultThinkingLevel, 'medium');
+  session.setThinkingLevel('low');
+  await expect(page.locator('.remote-info dd').last()).toHaveText('low');
+  await page.locator('.remote-info summary').click();
+  const deliveryStart = modelCalls.length;
+  await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('delivery boundary');
+  await page.getByRole('button', { name: "发送", exact: true }).click();
+  await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
+  await expect(page.getByRole('combobox', { name: "消息投递" })).toHaveCount(0);
+  await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('change direction');
+  await page.getByRole('button', { name: "发送", exact: true }).click();
+  await expect(page.locator('article').last()).toContainText('Native reply: change direction');
+  assert.deepEqual(modelCalls.slice(deliveryStart).map((call) => call.text), ['delivery boundary', 'change direction']);
+  await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('silent task');
+  await page.getByRole('button', { name: "发送", exact: true }).click();
+  await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
+  await page.waitForTimeout(11000);
+  await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
+  await page.getByRole('button', { name: "停止主代理", exact: true }).click();
+  await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'idle');
+  assert.equal((await status()).outcome, 'aborted');
+  await page.goto(server.baseURL + '/');
+  await session.prompt('terminal result', { source: 'extension' });
+  await expect.poll(async () => (await status()).unread).toBe(true, { message: 'list browsing must not acknowledge' });
+  const notifiedResult = (await status()).replyId;
+  await expect.poll(() => completedEvents(notifiedResult).length).toBe(1);
+  assert.equal(completedEvents(notifiedResult)[0].sessionId, manager.getSessionId());
+  assert.ok(!JSON.stringify(completedEvents(notifiedResult)).includes('Native reply: terminal result'));
+  await api('/api/session/acknowledge?id=' + encodeURIComponent(id), { replyId: firstResult });
+  assert.equal((await status()).unread, true, 'late old confirmation cannot clear the current result');
+  await page.goto(server.baseURL + '/session?id=' + encodeURIComponent(id));
+  await expect.poll(async () => (await status()).unread).toBe(false);
+  await page.goto(server.baseURL + '/');
+  await session.prompt('offline terminal result', { source: 'extension' });
+  const previewBeforeRestart = await api('/api/session/preview?id=' + encodeURIComponent(id), { path: previewPath });
+  await stopServer(server.child);
+  await session.extensionRunner.emitInput('local interaction', undefined, 'interactive');
+  server = await startServer({ agentDir: root, token });
+  assert.equal((await fetch(server.baseURL + previewBeforeRestart.url)).status, 404, 'Go restart revokes preview grants');
+  assert.equal((await api('/api/push/config')).publicKey, pushPublicKey, 'Go restart preserves Web Push credentials');
+  assert.equal(completedEvents(notifiedResult).length, 1, 'Go restart does not manufacture another completion event');
+  await expect.poll(async () => (await status()).unread).toBe(false);
+  await session.extensionRunner.emit({ type: 'session_shutdown' });
+  await expect.poll(async () => (await status()).availability).toBe('disconnected');
+  assert.equal((await status()).state, 'unknown');
+  await api('/api/session/acknowledge?id=' + encodeURIComponent(id), { replyId: (await status()).replyId });
+  await bind();
+  await expect.poll(async () => (await status()).unread).toBe(false);
+  assert.equal(readdirSync(join(root, 'pi-web', 'owners')).length, 1);
+  assert.equal(JSON.parse(readFileSync(ownerFile, 'utf8')).pid, process.pid);
+  assert.equal(existsSync(join(root, 'session-status')), false);
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({ runtime: 'real Pi', ownerPidMatches: true, nativeMessages: manager.getBranch().filter((entry) => entry.type === 'message').length,
+    provider: 'deterministic test adapter', authenticatedHTTP: true, isolatedInteractivePreview: true, exactNativeDownload: true, returnedBranchImage: true, nativeNotificationOutbox: true, persistentPushCredentials: true, nativeBranchReturn: true, nativeSteerOnly: true, bidirectionalReceipts: true, goRestart: true, runtimeReload: true }));
+  } catch (error) { console.error(error); throw error; }
+});

@@ -48,7 +48,7 @@ import {
   withToken,
   readPiWebToken,
   writePiWebToken,
-} from '../../.pi/extensions/pi-web.ts';
+} from '../../.pi/extensions/lib/management.ts';
 
 declare global {
   var __MOCK_PI_WEB_TOKEN__: string | null | undefined;

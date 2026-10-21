@@ -170,7 +170,8 @@ func (m *Manager) Send(ctx context.Context, sessionID, sessionPath string, chat 
 func (m *Manager) HasWorker(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.workers[id] != nil
+	worker := m.workers[id]
+	return worker != nil && worker.Status().State != WorkerStateError
 }
 
 func (m *Manager) Status(sessionID string) WorkerStatus {
@@ -289,6 +290,9 @@ func (m *Manager) workerFor(sessionID, sessionPath string) (ChatWorker, error) {
 			if call.err != nil {
 				return nil, call.err
 			}
+			if call.worker.Status().State == WorkerStateError {
+				continue
+			}
 			return call.worker, nil
 		}
 		call := &createCall{done: make(chan struct{})}
@@ -296,6 +300,10 @@ func (m *Manager) workerFor(sessionID, sessionPath string) (ChatWorker, error) {
 		m.mu.Unlock()
 
 		worker, err := m.factory(sessionID, sessionPath)
+		if err == nil && worker.Status().State == WorkerStateError {
+			_ = worker.Close()
+			err = errors.New("Pi worker terminated during initialization")
+		}
 
 		m.mu.Lock()
 		if err == nil {

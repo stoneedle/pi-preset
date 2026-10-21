@@ -79,7 +79,6 @@ func (s *Server) recordModTime(sessID string, mod time.Time) {
 		s.broadcast(sessID, "reload")
 		s.broadcast(globalSessID, "reload")
 	}
-	s.recomputeAndBroadcastStatus(sessID)
 }
 
 // watchFilesFsnotify uses kqueue/inotify to react to writes. Project subdirs

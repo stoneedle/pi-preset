@@ -22,20 +22,22 @@ const (
 	maxScanLineBytes       = 256 * 1024 * 1024
 )
 
-// Typed structs for ParseSummary — avoid map[string]any per line.
+// Native routing metadata deliberately excludes content, arguments and details.
 type summaryLine struct {
 	Type      string      `json:"type"`
 	Timestamp string      `json:"timestamp"`
 	Name      string      `json:"name"`
 	CWD       string      `json:"cwd"`
 	ID        string      `json:"id"`
+	ParentID  string      `json:"parentId"`
 	Message   *summaryMsg `json:"message"`
 }
 
 type summaryMsg struct {
-	Role       string          `json:"role"`
-	StopReason string          `json:"stopReason"`
-	Content    json.RawMessage `json:"content"`
+	Role       string `json:"role"`
+	StopReason string `json:"stopReason"`
+	ToolCallID string `json:"toolCallId"`
+	IsError    bool   `json:"isError"`
 }
 
 type SessionSummary struct {
@@ -51,8 +53,7 @@ type SessionSummary struct {
 
 type Session struct {
 	SessionSummary
-	Header  map[string]any
-	Entries []map[string]any
+	Header map[string]any
 }
 
 func isAssistantReply(role, reason any) bool {
@@ -110,11 +111,7 @@ func newSessionSummary(dirName, fileName string) SessionSummary {
 	}
 }
 
-// applySummaryContext finalizes the fields shared by ParseSummary and ParseFile
-// after the scan: a LastActivity fallback to the file mtime, the session name
-// precedence (session_info > header > first user message > filename), and the
-// cwd-derived project / chat-availability. Kept in one place so the two parsers
-// (typed vs map) can't drift on name resolution or the disabled-chat reason.
+// applySummaryContext finalizes native naming, activity fallback and CWD availability.
 func applySummaryContext(s *SessionSummary, path, fileName, sessionInfoName, headerName, firstUserText, headerCwd string) {
 	if s.LastActivity == "" {
 		if info, err := os.Stat(path); err == nil {
@@ -142,122 +139,13 @@ func applySummaryContext(s *SessionSummary, path, fileName, sessionInfoName, hea
 	}
 }
 
-// ParseSummary streams path line-by-line, accumulating only the fields the
-// index page needs. Lines are discarded after parsing — unlike ParseFile,
-// the full conversation is not retained in memory.
+// ParseSummary reads the same body-free native index used by content access.
 func ParseSummary(path, dirName, fileName string) (SessionSummary, error) {
-	f, err := os.Open(path)
+	content, err := readContentIndex(path, dirName, fileName)
 	if err != nil {
 		return SessionSummary{}, err
 	}
-	defer f.Close()
-
-	s := newSessionSummary(dirName, fileName)
-
-	var headerName, sessionInfoName, firstUserText, headerCwd string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, scanInitialBufferBytes), maxScanLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if len(line) == 0 {
-			continue
-		}
-		var raw summaryLine
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			continue
-		}
-		switch raw.Type {
-		case "session":
-			if raw.Name != "" {
-				headerName = raw.Name
-			}
-			if raw.CWD != "" {
-				headerCwd = raw.CWD
-			}
-			if raw.ID != "" {
-				s.SessionUUID = raw.ID
-			}
-		case "session_info":
-			if raw.Name != "" {
-				sessionInfoName = raw.Name
-			}
-		case "message":
-			if raw.Timestamp != "" {
-				s.LastActivity = raw.Timestamp
-			}
-			if raw.Message == nil {
-				continue
-			}
-			msg := raw.Message
-			if isAssistantReply(msg.Role, msg.StopReason) {
-				s.LastReplyID = raw.ID
-			}
-			if firstUserText == "" && msg.Role == "user" {
-				firstUserText = extractRawText(msg.Content)
-			}
-		default:
-			if raw.Timestamp != "" {
-				s.LastActivity = raw.Timestamp
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return SessionSummary{}, err
-	}
-
-	applySummaryContext(&s, path, fileName, sessionInfoName, headerName, firstUserText, headerCwd)
-
-	return s, nil
-}
-
-// extractRawText pulls plain text from a json.RawMessage content value
-// (string or content-block array). Used by ParseSummary.
-func extractRawText(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	if content[0] == '"' {
-		var s string
-		if json.Unmarshal(content, &s) == nil {
-			return s
-		}
-	}
-	if content[0] == '[' {
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(content, &blocks) == nil {
-			var buf strings.Builder
-			for _, b := range blocks {
-				if b.Type == "text" && b.Text != "" {
-					buf.WriteString(b.Text)
-				}
-			}
-			return buf.String()
-		}
-	}
-	return ""
-}
-
-func extractMessageText(content any) string {
-	switch v := content.(type) {
-	case string:
-		return v
-	case []any:
-		var buf strings.Builder
-		for _, item := range v {
-			if block, ok := item.(map[string]any); ok {
-				if t, _ := block["type"].(string); t == "text" {
-					if txt, _ := block["text"].(string); txt != "" {
-						buf.WriteString(txt)
-					}
-				}
-			}
-		}
-		return buf.String()
-	}
-	return ""
+	return content.SessionSummary, nil
 }
 
 func truncate(s string, n int) string {
@@ -266,101 +154,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "…"
-}
-
-// ParseFile parses path in a single pass, collecting both the SessionSummary
-// fields and the full Entries slice. This avoids the double-read that would
-// result from calling ParseSummary followed by os.ReadFile.
-func ParseFile(path, dirName, fileName string) (Session, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Session{}, err
-	}
-	defer f.Close()
-
-	s := newSessionSummary(dirName, fileName)
-
-	var entries []map[string]any
-	var header map[string]any
-	var headerName, sessionInfoName, firstUserText, headerCwd string
-	seenSessionHeaders := make(map[string]bool)
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, scanInitialBufferBytes), maxScanLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			continue
-		}
-		if raw["type"] == "session" {
-			key := sessionHeaderKey(raw)
-			if key != "" && seenSessionHeaders[key] {
-				continue
-			}
-			if key != "" {
-				seenSessionHeaders[key] = true
-			}
-		}
-		entries = append(entries, raw)
-		switch raw["type"] {
-		case "session":
-			header = raw
-			if n, _ := raw["name"].(string); n != "" {
-				headerName = n
-			}
-			if cwd, _ := raw["cwd"].(string); cwd != "" {
-				headerCwd = cwd
-			}
-			if sid, _ := raw["id"].(string); sid != "" {
-				s.SessionUUID = sid
-			}
-		case "session_info":
-			if n, _ := raw["name"].(string); n != "" {
-				sessionInfoName = n
-			}
-		case "message":
-			if ts, ok := raw["timestamp"].(string); ok {
-				s.LastActivity = ts
-			}
-			msg, ok := raw["message"].(map[string]any)
-			if !ok {
-				continue
-			}
-			if isAssistantReply(msg["role"], msg["stopReason"]) {
-				s.LastReplyID, _ = raw["id"].(string)
-			}
-			if firstUserText == "" {
-				if role, _ := msg["role"].(string); role == "user" {
-					firstUserText = extractMessageText(msg["content"])
-				}
-			}
-		default:
-			if ts, ok := raw["timestamp"].(string); ok {
-				s.LastActivity = ts
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return Session{}, err
-	}
-
-	applySummaryContext(&s, path, fileName, sessionInfoName, headerName, firstUserText, headerCwd)
-
-	return Session{SessionSummary: s, Header: header, Entries: entries}, nil
-}
-
-func sessionHeaderKey(raw map[string]any) string {
-	id, _ := raw["id"].(string)
-	timestamp, _ := raw["timestamp"].(string)
-	cwd, _ := raw["cwd"].(string)
-	if id == "" || timestamp == "" {
-		return ""
-	}
-	return id + "\x00" + timestamp + "\x00" + cwd
 }
 
 // cleanProjectName reverses EncodeProjectName for display purposes. The

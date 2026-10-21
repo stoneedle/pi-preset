@@ -23,23 +23,24 @@ func writeSessionFile(t *testing.T, root, project, name string) string {
 
 func TestResolveSessionByIDReturnsKnownPath(t *testing.T) {
 	root := t.TempDir()
-	wantPath := writeSessionFile(t, root, "--tmp--project--", "session.jsonl")
-	resolved, err := NewCache().Resolve(root, "session.jsonl")
+	writeSessionFile(t, root, "--tmp--project--", "session.jsonl")
+	content, err := NewCache().OpenContent(root, "session.jsonl")
 	if err != nil {
-		t.Fatalf("Cache.Resolve returned error: %v", err)
+		t.Fatalf("Cache.OpenContent returned error: %v", err)
 	}
-	if resolved.Session.ID != "session.jsonl" {
-		t.Fatalf("ID = %q, want session.jsonl", resolved.Session.ID)
+	if content.ID != "session.jsonl" {
+		t.Fatalf("ID = %q, want session.jsonl", content.ID)
 	}
-	if resolved.Path != wantPath {
-		t.Fatalf("Path = %q, want %q", resolved.Path, wantPath)
+	window, err := content.Window("", "", nil)
+	if err != nil || len(window.Messages) != 1 || window.Messages[0].Blocks[0].Text != "hello" {
+		t.Fatalf("known native content was not returned: %+v, %v", window, err)
 	}
 }
 
 func TestResolveSessionByIDRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	writeSessionFile(t, root, "--tmp--project--", "session.jsonl")
-	_, err := NewCache().Resolve(root, "../session.jsonl")
+	_, err := NewCache().OpenContent(root, "../session.jsonl")
 	if err == nil {
 		t.Fatalf("Cache.Resolve accepted traversal id")
 	}
@@ -48,7 +49,7 @@ func TestResolveSessionByIDRejectsTraversal(t *testing.T) {
 func TestResolveSessionByIDRejectsUnknown(t *testing.T) {
 	root := t.TempDir()
 	writeSessionFile(t, root, "--tmp--project--", "session.jsonl")
-	_, err := NewCache().Resolve(root, "missing.jsonl")
+	_, err := NewCache().OpenContent(root, "missing.jsonl")
 	if err == nil {
 		t.Fatalf("Cache.Resolve accepted unknown id")
 	}

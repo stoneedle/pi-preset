@@ -1,5 +1,6 @@
 {
   "name": "pi-web-extension",
+  "type": "module",
   "private": true,
   "dependencies": {
     "qrcode": "^1.5.4"

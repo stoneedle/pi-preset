@@ -3,7 +3,6 @@ package server
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -29,7 +28,7 @@ func TestFsnotifyWatcherBroadcastsOnAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := &Server{sessionsDir: root, fileMod: make(map[string]time.Time), lastStates: make(map[string]string), now: time.Now}
+	s := &Server{sessionsDir: root, fileMod: make(map[string]time.Time), now: time.Now}
 	if err := s.watchFilesFsnotify(); err != nil {
 		t.Skipf("fsnotify unavailable on this platform: %v", err)
 	}
@@ -66,7 +65,7 @@ func TestPollingFallbackBroadcastsOnAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := &Server{sessionsDir: root, fileMod: make(map[string]time.Time), lastStates: make(map[string]string), now: time.Now}
+	s := &Server{sessionsDir: root, fileMod: make(map[string]time.Time), now: time.Now}
 	s.scanForChanges()
 
 	client := s.addClient("session.jsonl")
@@ -90,7 +89,6 @@ func TestRecordModTimeFirstObservationDoesNotInferRunning(t *testing.T) {
 		sessionsDir: root,
 		fileMod:     make(map[string]time.Time),
 		clients:     make([]*sseClient, 0),
-		lastStates:  make(map[string]string),
 
 		now: time.Now,
 	}
@@ -100,18 +98,14 @@ func TestRecordModTimeFirstObservationDoesNotInferRunning(t *testing.T) {
 	// A conversation write is not evidence that its runtime is active.
 	s.recordModTime("session.jsonl", time.Now())
 
-	// __all__ subscriber now also receives "reload" for any existing-session
-	// modification, followed by the status-delta.
+	// Content invalidation does not create an activity transition.
 	if !drainBroadcast(t, c, time.Second) {
 		t.Fatalf("expected reload broadcast on __all__")
 	}
 
 	select {
 	case msg := <-c.ch:
-		if !strings.Contains(msg, "status-delta") || !strings.Contains(msg, "session.jsonl") || !strings.Contains(msg, "unknown") {
-			t.Fatalf("unexpected msg after reload: %q", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("expected status-delta on __all__")
+		t.Fatalf("content write manufactured a runtime event: %q", msg)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

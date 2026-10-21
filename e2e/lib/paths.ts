@@ -13,11 +13,8 @@ export const BINARY = join(
 /** Committed, sanitized session fixtures copied into the temp dir at setup. */
 export const FIXTURES_SESSIONS = join(E2E_ROOT, "fixtures", "sessions");
 
-/** Scratch dir for runtime state (server.json, temp agent dir). Git-ignored. */
+/** Build cache for the Windows stub launcher. Git-ignored. */
 export const TMP_DIR = join(E2E_ROOT, ".tmp");
-
-/** Written by global-setup, read by the test fixture to discover the server. */
-export const STATE_FILE = join(TMP_DIR, "server.json");
 
 export interface ServerState {
   baseURL: string;

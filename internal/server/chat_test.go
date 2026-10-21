@@ -37,7 +37,6 @@ func chatRequest() *http.Request {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	writer.WriteField("message", "hello from phone")
-	writer.WriteField("delivery", "followUp")
 	writer.Close()
 	r := httptest.NewRequest("POST", "/api/chat?id=mobile.jsonl", &body)
 	r.Header.Set("Content-Type", writer.FormDataContentType())
@@ -96,8 +95,8 @@ func TestAllControlsGoToTheRegisteredPiInstance(t *testing.T) {
 		actions = append(actions, input["action"].(string))
 		if input["action"] == "send" {
 			req := input["chat"].(map[string]any)
-			if req["delivery"] != "followUp" {
-				t.Error("delivery semantics lost")
+			if _, exists := req["delivery"]; exists {
+				t.Error("message still exposes a selectable delivery mode")
 			}
 		}
 		writeJSON(w, 0, map[string]any{"status": "accepted"})

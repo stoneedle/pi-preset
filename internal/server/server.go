@@ -2,7 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -28,6 +27,7 @@ type Deps struct {
 	Cache          *sessions.Cache
 	RenderAppShell func(w io.Writer) error
 	Now            func() time.Time
+	PushClient     *http.Client
 }
 
 type Server struct {
@@ -42,12 +42,16 @@ type Server struct {
 	auth           *auth.Middleware
 	now            func() time.Time
 	renderAppShell func(w io.Writer) error
-	lastStates     map[string]string
+	runtimeStates  map[string]runtimeSnapshot
+	observations   map[string]ownerObservation
 	lastKnownMu    sync.Mutex
+	previewsMu     sync.Mutex
+	previews       map[string]*previewGrant
 	stopCh         chan struct{}
 	stopOnce       sync.Once
 	wg             sync.WaitGroup
 	db             *sql.DB
+	push           *pushModule
 }
 
 func New(deps Deps) (*Server, error) {
@@ -74,15 +78,19 @@ func New(deps Deps) (*Server, error) {
 		agentDir: deps.AgentDir, sessionsDir: deps.SessionsDir, auth: deps.Auth,
 		chatSender: deps.ChatSender, cache: deps.Cache, now: deps.Now,
 		renderAppShell: deps.RenderAppShell,
-		fileMod:        make(map[string]time.Time), lastStates: make(map[string]string),
-		stopCh: make(chan struct{}), db: db,
+		fileMod:        make(map[string]time.Time), runtimeStates: make(map[string]runtimeSnapshot), observations: make(map[string]ownerObservation),
+		stopCh: make(chan struct{}), db: db, previews: make(map[string]*previewGrant),
 	}
-	s.watchFiles()
-	if err := s.startSessionStatusWatcher(); err != nil {
-		fmt.Fprintf(os.Stderr, "session-status watcher: %v\n", err)
+	s.push, err = newPushModule(db, deps.Now, deps.PushClient)
+	if err != nil {
+		db.Close()
+		return nil, err
 	}
 	s.wg.Add(1)
-	go func() { defer s.wg.Done(); s.runStatusSweeper(s.stopCh, time.Second) }()
+	go func() { defer s.wg.Done(); s.push.run(s.stopCh, s.pushEventActive) }()
+	s.watchFiles()
+	s.wg.Add(1)
+	go s.runOwnerDiscovery()
 	return s, nil
 }
 
@@ -95,6 +103,7 @@ func initDB(agentDir string) (*sql.DB, error) {
 	for _, statement := range []string{
 		`PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS session_results (session_id TEXT NOT NULL, result_id TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, completion_pending INTEGER NOT NULL DEFAULT 0, completion_children TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(session_id,result_id))`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			db.Close()
@@ -109,6 +118,11 @@ func (s *Server) Shutdown() {
 		if s.stopCh != nil {
 			close(s.stopCh)
 		}
+		s.previewsMu.Lock()
+		for key := range s.previews {
+			s.revokePreview(key)
+		}
+		s.previewsMu.Unlock()
 		s.wg.Wait()
 		if s.db != nil {
 			s.db.Close()
@@ -121,15 +135,21 @@ func (s *Server) Register(mux *http.ServeMux) {
 		"/": s.handleIndex, "/session": s.handleSession,
 		"/api/session": s.handleApiSession, "/api/session/block": s.handleSessionBlock,
 		"/api/session/image": s.handleSessionImage, "/api/sessions": s.handleApiSessions,
+		"/api/session/file": s.handleAttachment, "/api/session/preview": s.handleCreatePreview,
 		"/api/chat": s.handleChat, "/api/chat/cancel": s.handleCancelChat,
 		"/api/session/continue": s.handleContinueSession, "/api/status": s.handleSessionStatus,
-		"/api/set-model": s.handleSetModel, "/api/set-thinking-level": s.handleSetThinkingLevel,
+		"/api/session/acknowledge": s.handleAcknowledgement,
+		"/api/set-model":           s.handleSetModel, "/api/set-thinking-level": s.handleSetThinkingLevel,
 		"/api/models": s.handleAvailableModels, "/api/commands": s.handleCommands,
 		"/api/new-session": s.handleNewSession, "/api/recent-locations": s.handleRecentLocations,
 		"/api/git/info": s.handleGitInfo, "/events": s.handleEvents,
+		"/api/push/config": s.handlePushConfig, "/api/push/subscription": s.handlePushSubscription,
+		"/api/push/status": s.handlePushStatus, "/api/push/test": s.handlePushTest,
+		"/api/push/eligibility": s.handlePushEligibility,
 	} {
 		mux.HandleFunc(path, s.auth.Wrap(handler))
 	}
+	mux.HandleFunc("/preview/", s.handlePreview)
 	mux.HandleFunc("/custom-themes.css", s.handleCustomThemes)
 }
 
@@ -138,14 +158,16 @@ func (s *Server) loadSummaries() ([]sessions.SessionSummary, error) {
 }
 
 type sseClient struct {
-	ch     chan string
-	sessID string
-	mu     sync.Mutex
-	queued map[string]bool
+	done     chan struct{}
+	doneOnce sync.Once
+	ch       chan string
+	sessID   string
+	mu       sync.Mutex
+	queued   map[string]bool
 }
 
 func (s *Server) addClient(id string) *sseClient {
-	c := &sseClient{ch: make(chan string, 16), sessID: id, queued: make(map[string]bool)}
+	c := &sseClient{ch: make(chan string, 16), done: make(chan struct{}), sessID: id, queued: make(map[string]bool)}
 	s.clientsMu.Lock()
 	s.clients = append(s.clients, c)
 	s.clientsMu.Unlock()
@@ -191,6 +213,8 @@ func (s *Server) broadcast(id, message string) {
 				c.queued[key] = true
 			}
 		default:
+			// A reconnect supplies the authoritative current snapshot instead of silently losing the last change.
+			c.doneOnce.Do(func() { close(c.done) })
 		}
 		c.mu.Unlock()
 	}

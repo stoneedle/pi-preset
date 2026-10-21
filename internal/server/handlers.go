@@ -49,27 +49,44 @@ func (s *Server) handleApiSessions(w http.ResponseWriter, r *http.Request) {
 	offset = max(0, min(offset, total))
 	items := make([]map[string]any, 0, limit)
 	for _, summary := range summaries[offset:min(total, offset+limit)] {
+		snapshot := s.sessionSnapshot(summary)
 		items = append(items, map[string]any{
 			"id": summary.ID, "name": summary.Name, "project": summary.Project,
-			"state": s.sessionState(summary.ID), "replyId": summary.LastReplyID,
+			"state": snapshot.State, "replyId": snapshot.ReplyID, "unread": snapshot.Unread,
+			"runtime": snapshot,
 		})
 	}
 	writeJSON(w, 0, map[string]any{"sessions": items, "total": total})
 }
 
 func (s *Server) handleApiSession(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	content, err := s.cache.OpenContent(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}
 	q := r.URL.Query()
-	window := sessions.MessageWindow(resolved.Session.Entries, q.Get("before"), q.Get("after"))
+	window, err := content.Window(q.Get("before"), q.Get("after"), s.activeLeaf(content.SessionSummary))
+	if resolveOrWriteError(w, err) {
+		return
+	}
 	writeJSON(w, 0, map[string]any{
-		"id": resolved.Session.ID, "name": resolved.Session.Name,
-		"cwd": resolved.Session.Header["cwd"], "window": window,
-		"chatAvailable":      resolved.Session.ChatAvailable,
-		"chatDisabledReason": resolved.Session.ChatDisabledReason,
+		"id": content.ID, "name": content.Name,
+		"cwd": content.CWD, "window": window,
+		"chatAvailable":      content.ChatAvailable,
+		"chatDisabledReason": content.ChatDisabledReason,
 	})
+}
+
+func (s *Server) activeLeaf(summary sessions.SessionSummary) *string {
+	runtime := s.runtimeState(summary.ID)
+	if runtime.Availability == "connected" && runtime.SessionID == summary.SessionUUID {
+		if runtime.LeafID != nil {
+			return runtime.LeafID
+		}
+		empty := ""
+		return &empty
+	}
+	return nil
 }
 
 func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +105,7 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resolved, err := s.cache.Resolve(s.sessionsDir, id)
+	resolved, err := s.cache.ResolveHeader(s.sessionsDir, id)
 	if resolveOrWriteError(w, err) {
 		return
 	}
@@ -114,7 +131,7 @@ func (s *Server) handleRecentLocations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAvailableModels(w http.ResponseWriter, r *http.Request) {
-	resolved, err := s.cache.Resolve(s.sessionsDir, r.URL.Query().Get("id"))
+	resolved, err := s.cache.ResolveHeader(s.sessionsDir, r.URL.Query().Get("id"))
 	if resolveOrWriteError(w, err) {
 		return
 	}
