@@ -18,6 +18,7 @@ type Middleware struct {
 	allowedHostsMu sync.RWMutex
 	allowedHosts   map[string]struct{}
 	allowAnyHost   bool
+	appName        func() string
 }
 
 func New(token string) *Middleware {
@@ -25,6 +26,11 @@ func New(token string) *Middleware {
 		token:        strings.TrimSpace(token),
 		allowedHosts: make(map[string]struct{}),
 	}
+}
+
+// SetAppNameProvider is wired before serving requests; names stay owned by the server.
+func (a *Middleware) SetAppNameProvider(provider func() string) {
+	a.appName = provider
 }
 
 func (a *Middleware) Enabled() bool {
@@ -112,7 +118,11 @@ func (a *Middleware) Wrap(h http.HandlerFunc) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusUnauthorized)
-				ui.RenderAuthPrompt(w)
+				name := ""
+				if a.appName != nil {
+					name = a.appName()
+				}
+				ui.RenderAuthPrompt(w, name)
 				return
 			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

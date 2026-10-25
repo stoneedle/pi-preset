@@ -1,7 +1,5 @@
 {
-  "name": "Pi 会话",
   "lang": "zh-CN",
-  "short_name": "Pi",
   "description": "在手机上阅读和控制自己的 Pi 会话。",
   "id": "/",
   "start_url": "/",

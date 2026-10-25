@@ -16,11 +16,13 @@ var authTmplStr string
 var authTmpl = template.Must(template.New("auth").Parse(authTmplStr))
 
 // RenderAuthPrompt shares the app's automatic system appearance.
-func RenderAuthPrompt(w io.Writer) error {
+func RenderAuthPrompt(w io.Writer, appName string) error {
 	data := struct {
+		AppName   string
 		ThemeCss  template.HTML
 		ThemeBoot template.HTML
 	}{
+		AppName:   appName,
 		ThemeCss:  template.HTML("<style>\n" + liveThemeCss + "\n</style>"),
 		ThemeBoot: liveThemeBootScript(),
 	}

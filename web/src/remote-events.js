@@ -30,7 +30,10 @@ export function subscribeEvents(url, handlers) {
         handlers.error?.(event);
       }
     };
-    for (const name of ['message', 'status-snapshot', 'status-delta', 'heartbeat']) {
+    const events = new Set(['message', 'status-snapshot', 'status-delta', 'heartbeat']);
+    for (const name of Object.keys(handlers))
+      if (name !== 'open' && name !== 'error') events.add(name);
+    for (const name of events) {
       current.addEventListener(name, (event) => {
         if (source !== current || disposed) return;
         touch();

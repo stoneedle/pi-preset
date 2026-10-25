@@ -6,6 +6,7 @@
   import { contextMenu } from '../shared/context-menu.js';
   import { request, createRefreshCoordinator, createRuntimeStateStore } from '../remote-api.js';
   import { subscribeEvents } from '../remote-events.js';
+  import { applyAppName } from '../remote-app-name.svelte.js';
   import { readView, rememberView } from '../remote-cache.js';
   import {
     sessionArchives,
@@ -588,6 +589,9 @@
       },
       message(event) {
         if (event.data === 'reload' || event.data === 'new-session') refreshList.run();
+      },
+      'app-name'(event) {
+        applyAppName(JSON.parse(event.data));
       },
       'status-snapshot'(event) {
         for (const snapshot of Object.values(JSON.parse(event.data))) mergeRuntime(snapshot);

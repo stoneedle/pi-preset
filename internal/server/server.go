@@ -26,7 +26,7 @@ type Deps struct {
 	Auth           *auth.Middleware
 	WorkerFactory  workers.Factory
 	Cache          *sessions.Cache
-	RenderAppShell func(w io.Writer) error
+	RenderAppShell func(w io.Writer, appName string) error
 	Now            func() time.Time
 	PushClient     *http.Client
 }
@@ -42,7 +42,7 @@ type Server struct {
 	cache          *sessions.Cache
 	auth           *auth.Middleware
 	now            func() time.Time
-	renderAppShell func(w io.Writer) error
+	renderAppShell func(w io.Writer, appName string) error
 	runtimeStates  map[string]runtimeSnapshot
 	observations   map[string]ownerObservation
 	lastKnownMu    sync.Mutex
@@ -52,6 +52,7 @@ type Server struct {
 	stopOnce       sync.Once
 	wg             sync.WaitGroup
 	db             *sql.DB
+	appNameMu      sync.Mutex
 	push           *pushModule
 	diagnostics    *diagnosticLog
 }
@@ -84,6 +85,7 @@ func New(deps Deps) (*Server, error) {
 		fileMod:        make(map[string]time.Time), runtimeStates: make(map[string]runtimeSnapshot), observations: make(map[string]ownerObservation),
 		stopCh: make(chan struct{}), db: db, previews: make(map[string]*previewGrant),
 	}
+	s.auth.SetAppNameProvider(s.AppName)
 	s.push, err = newPushModule(db, deps.Now, deps.PushClient)
 	if err != nil {
 		db.Close()
@@ -175,6 +177,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		"/api/push/status": s.handlePushStatus, "/api/push/test": s.handlePushTest,
 		"/api/push/eligibility": s.handlePushEligibility,
 		"/api/diagnostics":      s.handleDiagnostics,
+		"/api/app-name":         s.handleAppName,
 	} {
 		mux.HandleFunc(path, s.auth.Wrap(handler))
 	}

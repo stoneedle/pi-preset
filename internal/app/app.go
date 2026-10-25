@@ -84,7 +84,7 @@ func Main(version string) {
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	dfs := web.DistFS()
-	ui.RegisterPWAHandlers(mux, dfs)
+	ui.RegisterPWAHandlers(mux, dfs, srv.AppName)
 	if scripts, err := frontend.LoadScripts(dfs, frontend.AppEntry); err == nil {
 		for _, script := range scripts {
 			if script.Entry == frontend.AppEntry {

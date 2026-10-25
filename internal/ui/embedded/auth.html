@@ -6,7 +6,11 @@
             name="viewport"
             content="width=device-width, initial-scale=1"
         />
-        <title>pi-web — 登录</title>
+        <title>{{if .AppName}}{{.AppName}} — {{end}}登录</title>
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="/icon-192.png" />
+        <meta name="application-name" content="{{.AppName}}" />
+        <meta name="apple-mobile-web-app-title" content="{{.AppName}}" />
         <link rel="icon" type="image/svg+xml" href="/icon.svg" />
         <meta name="theme-color" content="#ffffff" />
         {{.ThemeCss}}

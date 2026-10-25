@@ -32,6 +32,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ":ok\n\n")
 	flusher.Flush()
 
+	if sessID == globalSessID {
+		if info, err := s.appNameInfo(); err == nil {
+			data, _ := json.Marshal(info)
+			fmt.Fprintf(w, "event: app-name\ndata: %s\n\n", data)
+		}
+	}
 	s.writeStatusSnapshot(w, sessID)
 	flusher.Flush()
 

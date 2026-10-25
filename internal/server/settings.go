@@ -19,7 +19,7 @@ func (s *Server) handleAppShell(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := s.renderAppShell(w); err != nil && !isBrokenPipe(err) {
+	if err := s.renderAppShell(w, s.AppName()); err != nil && !isBrokenPipe(err) {
 		fmt.Fprintf(os.Stderr, "app shell: %v\n", err)
 	}
 }

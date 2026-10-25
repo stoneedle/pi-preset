@@ -16,15 +16,16 @@ func SetFontProvider(provider func() (string, string, string, string, string)) {
 }
 
 type liveDocumentData struct {
-	Title  string
-	Styles template.HTML
+	Title   string
+	AppName string
+	Styles  template.HTML
 }
 
 func renderLiveDocumentStart(data liveDocumentData) string {
 	var b strings.Builder
 	b.WriteString(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content"><title>`)
 	b.WriteString(template.HTMLEscapeString(data.Title))
-	b.WriteString(`</title><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon-192.png"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#ffffff"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Pi"><style>` + liveThemeCss + `</style>`)
+	b.WriteString(`</title><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon-192.png"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#ffffff"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="application-name" content="` + template.HTMLEscapeString(data.AppName) + `"><meta name="apple-mobile-web-app-title" content="` + template.HTMLEscapeString(data.AppName) + `"><style>` + liveThemeCss + `</style>`)
 	ui, content, code, uiSize, contentSize := fontProvider()
 	b.WriteString(`<style>:root{--font-sans:` + ui + `;--font-content:` + content + `;--font-code:` + code + `;--font-size-ui:` + uiSize + `px;--font-content-size:` + contentSize + `px}</style>`)
 	b.WriteString(string(data.Styles))

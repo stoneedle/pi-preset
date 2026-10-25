@@ -43,7 +43,7 @@
 | `internal/rpc/project_options.mjs` | 仅用 Pi 的模型目录与设置 API 读取新任务选项，不创建 AgentSession 或 worker |
 | `web/src/components/` | 工具/思考、图片和通知交互 |
 
-每个 PWA 只连接安装地址对应的电脑，不维护主机名称、书签或跨主机切换。
+每个 PWA 只连接安装地址对应的电脑，不维护跨主机书签或切换。应用安装名称属于当前电脑，不是主机目录或连接配置。
 
 Pi 拥有执行、队列、工具、名称和记录。子任务提供方拥有子任务事实；只有 `SessionState` 对这些公开事实进行协调，标题、Go 和浏览器不另行推断运行状态。
 
@@ -89,6 +89,14 @@ Pi 拥有执行、队列、工具、名称和记录。子任务提供方拥有�
 `remote-worker.js` 只在页面启动时注册同一个 `/sw.js`；浏览器独立管理 Worker 更新。没有主动 `skipWaiting`、跨标签页投票、输入冻结、SSE 暂停或激活计时器。已连接旧 Worker 的窗口未关闭时，新 Worker 维持原生 waiting 状态，不因某一标签页刷新而替换其他文档。
 
 `vite-plugin-pwa` 的 injectManifest 继续提供内容哈希 JS/CSS 清单，Workbox 只预缓存公开静态资源，不缓存 HTML、API、会话、草稿或图片。旧 Worker 和 waiting Worker 使用同一静态预缓存；哈希资源的兜底路由可按原 URL 忽略预缓存修订参数读取其他已安装版本，使手动加载的新页面不受旧控制器资源表限制。旧资源只在浏览器原生允许新 Worker 激活后由 Workbox 清理，不因发布、手动刷新或 waiting 安装清空。通知订阅、去重和续订保留原数据库与范围。
+
+## 应用名称与安装身份
+
+`internal/server/app_name.go` 唯一拥有主机名回退、名称校验、SQLite `pi-web:app-name` 设置和持久化修订号。`GET/POST /api/app-name` 沿用鉴权、Origin 检查与不重放的写入规则；空名称恢复主机名，保存成功后才广播全局 `app-name` 事件，存储失败保留原设置。配置不进入源码或环境变量。
+
+HTML、登录页和公开 manifest 都读取同一名称。manifest 由静态图标／安装参数模板动态生成 `name` 与 `short_name`，保持原 `id`、`start_url` 和 `scope`；名称不参与安装身份。`remote-app-name.svelte.js` 统一接收保存回执与现有全局 SSE 的初始／后续事件，按持久化修订号拒绝迟到响应，更新页面安装元数据并请求浏览器重读 manifest，不替换文档或操作 Worker。首页标签页名称随设置更新，会话标题仍由原生会话拥有。
+
+`AppNameSettings.svelte` 为手机与 PC 共用同一“更多 → 应用名称”对话框，读取期间的新输入不被迟到结果覆盖，取消、读写失败或离线保留原设置；修改不创建执行器、不清除聊天草稿。手机桌面图标名称的实际更新由系统／浏览器管理，不承诺立即生效。
 
 ## 恢复与刷新诊断
 

@@ -25,6 +25,8 @@
   import { withoutImageCoordinates } from '../../../shared/user-text.js';
   import SessionInfo from '../components/SessionInfo.svelte';
   import PushSettings from '../components/PushSettings.svelte';
+  import AppNameSettings from '../components/AppNameSettings.svelte';
+  import { appName } from '../remote-app-name.svelte.js';
   import NewTask from '../components/NewTask.svelte';
   import RefreshError from '../components/RefreshError.svelte';
   import RemoteComposer from '../components/RemoteComposer.svelte';
@@ -86,6 +88,7 @@
   let drawerOpen = $state(false);
   let newTask = $state(null);
   let pushSettings = $state(null);
+  let nameSettings = $state(null);
   let info = $state(null);
   let modelsLoading = $state(false);
   let modelsError = $state('');
@@ -104,6 +107,10 @@
   let disposed = false;
   let messageActions = $state(null);
   let forkBusy = $state(false);
+
+  $effect(() => {
+    if (!sessionId) document.title = appName.name;
+  });
 
   const activeState = $derived(connected ? status.state : 'unknown');
   const runtimeKnown = $derived(connected && status.availability === 'connected');
@@ -568,7 +575,7 @@
         loading = false;
       }
     };
-    document.title = title;
+    document.title = sessionId ? title : appName.name;
     if (cached)
       tick().then(() => {
         if (disposed || !viewport) return;
@@ -710,15 +717,24 @@
       <h1 {title}>{title}</h1>
     </div>
     {#if sessionId}<SessionStatus snapshot={status} {connected} />{/if}
-    {#if sessionId}
-      <details class="remote-info" bind:this={info}>
-        <summary
-          aria-label="更多"
-          onkeydown={(event) => {
-            if (event.key === 'Escape') info.open = false;
-          }}>{@html icon(Ellipsis)}</summary
+    <details class="remote-info" bind:this={info}>
+      <summary
+        aria-label="更多"
+        onkeydown={(event) => {
+          if (event.key === 'Escape') info.open = false;
+        }}>{@html icon(Ellipsis)}</summary
+      >
+      <div class="remote-info-panel">
+        <button
+          type="button"
+          class="remote-info-notifications"
+          aria-haspopup="dialog"
+          onclick={() => {
+            info.open = false;
+            nameSettings.open();
+          }}>{@html icon(SquarePen)}<span>应用名称</span></button
         >
-        <div class="remote-info-panel">
+        {#if sessionId}
           <button
             type="button"
             class="remote-info-notifications"
@@ -738,9 +754,10 @@
               refreshInterface();
             }}>{@html icon(RefreshCw)}<span>刷新界面</span></button
           >
-        </div>
-      </details>
-    {:else}<button
+        {/if}
+      </div>
+    </details>
+    {#if !sessionId}<button
         type="button"
         aria-label="通知"
         aria-haspopup="dialog"
@@ -996,6 +1013,7 @@
 
 <NewTask bind:this={newTask} />
 <PushSettings bind:this={pushSettings} />
+<AppNameSettings bind:this={nameSettings} />
 
 <style>
   :global(html),
