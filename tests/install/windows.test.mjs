@@ -12,7 +12,7 @@ const quote = value => `'${value.replaceAll("'", "''")}'`;
 function powershell(script) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.toUpperCase() === 'PSMODULEPATH') delete env[key];
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
     Buffer.from("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);\n" + script, 'utf16le').toString('base64')],
   { env, encoding: 'utf8', timeout: 30000 });
   assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
