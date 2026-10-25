@@ -22,6 +22,8 @@ npx playwright test --workers=2
 
 测试不得启动、停止或清理用户日常服务与浏览器。修改代码后的实际部署使用已有安装/重启入口，与临时测试服务分开。
 
+`make install-test` 包含隔离 HOME 下的 Unix 安装／卸载回归，以及 Windows 上的 PowerShell 安装集成：覆盖 LF／CRLF、含中文／空格／单引号的迁移目录、已有令牌与 UTF-8 配置、相同二进制的配置修复、启动时读取当前 Windows 环境，以及原位更新不改配置。Windows 用例拦截进程和启动注册操作，不修改真实服务；生命周期用例在临时目录构建 Go 工具替身，验证 Git Bash 构建环境不泄漏、PowerShell 宿主状态不继承。非 Windows 平台跳过 Windows 用例。
+
 ## 隔离与范围
 
 `e2e/lib/test.ts` 为每个 Playwright worker 在系统临时目录创建独立的 `PI_CODING_AGENT_DIR`，复制脱敏会话，在空闲回环端口启动生产二进制，并禁用测试实例的鉴权和 Tailscale 配置。地址和目录通过同一份 worker fixture 提供，不经进程环境共享，也不共用 `server.json` 或固定会话目录。worker 结束即停止自己的 Go 和独立测试宿主、删除临时目录，避免整套浏览器矩阵积累数十个五小时空闲执行器及跨项目数据；并行 worker 不互相清理。需要鉴权的用例另启隔离实例。浏览器由 `e2e/lib/browser.mjs` 创建独立 BrowserServer，断言结束后强制关闭该测试实例的进程树，避免 WebKit 在 Service Worker／SSE 优雅退出阶段无限等待；不连接日常浏览器。测试只关闭自己的进程树和浏览器 Profile，不改提交的 fixtures。

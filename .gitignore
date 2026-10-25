@@ -14,5 +14,7 @@ web/dist/
 node_modules/
 tmp/
 __pycache__/
+/test-results/
+/playwright-report/
 
 .requirements/

@@ -64,6 +64,7 @@ go-test: go-setup
 
 install-test:
 	bash tests/install/inplace_test.sh
+	node --test tests/install/*.test.mjs
 
 vet: go-setup
 	go vet ./...

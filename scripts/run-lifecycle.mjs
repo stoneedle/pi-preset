@@ -12,7 +12,12 @@ if (action !== 'install' && action !== 'uninstall') {
 }
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const env = { ...process.env };
+// Each PowerShell host owns its module discovery, not the parent shell.
+if (process.platform === 'win32') {
+  for (const key of Object.keys(env)) if (key.toUpperCase() === 'PSMODULEPATH') delete env[key];
+}
 if (action === 'install') {
+  const buildEnv = { ...env };
   const binary = join(root, process.platform === 'win32' ? 'pi-web.exe' : 'pi-web');
   const args = ['build', `BINARY=${binary}`];
   if (process.platform === 'win32') {
@@ -21,11 +26,11 @@ if (action === 'install') {
     const bash = resolve(git.stdout.trim(), '../../../usr/bin/bash.exe');
     if (!fs.existsSync(bash)) throw new Error('Building pi-web requires Git Bash.');
     args.push('SHELL=bash.exe');
-    // Build-only tools; preserve the service and login PATH.
-    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
-    env.PATH = dirname(bash) + delimiter + process.env.PATH;
+    // Git Bash is build-only; do not leak its PATH into the installer.
+    for (const key of Object.keys(buildEnv)) if (key.toUpperCase() === 'PATH') delete buildEnv[key];
+    buildEnv.PATH = dirname(bash) + delimiter + process.env.PATH;
   }
-  const build = spawnSync(process.env.MAKE || 'make', args, { cwd: root, env, stdio: 'inherit' });
+  const build = spawnSync(process.env.MAKE || 'make', args, { cwd: root, env: buildEnv, stdio: 'inherit' });
   if (build.error) throw new Error(`Building pi-web requires Go, Node and GNU Make: ${build.error.message}`);
   if (build.status !== 0) process.exit(build.status ?? 1);
   const version = spawnSync(binary, ['-version'], { encoding: 'utf8' });
