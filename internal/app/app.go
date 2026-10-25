@@ -66,16 +66,11 @@ func Main(version string) {
 		authMiddleware.AllowAnyHost()
 	}
 
-	var srv *server.Server
-	manager := workers.NewManager(func(_ string, sessionPath string) (workers.ChatWorker, error) {
-		return rpc.NewPiWorker(sessionPath)
-	}, func(id string) bool { return srv != nil && srv.RuntimeIdle(id) })
-	var srvErr error
-	srv, srvErr = server.New(server.Deps{
+	srv, srvErr := server.New(server.Deps{
 		AgentDir:       agentDir,
 		SessionsDir:    sessionsDir,
 		Auth:           authMiddleware,
-		ChatSender:     manager,
+		WorkerFactory:  func(_ string, sessionPath string) (workers.ChatWorker, error) { return rpc.NewPiWorker(sessionPath) },
 		Cache:          sessions.NewCache(),
 		RenderAppShell: ui.RenderAppShell,
 	})
@@ -88,8 +83,8 @@ func Main(version string) {
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	ui.RegisterPWAHandlers(mux)
 	dfs := web.DistFS()
+	ui.RegisterPWAHandlers(mux, dfs)
 	if scripts, err := frontend.LoadScripts(dfs, frontend.AppEntry); err == nil {
 		for _, script := range scripts {
 			if script.Entry == frontend.AppEntry {
@@ -192,7 +187,6 @@ func Main(version string) {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 		srv.Shutdown()
-		_ = manager.Close()
 		releaseStateFile()
 		code := 0
 		if num, ok := sig.(syscall.Signal); ok {

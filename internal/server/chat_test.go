@@ -43,14 +43,13 @@ func chatRequest() *http.Request {
 	return r
 }
 
-func TestOpeningAndSendingNeverImplicitlyStartsAnExecutor(t *testing.T) {
+func TestOpeningIsPassiveAndSendingStartsAndReusesOneExecutor(t *testing.T) {
 	s := newTestServer(t)
 	writeConversation(t, s.sessionsDir, []map[string]any{{"role": "user", "content": "history"}})
 	var created atomic.Int32
 	worker := &testWorker{}
-	manager := workers.NewManagerWithTTL(func(string, string) (workers.ChatWorker, error) { created.Add(1); return worker, nil }, 0, nil)
-	t.Cleanup(func() { manager.Close() })
-	s.chatSender = manager
+	_ = s.executors.Close()
+	s.executors = workers.NewManager(func(string, string) (workers.ChatWorker, error) { created.Add(1); return worker, nil }, s.agentDir)
 	for _, handler := range []http.HandlerFunc{s.handleApiSession, s.handleSessionStatus} {
 		w := httptest.NewRecorder()
 		handler(w, httptest.NewRequest("GET", "/api/session?id=mobile.jsonl", nil))
@@ -58,20 +57,15 @@ func TestOpeningAndSendingNeverImplicitlyStartsAnExecutor(t *testing.T) {
 			t.Fatal(w.Body.String())
 		}
 	}
-	w := httptest.NewRecorder()
-	s.handleChat(w, chatRequest())
-	if w.Code != http.StatusConflict || created.Load() != 0 {
-		t.Fatalf("implicit execution: status=%d created=%d", w.Code, created.Load())
+	if created.Load() != 0 {
+		t.Fatal("reading started an executor")
 	}
-	w = httptest.NewRecorder()
-	s.handleContinueSession(w, httptest.NewRequest("POST", "/api/session/continue?id=mobile.jsonl", nil))
-	if w.Code != 200 || created.Load() != 1 {
-		t.Fatalf("explicit continue: %d %s", w.Code, w.Body.String())
-	}
-	w = httptest.NewRecorder()
-	s.handleChat(w, chatRequest())
-	if w.Code != 202 || created.Load() != 1 || worker.sent.Load() != 1 {
-		t.Fatalf("worker not reused: %d %s", w.Code, w.Body.String())
+	for send := int32(1); send <= 2; send++ {
+		w := httptest.NewRecorder()
+		s.handleChat(w, chatRequest())
+		if w.Code != http.StatusAccepted || created.Load() != 1 || worker.sent.Load() != send {
+			t.Fatalf("send %d did not start/reuse one worker: %d %s", send, w.Code, w.Body.String())
+		}
 	}
 }
 
@@ -79,9 +73,8 @@ func TestAllControlsGoToTheRegisteredPiInstance(t *testing.T) {
 	s := newTestServer(t)
 	writeConversation(t, s.sessionsDir, []map[string]any{{"role": "user", "content": "history"}})
 	var created atomic.Int32
-	manager := workers.NewManagerWithTTL(func(string, string) (workers.ChatWorker, error) { created.Add(1); return &testWorker{}, nil }, 0, nil)
-	t.Cleanup(func() { manager.Close() })
-	s.chatSender = manager
+	_ = s.executors.Close()
+	s.executors = workers.NewManager(func(string, string) (workers.ChatWorker, error) { created.Add(1); return &testWorker{}, nil }, s.agentDir)
 	var actions []string
 	ownerHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer owner-secret" {
@@ -106,7 +99,7 @@ func TestAllControlsGoToTheRegisteredPiInstance(t *testing.T) {
 	n, _ := strconv.Atoi(port)
 	dir := filepath.Join(s.agentDir, "pi-web", "owners")
 	os.MkdirAll(dir, 0700)
-	data, _ := json.Marshal(remoteOwner{PID: int32(os.Getpid()), Port: n, Token: "owner-secret", SessionID: "sid"})
+	data, _ := json.Marshal(workers.Registration{PID: int32(os.Getpid()), Port: n, Token: "owner-secret", SessionID: "sid"})
 	os.WriteFile(filepath.Join(dir, "mobile.jsonl.json"), data, 0600)
 	for _, item := range []struct {
 		handler http.HandlerFunc
@@ -127,9 +120,25 @@ func TestAllControlsGoToTheRegisteredPiInstance(t *testing.T) {
 	if created.Load() != 0 || len(actions) != 5 {
 		t.Fatalf("not same-instance control: created=%d actions=%v", created.Load(), actions)
 	}
+	ownerHTTP.Close()
 	w := httptest.NewRecorder()
-	s.handleContinueSession(w, httptest.NewRequest("POST", "/api/session/continue?id=mobile.jsonl", nil))
-	if w.Code != 409 || created.Load() != 0 {
-		t.Fatal("continue created a competing executor")
+	s.handleChat(w, chatRequest())
+	if w.Code != http.StatusConflict || created.Load() != 0 || len(actions) != 5 {
+		t.Fatal("an unreachable live owner created a competing executor or replayed the message")
+	}
+	if err := os.Remove(filepath.Join(dir, "mobile.jsonl.json")); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	s.handleChat(w, chatRequest())
+	if w.Code < 400 || created.Load() != 0 {
+		t.Fatal("a missing registration for a known live process created a duplicate")
+	}
+	data, _ = json.Marshal(workers.Registration{PID: 2147483647, Port: n, Token: "owner-secret", SessionID: "sid"})
+	os.WriteFile(filepath.Join(dir, "mobile.jsonl.json"), data, 0600)
+	w = httptest.NewRecorder()
+	s.handleChat(w, chatRequest())
+	if w.Code != http.StatusAccepted || created.Load() != 1 {
+		t.Fatalf("a dead owner prevented recovery on send: %d %s", w.Code, w.Body.String())
 	}
 }

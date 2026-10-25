@@ -1,8 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { join } from "node:path";
 import { ellipsize, oneLine } from "./format.ts";
+import { withoutImageCoordinates } from "../../../../shared/user-text.js";
 
 const NAME_LIMIT = 64;
 
@@ -28,18 +30,36 @@ export function titleInput(text: string): string {
   return ellipsize(text.trim(), 2000);
 }
 
+/** Read the accepted task, never expanded skill instructions or extension notifications. */
+export function openingTaskText(message: AgentMessage): string | undefined {
+  let text: string | undefined;
+  if (message.role === "user") {
+    const content = message.content;
+    text = typeof content === "string" ? content
+      : content.filter((part) => part.type === "text").map((part) => part.text).join(" ");
+    if (Array.isArray(content) && content.some((part) => part.type === "image")) text = withoutImageCoordinates(text);
+    // A failed image conversion can leave only a machine-generated omission notice.
+    text = text.replace(/(?:\s*\[Image omitted: [^\]\r\n]+\])+\s*$/, "");
+  } else if (message.role === "custom" && message.customType === "inline-skills" && message.display) {
+    const details = message.details as { userMessage?: unknown; blocks?: { name?: unknown }[] } | undefined;
+    const commands = Array.isArray(details?.blocks) ? details.blocks
+      .filter((block) => typeof block?.name === "string").map((block) => `/skill:${block.name}`).join(" ") : "";
+    text = [commands, typeof details?.userMessage === "string" ? details.userMessage : ""].filter(Boolean).join("\n");
+  }
+  return text && oneLine(text) ? text : undefined;
+}
+
 export function firstUserText(ctx: ExtensionContext): string | undefined {
   for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type !== "message" || entry.message.role !== "user") continue;
-    const content = entry.message.content;
-    const text = typeof content === "string" ? content
-      : content.filter((part) => part.type === "text").map((part) => part.text).join(" ");
-    if (oneLine(text)) return text;
+    const message = entry.type === "message" ? entry.message
+      : entry.type === "custom_message" ? { ...entry, role: "custom" as const } : undefined;
+    const text = message && openingTaskText(message);
+    if (text) return text;
   }
   return undefined;
 }
 
-/** Owns first-input naming and one optional background request. Pi owns the saved name. */
+/** Owns opening-task naming and one optional background request. Pi owns the saved name. */
 export class SessionTitle {
   private ctx: ExtensionContext;
   private pi: ExtensionAPI;

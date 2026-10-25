@@ -1,0 +1,178 @@
+.remote-markdown {
+  min-width: 0;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+  font: var(--font-content-size)/1.7 var(--font-content);
+}
+.remote-markdown.markdown-compact {
+  margin: 0;
+}
+.remote-markdown.markdown-muted {
+  color: var(--text-soft);
+}
+.remote-markdown > :first-child {
+  margin-top: 0;
+}
+.remote-markdown > :last-child {
+  margin-bottom: 0;
+}
+.remote-markdown.markdown-with-trailing > p:has(+ .markdown-trailing) {
+  display: inline;
+}
+.remote-markdown p {
+  margin: 0.65em 0;
+}
+.remote-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.35em 0 0.6em;
+  line-height: 1.4;
+  font-weight: 650;
+  text-wrap: pretty;
+}
+.remote-markdown h1 {
+  font-size: 1.5em;
+}
+.remote-markdown h2 {
+  font-size: 1.3em;
+}
+.remote-markdown h3 {
+  font-size: 1.13em;
+}
+.remote-markdown :is(h4, h5, h6) {
+  font-size: 1em;
+}
+.remote-markdown :is(ul, ol) {
+  margin: 0.65em 0;
+  padding-left: 1.5em;
+}
+.remote-markdown li {
+  margin: 0.25em 0;
+}
+.remote-markdown li > :is(ul, ol) {
+  margin: 0.25em 0;
+}
+.remote-markdown li > p {
+  margin: 0.35em 0;
+}
+.remote-markdown :is(a, a:visited) {
+  color: var(--link);
+}
+.remote-markdown a {
+  text-underline-offset: 3px;
+}
+.remote-markdown code,
+.markdown-inline code {
+  padding: 0.12em 0.32em;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-family: var(--font-code);
+  font-size: 0.88em;
+  box-decoration-break: clone;
+}
+.remote-markdown pre {
+  max-width: 100%;
+  margin: 0.85em 0;
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font: 0.88em/1.6 var(--font-code);
+  overflow-wrap: normal;
+}
+.remote-markdown pre code {
+  padding: 0;
+  background: transparent;
+  font: inherit;
+}
+.remote-markdown blockquote {
+  margin: 0.85em 0;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid var(--dim);
+  color: var(--text-soft);
+}
+.remote-markdown table {
+  display: block;
+  max-width: 100%;
+  width: max-content;
+  margin: 0.85em 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.remote-markdown :is(th, td) {
+  padding: 7px 11px;
+  border: 1px solid var(--dim);
+  line-height: 1.55;
+}
+.remote-markdown th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.remote-markdown input[type='checkbox'] {
+  min-height: 0;
+  margin: 0 0.45em 0 -0.2em;
+  accent-color: var(--accent);
+}
+.remote-markdown hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid var(--dim);
+}
+.remote-markdown .markdown-alert {
+  --alert-color: var(--link);
+  margin: 1em 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--alert-color);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--alert-color) 7%, transparent);
+}
+.markdown-alert[data-kind='tip'],
+.markdown-alert[data-kind='important'] {
+  --alert-color: var(--accent);
+}
+.markdown-alert[data-kind='warning'] {
+  --alert-color: var(--warning);
+}
+.markdown-alert[data-kind='caution'] {
+  --alert-color: var(--danger);
+}
+.markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+  color: var(--alert-color);
+  line-height: 1.5;
+}
+.markdown-alert-title svg {
+  flex: none;
+}
+.markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+.markdown-diagram {
+  max-width: 100%;
+  margin: 1em 0;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  border-radius: 8px;
+}
+.markdown-diagram svg {
+  display: block;
+}
+.markdown-diagram .diagram-source {
+  margin: 0;
+}
+.markdown-diagram .diagram-source[hidden] {
+  display: none;
+}
+.markdown-diagram .diagram-error {
+  color: var(--muted);
+  font-size: 12px;
+}
+.markdown-inline {
+  font: inherit;
+}
+.markdown-inline code {
+  font-size: inherit;
+}

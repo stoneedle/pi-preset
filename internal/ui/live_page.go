@@ -36,8 +36,4 @@ func liveThemeBootScript() template.HTML {
 	return template.HTML(`<script>(function(){function update(){var color=getComputedStyle(document.documentElement).getPropertyValue('--body-bg').trim();var meta=document.querySelector('meta[name="theme-color"]');if(color&&meta)meta.content=color;}update();matchMedia('(prefers-color-scheme: dark)').addEventListener('change',update);})();</script>`)
 }
 
-func liveServiceWorkerScript() template.HTML {
-	return template.HTML(`<script>if('serviceWorker' in navigator&&window.isSecureContext){navigator.serviceWorker.register('/sw.js',{scope:'/'}).catch(function(){});}</script>`)
-}
-
 func liveDocumentEnd() template.HTML { return template.HTML("</body></html>") }

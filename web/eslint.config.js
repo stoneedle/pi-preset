@@ -30,6 +30,10 @@ export default [
     },
   },
   {
+    files: ['src/sw.js', 'src/push-worker.js'],
+    languageOptions: { globals: { ...globals.serviceworker } },
+  },
+  {
     files: ['**/*.test.js', 'vitest.setup.js'],
     languageOptions: {
       globals: {

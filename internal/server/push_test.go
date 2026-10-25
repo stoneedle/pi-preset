@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"pi-web/internal/auth"
+	"pi-web/internal/workers"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -218,7 +219,7 @@ func TestAuthenticatedWebPushLifecycle(t *testing.T) {
 	_, port, _ := net.SplitHostPort(owner.Listener.Addr().String())
 	number, _ := strconv.Atoi(port)
 	os.MkdirAll(filepath.Join(agentDir, "pi-web", "owners"), 0700)
-	registration, _ := json.Marshal(remoteOwner{PID: int32(os.Getpid()), Port: number, Token: "owner-token", SessionID: "sid"})
+	registration, _ := json.Marshal(workers.Registration{PID: int32(os.Getpid()), Port: number, Token: "owner-token", SessionID: "sid"})
 	os.WriteFile(filepath.Join(agentDir, "pi-web", "owners", "session.jsonl.json"), registration, 0600)
 	wait(func() bool { return call("GET", "/api/status?id=session.jsonl", nil, 200)["state"] == "running" })
 	publish := func(value runtimeSnapshot) {
@@ -262,7 +263,7 @@ func TestAuthenticatedWebPushLifecycle(t *testing.T) {
 		t.Fatal(first.err)
 	}
 	encoded, _ := json.Marshal(first.payload)
-	if bytes.Contains(encoded, []byte(secretBody)) || first.payload["title"] != "Runtime session — 回复已就绪" || first.payload["url"] != remote.URL+"/session?id=session.jsonl" || first.payload["body"] != strings.TrimPrefix(remote.URL, "http://") {
+	if bytes.Contains(encoded, []byte(secretBody)) || first.payload["title"] != "Runtime session — 回复已就绪" || first.payload["url"] != remote.URL+"/session?id=session.jsonl" || first.payload["body"] != "" {
 		t.Fatalf("wrong or private notification: %s", encoded)
 	}
 	if first.headers.Get("Content-Encoding") != "aes128gcm" || first.headers.Get("TTL") != "86400" {
@@ -304,7 +305,7 @@ func TestAuthenticatedWebPushLifecycle(t *testing.T) {
 	publish(value)
 	select {
 	case attention := <-messages:
-		if attention.err != nil || attention.payload["kind"] != "attention" || !strings.Contains(attention.payload["body"].(string), "确认操作") {
+		if attention.err != nil || attention.payload["kind"] != "attention" || attention.payload["body"] != "需要终端交互：确认操作" {
 			t.Fatalf("wrong attention metadata: %v %v", attention.payload, attention.err)
 		}
 	case <-time.After(5 * time.Second):

@@ -6,27 +6,33 @@ import * as path from "node:path";
 import { externalBadge, renderTitle, graphemes, ellipsize, TITLE_BUDGET } from "../../.pi/extensions/lib/title/format.ts";
 
 const states = [
-  { state: "running", unread: false, glyph: "⏳" },
-  { state: "needs-you", unread: false, glyph: "❗" },
-  { state: "background", unread: false, glyph: "◐" },
-  { state: "background", unread: true, glyph: "◐" },
-  { state: "idle", unread: false, glyph: "✓" },
-  { state: "idle", unread: true, glyph: "🔵" },
+  { state: "running", unread: false, glyph: "⟳" },
+  { state: "running", unread: true, glyph: "⟳ ●" },
+  { state: "needs-you", unread: false, glyph: "!" },
+  { state: "background", unread: false, glyph: "▱" },
+  { state: "background", unread: true, glyph: "▱ ●" },
+  { state: "idle", unread: false, glyph: "○" },
+  { state: "idle", unread: true, glyph: "○ ●" },
+  { state: "idle", unread: false, completed: true, glyph: "✓" },
+  { state: "idle", unread: true, completed: true, glyph: "✓ ●" },
+  { state: "idle", unread: false, outcome: "error", glyph: "×" },
+  { state: "idle", unread: true, outcome: "aborted", glyph: "■ ●" },
+  { state: "unknown", unread: false, glyph: "?" },
 ] as const;
 
 test("status changes preserve the saved name, including with an external badge", () => {
   const title = "Fix subtitle import";
-  for (const { state, unread, glyph } of states) {
-    assert.equal(renderTitle({ state, unread, title }), `${glyph} · ${title}`);
-    assert.equal(renderTitle({ state, unread }), glyph);
-    assert.equal(renderTitle({ state, unread, title, badge: { emoji: "🔓" } }), `🔓 ${glyph} · ${title}`);
+  for (const { glyph, ...snapshot } of states) {
+    assert.equal(renderTitle({ ...snapshot, title }), `${glyph} · ${title}`);
+    assert.equal(renderTitle(snapshot), glyph);
+    assert.equal(renderTitle({ ...snapshot, title, badge: { emoji: "🔓" } }), `🔓 ${glyph} · ${title}`);
   }
 });
 
 test("long names keep the same bounded text across status transitions", () => {
   const title = "排查字幕渲染与同步问题".repeat(20);
   for (const badge of [undefined, { emoji: "🔓" }]) {
-    const titles = states.map(({ state, unread }) => renderTitle({ state, unread, title, badge }));
+    const titles = states.map(({ glyph: _glyph, ...snapshot }) => renderTitle({ ...snapshot, title, badge }));
     assert.equal(new Set(titles.map((value) => value.split(" · ")[1])).size, 1);
     for (const value of titles) {
       assert.ok(graphemes(value).length <= TITLE_BUDGET);
@@ -39,9 +45,9 @@ test("project name is opt-in and preserves the saved name", () => {
   const previous = process.env.PI_TITLE_GLYPHS_CWD;
   try {
     delete process.env.PI_TITLE_GLYPHS_CWD;
-    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "✓ · Fix import");
+    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "○ · Fix import");
     process.env.PI_TITLE_GLYPHS_CWD = "1";
-    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "✓ myproj · Fix import");
+    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "○ myproj · Fix import");
   } finally {
     if (previous === undefined) delete process.env.PI_TITLE_GLYPHS_CWD;
     else process.env.PI_TITLE_GLYPHS_CWD = previous;

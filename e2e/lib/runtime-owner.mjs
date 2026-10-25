@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -17,8 +17,7 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
   const db = new DatabaseSync(join(agentDir, 'pi-web.sqlite'));
   db.exec(`PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS session_results (
     session_id TEXT NOT NULL,result_id TEXT NOT NULL,acknowledged INTEGER NOT NULL DEFAULT 0,
-    completed INTEGER NOT NULL DEFAULT 0,completed_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,result_id))`);
-  if (!db.prepare('PRAGMA table_info(session_results)').all().some((column) => column.name === 'completed_at')) db.exec('ALTER TABLE session_results ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0');
+    completed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,result_id))`);
   const snapshot = () => {
     const entries = native();
     const state = getState();
@@ -36,19 +35,19 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
       }
       leaf = entry.parentId;
     }
-    const read = db.prepare('SELECT acknowledged,completed_at FROM session_results WHERE session_id=? AND result_id=?').get(sessionId, replyId);
+    const read = db.prepare('SELECT acknowledged FROM session_results WHERE session_id=? AND result_id=?').get(sessionId, replyId);
     return { id, sessionId, instanceId, revision, state: state.state, mainRunning: state.state === 'running',
-      children: state.state === 'background' ? 1 : 0, availability: 'connected', canControl: true,
+      children: state.state === 'background' ? 1 : 0, availability: 'connected', canControl: true, canQueue: true,
       chatAvailable: true, cwd: entries[0].cwd,
       replyId, leafId, unread: Boolean(replyId && !read?.acknowledged),
-      completed: state.state === 'idle' && ['stop', 'length'].includes(outcome), completedAt:read?.completed_at || 0, outcome,
+      completed: state.state === 'idle' && ['stop', 'length'].includes(outcome), outcome,
+      name: entries.findLast((entry) => entry.type === 'session_info')?.name,
       model: 'test-model', provider: 'test', thinking: 'medium', context: null, fast: null, cacheHit, ...state };
   };
   const publish = () => {
     const current = snapshot();
-    if (current.completed && current.replyId) db.prepare(`INSERT INTO session_results(session_id,result_id,completed,completed_at) VALUES(?,?,1,?)
-      ON CONFLICT(session_id,result_id) DO UPDATE SET completed=1,completed_at=CASE WHEN completed_at=0 THEN excluded.completed_at ELSE completed_at END`)
-      .run(sessionId,current.replyId,current.completedAt || Date.now());
+    if (current.completed && current.replyId) db.prepare(`INSERT INTO session_results(session_id,result_id,completed) VALUES(?,?,1)
+      ON CONFLICT(session_id,result_id) DO UPDATE SET completed=1`).run(sessionId,current.replyId);
     revision++; for (const listener of listeners) listener();
   };
   const server = createServer(async (request, response) => {
@@ -63,9 +62,9 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
     }
     let input;
     try {
-      let body = '';
-      for await (const chunk of request) body += chunk;
-      input = JSON.parse(body);
+      const chunks = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (input.sessionId !== sessionId) throw new Error('session mismatch');
       let result;
       if (input.action === 'state') result = snapshot();
@@ -73,6 +72,11 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
         db.prepare(`INSERT INTO session_results(session_id,result_id,acknowledged) VALUES(?,?,1)
           ON CONFLICT(session_id,result_id) DO UPDATE SET acknowledged=1`).run(sessionId, input.replyId);
         publish(); result = snapshot();
+      } else if (input.action === 'rename-title') {
+        if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('empty name');
+        const entry = {type:'session_info',id:randomUUID(),parentId:native().filter((entry) => entry.type !== 'session').at(-1)?.id || null,timestamp:new Date().toISOString(),name:input.name.trim()};
+        appendFileSync(sessionPath,JSON.stringify(entry)+'\n');
+        publish(); result = {name:entry.name};
       } else { result = await control(input); publish(); }
       response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
     } catch (error) { response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: String(error) })); }
@@ -81,13 +85,14 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
   const directory = join(agentDir, 'pi-web', 'owners');
   mkdirSync(directory, { recursive: true });
   const file = join(directory, id + '.json');
-  writeFileSync(file, JSON.stringify({ pid: process.pid, port: server.address().port, token, sessionId }));
+  writeFileSync(file, JSON.stringify({ pid: process.pid, port: server.address().port, token, sessionId, hostId: process.env.PI_WEB_WORKER_HOST_ID }));
   return { publish, snapshot, async close() {
     if (closed) return;
     closed = true;
     try { unlinkSync(file); } catch {}
+    const closing = new Promise((resolve) => server.close(resolve));
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await closing;
     db.close();
   } };
 }

@@ -49,7 +49,7 @@ func TestOnlyMobileRoutesRemainAndShellContainsNoSessionData(t *testing.T) {
 			t.Fatalf("heavy shell: %d bytes", len(body))
 		}
 	}
-	for _, path := range []string{"/settings", "/schedules", "/api/fork-session", "/api/clone-session", "/api/annotations", "/api/scratchpad", "/api/chat/queue", "/api/worker-status", "/api/projects", "/api/git/diff", "/metrics"} {
+	for _, path := range []string{"/settings", "/schedules", "/api/fork-session", "/api/clone-session", "/api/annotations", "/api/scratchpad", "/api/chat/queue", "/api/worker-status", "/api/projects", "/api/git/diff", "/metrics", "/api/sessions/order"} {
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 404 {
@@ -63,7 +63,7 @@ func TestMobileAPIsStillRequireAuthentication(t *testing.T) {
 	s.auth = auth.New("private-token")
 	mux := http.NewServeMux()
 	s.Register(mux)
-	for _, path := range []string{"/api/session?id=mobile.jsonl", "/api/status?id=mobile.jsonl", "/api/session/block?id=mobile.jsonl&entry=x&index=0"} {
+	for _, path := range []string{"/api/session?id=mobile.jsonl", "/api/status?id=mobile.jsonl", "/api/session/block?id=mobile.jsonl&entry=x&index=0", "/api/session/name?id=mobile.jsonl", "/api/session/archive?id=mobile.jsonl", "/api/session/fork?id=mobile.jsonl"} {
 		r := httptest.NewRequest("GET", path, nil)
 		r.Header.Set("Accept", "application/json")
 		w := httptest.NewRecorder()

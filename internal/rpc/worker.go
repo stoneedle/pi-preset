@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,7 +20,6 @@ import (
 type piRPCWorker struct {
 	mu                   sync.Mutex
 	writeMu              sync.Mutex
-	cmd                  *exec.Cmd
 	stdin                io.WriteCloser
 	status               workers.WorkerStatus
 	seq                  atomic.Uint64
@@ -29,22 +27,8 @@ type piRPCWorker struct {
 	currentModel         string
 	currentProvider      string
 	currentThinkingLevel string
-	stderrBuf            *strings.Builder
 	commands             []workers.SlashCommand
 	commandsCached       bool
-	lastActive           atomic.Int64 // unix nanos; only user-initiated actions update this
-}
-
-func (w *piRPCWorker) touch() {
-	w.lastActive.Store(time.Now().UnixNano())
-}
-
-func (w *piRPCWorker) IdleSince(now time.Time) time.Duration {
-	last := w.lastActive.Load()
-	if last == 0 {
-		return 0
-	}
-	return now.Sub(time.Unix(0, last))
 }
 
 // workerDir loads the session's own project resources instead of inheriting
@@ -84,49 +68,16 @@ func sessionHeaderCWD(sessionPath string) string {
 }
 
 func NewPiWorker(sessionPath string) (workers.ChatWorker, error) {
-	cmd, err := piCommand("--mode", "rpc", "--session", sessionPath)
-	if err != nil {
-		return nil, err
-	}
-	cmd.Dir = workerDir(sessionPath)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	var stderrBuf strings.Builder
-	cmd.Stderr = &stderrBuf
-	worker := &piRPCWorker{
-		cmd:       cmd,
-		stdin:     stdin,
-		status:    workers.WorkerStatus{State: workers.WorkerStateIdle},
-		pending:   make(map[string]chan response),
-		stderrBuf: &stderrBuf,
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	go worker.consume(stdout)
-	go worker.wait()
-	// Startup is only accepted after the native RPC loop actually responds.
-	stateCtx, stateCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	_, stateErr := worker.GetState(stateCtx)
-	stateCancel()
-	if stateErr != nil {
-		_ = worker.Close()
-		return nil, fmt.Errorf("Pi worker failed to initialize: %w", stateErr)
-	}
-	worker.touch()
-	return worker, nil
+	return connectWorker(sessionPath)
 }
 
 func (w *piRPCWorker) Prompt(ctx context.Context, chat chat.Request) error {
-	w.touch()
 	w.mu.Lock()
 	streaming := w.status.State == workers.WorkerStateRunning
+	if chat.Delivery == "followUp" && !streaming {
+		w.mu.Unlock()
+		return errors.New("Pi 当前未在运行，请直接发送开始任务")
+	}
 	w.status = workers.WorkerStatus{State: workers.WorkerStateRunning}
 	w.mu.Unlock()
 	id := w.nextID()
@@ -140,7 +91,6 @@ func (w *piRPCWorker) Prompt(ctx context.Context, chat chat.Request) error {
 }
 
 func (w *piRPCWorker) SetModel(ctx context.Context, provider, modelID string) error {
-	w.touch()
 	id := w.nextID()
 	ch := make(chan response, 1)
 	w.mu.Lock()
@@ -202,12 +152,10 @@ func (w *piRPCWorker) SetModel(ctx context.Context, provider, modelID string) er
 }
 
 func (w *piRPCWorker) SetThinkingLevel(ctx context.Context, level string) error {
-	w.touch()
 	return w.sendAndAwait(ctx, BuildSetThinkingLevelCommand(w.nextID(), level))
 }
 
 func (w *piRPCWorker) Abort(ctx context.Context) error {
-	w.touch()
 	if err := w.sendAndAwait(ctx, BuildAbortCommand(w.nextID())); err != nil {
 		return err
 	}
@@ -264,9 +212,7 @@ func (w *piRPCWorker) GetState(ctx context.Context) (workers.WorkerStatus, error
 
 // GetCommands returns the slash commands pi loaded for this session (skills,
 // prompt templates, and extension commands). The set is fixed for a worker's
-// lifetime, so the first successful result is cached and reused. It does not
-// call touch(): querying commands is a passive UI affordance and should not
-// keep an idle worker alive.
+// lifetime, so the first successful result is cached and reused.
 func (w *piRPCWorker) GetCommands(ctx context.Context) ([]workers.SlashCommand, error) {
 	w.mu.Lock()
 	if w.commandsCached {
@@ -334,9 +280,6 @@ func (w *piRPCWorker) Status() workers.WorkerStatus {
 func (w *piRPCWorker) Close() error {
 	if w.stdin != nil {
 		_ = w.stdin.Close()
-	}
-	if w.cmd != nil && w.cmd.Process != nil {
-		_ = w.cmd.Process.Kill()
 	}
 	return nil
 }
@@ -439,14 +382,7 @@ func (w *piRPCWorker) handleRPCLine(line string) {
 	}
 }
 
-func (w *piRPCWorker) wait() {
-	if err := w.cmd.Wait(); err != nil {
-		w.setError(err)
-	}
-}
-
 func (w *piRPCWorker) setError(err error) {
-	err = w.withStderr(err)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.status.State != workers.WorkerStateError {
@@ -456,19 +392,4 @@ func (w *piRPCWorker) setError(err error) {
 		delete(w.pending, id)
 		ch <- response{ID: id, Type: "response", Success: false, Error: err.Error()}
 	}
-}
-
-func (w *piRPCWorker) withStderr(err error) error {
-	if w.stderrBuf == nil {
-		return err
-	}
-	stderr := strings.TrimSpace(w.stderrBuf.String())
-	if stderr == "" {
-		return err
-	}
-	const maxStderr = 4096
-	if len(stderr) > maxStderr {
-		stderr = "…" + stderr[len(stderr)-maxStderr:]
-	}
-	return fmt.Errorf("%w; stderr: %s", err, stderr)
 }

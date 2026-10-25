@@ -99,7 +99,7 @@ ifeq ($(OS),Windows_NT)
 endif
 
 e2e: build e2e-stub
-	cd $(E2E_DIR) && node --test native/*.test.mjs
+	cd $(E2E_DIR) && node --test --test-concurrency=1 native/*.test.mjs
 	cd $(E2E_DIR) && npx playwright test
 
 clean:

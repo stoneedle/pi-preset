@@ -21,13 +21,11 @@ func RenderAppShell(w io.Writer) error {
 		LiveDocumentStart template.HTML
 		ThemeBoot         template.HTML
 		AppScript         template.HTML
-		ServiceWorker     template.HTML
 		LiveDocumentEnd   template.HTML
 	}{
 		LiveDocumentStart: template.HTML(renderLiveDocumentStart(liveDocumentData{Title: "Pi", Styles: template.HTML(styles.String())})),
 		ThemeBoot:         liveThemeBootScript(),
 		AppScript:         template.HTML(`<script type="module" src="` + template.HTMLEscapeString(appScriptPath) + `"></script>`),
-		ServiceWorker:     liveServiceWorkerScript(),
 		LiveDocumentEnd:   liveDocumentEnd(),
 	}
 	var buf bytes.Buffer

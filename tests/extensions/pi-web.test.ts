@@ -57,16 +57,14 @@ declare global {
 
 // ── isSSH ───────────────────────────────────────────────────────────
 describe('isSSH', () => {
-  const orig = { ...process.env };
-
   beforeEach(() => {
-    delete process.env.SSH_TTY;
-    delete process.env.SSH_CONNECTION;
-    delete process.env.SSH_CLIENT;
+    vi.stubEnv('SSH_TTY', undefined);
+    vi.stubEnv('SSH_CONNECTION', undefined);
+    vi.stubEnv('SSH_CLIENT', undefined);
   });
 
   afterEach(() => {
-    process.env = { ...orig };
+    vi.unstubAllEnvs();
   });
 
   it('returns false when no SSH env vars are set', () => {
@@ -74,17 +72,17 @@ describe('isSSH', () => {
   });
 
   it('returns true when SSH_TTY is set', () => {
-    process.env.SSH_TTY = '/dev/pts/0';
+    vi.stubEnv('SSH_TTY', '/dev/pts/0');
     expect(isSSH()).toBe(true);
   });
 
   it('returns true when SSH_CONNECTION is set', () => {
-    process.env.SSH_CONNECTION = '192.168.1.1 1234 10.0.0.1 22';
+    vi.stubEnv('SSH_CONNECTION', '192.168.1.1 1234 10.0.0.1 22');
     expect(isSSH()).toBe(true);
   });
 
   it('returns true when SSH_CLIENT is set', () => {
-    process.env.SSH_CLIENT = '192.168.1.1 1234 22';
+    vi.stubEnv('SSH_CLIENT', '192.168.1.1 1234 22');
     expect(isSSH()).toBe(true);
   });
 });
@@ -155,8 +153,13 @@ describe('normalizeCommandArgs', () => {
 describe('token helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('PI_WEB_TOKEN', undefined);
     delete (globalThis as any).__MOCK_PI_WEB_TOKEN__;
     delete (globalThis as any).__MOCK_PI_WEB_ENV_CONTENT__;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('withToken appends token when available', () => {
@@ -213,21 +216,17 @@ describe('token helpers', () => {
   });
 
   it('readPiWebToken prefers process.env over env file', () => {
-    process.env['PI_WEB_TOKEN'] = 'from-env';
+    vi.stubEnv('PI_WEB_TOKEN', 'from-env');
     (globalThis as any).__MOCK_PI_WEB_TOKEN__ = 'from-file';
 
     expect(readPiWebToken()).toBe('from-env');
-
-    delete process.env['PI_WEB_TOKEN'];
   });
 
   it('readPiWebToken returns token from env var even when no file exists', () => {
-    process.env['PI_WEB_TOKEN'] = 'env-only';
+    vi.stubEnv('PI_WEB_TOKEN', 'env-only');
     (globalThis as any).__MOCK_PI_WEB_TOKEN__ = undefined;
 
     expect(readPiWebToken()).toBe('env-only');
-
-    delete process.env['PI_WEB_TOKEN'];
   });
 
   it('writePiWebToken creates a private env file and directory', () => {

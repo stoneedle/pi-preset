@@ -7,6 +7,7 @@
 
 import * as fs from "node:fs";
 import type { ActivityState } from "../session-state.ts";
+import { sessionPresentation } from "../../../../shared/session-presentation.js";
 
 // ---------------------------------------------------------------- config ---
 /** Project (cwd) name in the title — off by default. */
@@ -14,12 +15,6 @@ export function showCwd(): boolean {
   const v = (process.env.PI_TITLE_GLYPHS_CWD ?? "").trim().toLowerCase();
   return v === "1" || v === "on" || v === "true";
 }
-
-export const GLYPH_WORKING = "⏳"; // actively running tools/thinking
-export const GLYPH_BACKGROUND = "◐"; // parent idle, children still running; input is welcome
-export const GLYPH_NEEDS_YOU = "❗"; // blocked on user input — urgent
-export const GLYPH_READ = "✓"; // finished and viewed, or a fresh session
-export const GLYPH_UNREAD = "🔵"; // finished while the terminal was unfocused
 
 export const TITLE_BUDGET = 72; // soft cap for the whole title (terminal truncates anyway)
 
@@ -64,23 +59,24 @@ export function ellipsize(s: string, max: number): string {
 /** The saved name identifies the session; state and badges affect only the prefix. */
 export type TitleInput = {
   state: ActivityState;
-  unread: boolean;
+  unread: boolean | null;
+  completed?: boolean;
+  outcome?: string | null;
   cwdName?: string;
   title?: string;
   badge?: Badge;
 };
 
 export function renderTitle(input: TitleInput): string {
-  const { state, unread, title, badge } = input;
+  const { title, badge } = input;
+  const visual = sessionPresentation(input);
   const mid = showCwd() && input.cwdName ? ` ${input.cwdName}` : "";
-  const glyph = state === "running" ? GLYPH_WORKING
-    : state === "needs-you" ? GLYPH_NEEDS_YOU
-    : state === "background" ? GLYPH_BACKGROUND
-    : state === "unknown" ? "?" : unread ? GLYPH_UNREAD : GLYPH_READ;
+  const glyph = `${visual.glyph}${visual.unread ? ` ${visual.unread.glyph}` : ""}`;
   const badgePrefix = badge ? `${badge.emoji} ` : "";
   const prefix = `${badgePrefix}${glyph}${mid}`;
   if (!title) return ellipsize(prefix, TITLE_BUDGET);
 
-  const nameBudget = TITLE_BUDGET - graphemes(badgePrefix).length - 1 - graphemes(mid).length - 3;
+  // Reserve the unread dot even when absent, so state changes never truncate a different name.
+  const nameBudget = TITLE_BUDGET - graphemes(badgePrefix).length - 3 - graphemes(mid).length - 3;
   return ellipsize(`${prefix} · ${ellipsize(title, nameBudget)}`, TITLE_BUDGET);
 }

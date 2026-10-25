@@ -5,15 +5,16 @@
   "scripts": {
     "test": "vitest run",
     "knip": "knip",
-    "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "lint": "eslint . && cd .. && node web/node_modules/eslint/bin/eslint.js --config web/eslint.config.js shared",
+    "format": "prettier --write . && prettier --config .prettierrc.json --write ../shared",
+    "format:check": "prettier --check . && prettier --config .prettierrc.json --check ../shared",
     "build": "vite build",
     "dev": "vite build --watch"
   },
   "dependencies": {
     "lucide": "^1.17.0",
-    "marked": "latest"
+    "marked": "latest",
+    "mermaid": "^12.2.0"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -27,6 +28,10 @@
     "prettier-plugin-svelte": "4.1.0",
     "svelte": "^5.56.2",
     "vite": "latest",
-    "vitest": "latest"
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "latest",
+    "workbox-core": "^7.4.1",
+    "workbox-precaching": "^7.4.1",
+    "workbox-routing": "^7.4.1"
   }
 }

@@ -237,7 +237,9 @@ async function run(name, binary) {
       if (
         /^\/(?:api\/session\/(?:block|image|file|preview)|preview\/)/.test(
           new URL(request.url, "http://localhost").pathname,
-        )
+        ) &&
+        !(new URL(request.url, "http://localhost").pathname === "/api/session/image" &&
+          new URL(request.url, "http://localhost").searchParams.get("thumbnail") === "1")
       )
         violations.push({ url: record.url, kind: "unrequested-body-endpoint" });
       const upstream = httpRequest(

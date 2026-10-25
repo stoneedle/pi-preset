@@ -1,6 +1,5 @@
 <script>
   import { onMount, tick, untrack } from 'svelte';
-  import { Marked } from 'marked';
   import {
     icon,
     ArrowDown,
@@ -10,72 +9,78 @@
     SquarePen,
     Ellipsis,
     Bell,
+    RefreshCw,
     X,
   } from '../shared/icons.js';
-  import { escapeHtml } from '../shared/escape.js';
+  import Markdown from '../components/Markdown.svelte';
   import RemoteBlock from '../components/RemoteBlock.svelte';
+  import MessageActions from '../components/MessageActions.svelte';
+  import CopyAction from '../components/CopyAction.svelte';
+  import ForkAction from '../components/ForkAction.svelte';
+  import { contextMenu } from '../shared/context-menu.js';
+  import SelectionShare from '../components/SelectionShare.svelte';
   import SessionList from '../components/SessionList.svelte';
-  import HostSwitcher from '../components/HostSwitcher.svelte';
+  import SessionDrawer from '../components/SessionDrawer.svelte';
+  import SessionStatus from '../components/SessionStatus.svelte';
+  import { withoutImageCoordinates } from '../../../shared/user-text.js';
+  import SessionInfo from '../components/SessionInfo.svelte';
   import PushSettings from '../components/PushSettings.svelte';
   import NewTask from '../components/NewTask.svelte';
+  import RefreshError from '../components/RefreshError.svelte';
   import RemoteComposer from '../components/RemoteComposer.svelte';
-  import { localFileReference, fileLinksHTML, fileDownloadURL, fileName } from '../remote-files.js';
+  import { fileDownloadURL, fileName, isWebFile } from '../remote-files.js';
   import { subscribeEvents } from '../remote-events.js';
-  import { readView, rememberView } from '../remote-cache.js';
-  import { sessionComposer, rememberSubmittedProject } from '../remote-drafts.svelte.js';
+  import { diagnosticId, trace } from '../remote-diagnostics.js';
+  import { interfaceRefresh, refreshInterface } from '../remote-refresh.svelte.js';
+  import { canPrefetchView, readView, rememberView } from '../remote-cache.js';
+  import { activateHistory } from '../remote-history.js';
   import {
-    request,
-    createRefreshCoordinator,
-    createRuntimeStateStore,
-    mergeMessages,
-  } from '../remote-api.js';
+    sessionComposer,
+    editDraft,
+    captureDraft,
+    completeDraft,
+    rememberSubmittedProject,
+    submitSessionMessage,
+  } from '../remote-drafts.svelte.js';
+  import { request, createRefreshCoordinator, createRuntimeStateStore } from '../remote-api.js';
+  import { createMessageWindow } from '../remote-messages.svelte.js';
 
   let { sessionId } = $props();
   const cached = untrack(() => readView(`session:${sessionId}`));
   const composer = untrack(() => sessionComposer(sessionId));
-  const markdown = new Marked({ breaks: true, gfm: true });
-  markdown.use({
-    renderer: {
-      html(token) {
-        return escapeHtml(token.text);
-      },
-      link(token) {
-        const path = localFileReference(token.href);
-        if (path) return fileLinksHTML(sessionId, path, this.parser.parseInline(token.tokens));
-        if (!/^(https?:|mailto:|#)/i.test(token.href || ''))
-          return this.parser.parseInline(token.tokens);
-        return `<a href="${escapeHtml(token.href)}" target="_blank" rel="noreferrer">${this.parser.parseInline(token.tokens)}</a>`;
-      },
-      image(token) {
-        const path = localFileReference(token.href);
-        if (path) return fileLinksHTML(sessionId, path, escapeHtml(token.text || '打开图片'));
-        if (!/^https?:\/\//i.test(token.href || '')) return escapeHtml(token.text || '打开图片');
-        return `<a href="${escapeHtml(token.href)}" target="_blank" rel="noreferrer">${escapeHtml(token.text || '打开图片')}</a>`;
-      },
-    },
-  });
-
-  let title = $state(cached?.title || 'Pi');
+  const blockViews = {};
+  let title = $state(cached?.title || untrack(() => (sessionId ? '加载会话…' : '会话')));
   let cwd = $state(cached?.cwd || '');
   let branch = $state(cached?.branch || '');
-  let messages = $state(cached?.messages || []);
-  let cursor = cached?.cursor || '';
-  let windowEpoch = 0;
+  const messageWindow = untrack(() => createMessageWindow(cached, sessionId));
+  const messages = $derived(messageWindow.state.messages);
+  let visibleStart = $state(cached?.visibleStart || cached?.messages?.[0]?.id || '');
+  const visibleIndex = $derived.by(() => {
+    const index = messages.findIndex((message) => message.id === visibleStart);
+    return index < 0 ? Math.max(0, messages.length - 30) : index;
+  });
+  const visibleMessages = $derived(messages.slice(visibleIndex));
+  const hasEarlier = $derived(visibleIndex > 0 || Boolean(messageWindow.state.before));
+  let revealingHistory = false;
   const runtimeStates = createRuntimeStateStore();
-  let before = $state(cached?.before || '');
   let status = $state({ state: 'unknown', canControl: false });
   let connected = $state(false);
   let loading = $state(!cached);
   let historyLoading = $state(false);
+  let historyError = $state('');
+  let historyController;
+  let historyTimer;
+  let historyDemand = false;
+  let previousScrollTop = 0;
   let error = $state('');
   let contentError = $state('');
-  let notice = $state('');
   let chatAvailable = $state(false);
   let chatDisabledReason = $state('');
   let viewport = $state(null);
   let awayFromBottom = $state(cached?.awayFromBottom || false);
   let observedViewportHeight = 0;
   let textarea = $state(null);
+  let drawerSurface = $state(null);
   let drawerTrigger = $state(null);
   let drawer = $state(null);
   let drawerOpen = $state(false);
@@ -97,6 +102,8 @@
   let refreshStatus;
   let refreshAcknowledgement;
   let disposed = false;
+  let messageActions = $state(null);
+  let forkBusy = $state(false);
 
   const activeState = $derived(connected ? status.state : 'unknown');
   const runtimeKnown = $derived(connected && status.availability === 'connected');
@@ -104,24 +111,58 @@
   const matchingSkills = $derived(
     skillQuery === undefined
       ? []
-      : skills.filter((skill) => skill.name.toLowerCase().includes(skillQuery)).slice(0, 6),
+      : skills.filter((skill) => skill.name.toLowerCase().includes(skillQuery)),
   );
-  const canSend = $derived(chatAvailable && status.canControl && connected && !composer.sending);
+  const canSend = $derived(chatAvailable && !composer.sending);
+  const canQueue = $derived(
+    canSend &&
+      runtimeKnown &&
+      status.canQueue === true &&
+      status.mainRunning === true &&
+      !Object.keys(composer.settings).length,
+  );
+  const modelStatus = $derived.by(() => {
+    const pending = composer.settings;
+    return {
+      ...status,
+      context: runtimeKnown ? status.context : null,
+      model: pending.modelId || (runtimeKnown ? status.model : ''),
+      modelName: pending.modelId
+        ? models.find((item) => item.id === pending.modelId && item.provider === pending.provider)
+            ?.name || pending.modelId
+        : runtimeKnown
+          ? status.modelName
+          : '沿用会话设置',
+      provider: pending.provider || (runtimeKnown ? status.provider : ''),
+      thinking: pending.thinking || (runtimeKnown ? status.thinking : ''),
+      fast: pending.speed ? { mode: pending.speed } : runtimeKnown ? status.fast : null,
+      deferSettings: !runtimeKnown || Object.keys(pending).length > 0,
+      disabled: !chatAvailable || composer.sending,
+    };
+  });
   const atBottom = () =>
     !viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
-  const bottom = () => {
+  const bottom = (keepReplyVisible = false) => {
     awayFromBottom = false;
-    viewport?.scrollTo({ top: viewport.scrollHeight });
+    historyDemand = false;
+    if (!viewport) return;
+    let top = viewport.scrollHeight;
+    const actions = viewport.querySelector(
+      '[data-message-id]:last-of-type .remote-message-actions',
+    );
+    const content = actions?.previousElementSibling;
+    if (keepReplyVisible && content) {
+      const end =
+        content.getBoundingClientRect().bottom -
+        viewport.getBoundingClientRect().top +
+        viewport.scrollTop;
+      // In a keyboard-sized viewport, keep the reply visible rather than only its action row.
+      if (viewport.clientHeight < viewport.scrollHeight - end + 32)
+        top = end - viewport.clientHeight + 12;
+    }
+    viewport.scrollTo({ top });
+    previousScrollTop = viewport.scrollTop;
   };
-  const stateLabels = {
-    unknown: '未知',
-    running: '运行中',
-    background: '后台运行',
-    'needs-you': '待你处理',
-    idle: '空闲',
-    error: '出错',
-  };
-  const fastLabels = { off: '关闭', fast: '快速', ultrafast: '极速' };
   const endpoint = (path) => `${path}?id=${encodeURIComponent(sessionId)}`;
   const post = (url, body) =>
     request(url, {
@@ -130,45 +171,88 @@
       body: JSON.stringify(body),
     });
 
-  function rememberSession() {
-    if (!sessionId || !cursor) return;
-    rememberView(`session:${sessionId}`, {
-      title,
-      cwd,
-      branch,
-      cursor,
-      before,
-      messages: $state.snapshot(messages),
-      scrollTop: viewport?.scrollTop || 0,
-      awayFromBottom,
-    });
+  function readingAnchor() {
+    if (!viewport) return null;
+    const top = viewport.getBoundingClientRect().top;
+    const node = [...viewport.querySelectorAll('[data-message-id]')].find(
+      (node) => node.getBoundingClientRect().bottom > top,
+    );
+    return node
+      ? { id: node.dataset.messageId, offset: node.getBoundingClientRect().top - top }
+      : null;
+  }
+
+  function restoreAnchor(anchor) {
+    const node = anchor && viewport?.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
+    if (!node) return false;
+    viewport.scrollTop +=
+      node.getBoundingClientRect().top - viewport.getBoundingClientRect().top - anchor.offset;
+    previousScrollTop = viewport.scrollTop;
+    return true;
+  }
+
+  export function rememberSession(prefetch = false) {
+    if (!sessionId || !messageWindow.state.ready || !viewport?.isConnected) return;
+    rememberView(
+      `session:${sessionId}`,
+      {
+        title,
+        cwd,
+        branch,
+        ...$state.snapshot(messageWindow.state),
+        visibleStart,
+        scrollTop: viewport?.scrollTop || 0,
+        anchor: readingAnchor(),
+        awayFromBottom: !atBottom(),
+      },
+      { prefetch },
+    );
+  }
+
+  const nearHistory = () =>
+    viewport && viewport.scrollTop < Math.max(600, viewport.clientHeight * 2);
+
+  function scrollConversation() {
+    const top = viewport.scrollTop;
+    const upward = top < previousScrollTop;
+    previousScrollTop = top;
+    if (viewport.clientHeight !== observedViewportHeight) return;
+    awayFromBottom = !atBottom();
+    if (!nearHistory() || !awayFromBottom) historyDemand = false;
+    else if (upward) {
+      historyDemand = true;
+      if (!historyError && !loading) loadEarlier({ source: 'scroll' });
+    }
   }
 
   async function loadSession(signal) {
-    const data = await request(
-      endpoint('/api/session') + (cursor ? `&after=${encodeURIComponent(cursor)}` : ''),
-      { signal },
-    );
-    if (disposed) return;
+    const read = messageWindow.read();
+    let data;
+    try {
+      data = await request(endpoint('/api/session') + read.query, { signal });
+    } catch (error) {
+      trace('session.read-error', {
+        session: diagnosticId(sessionId),
+        category: error.name,
+        status: error.status,
+        aborted: signal.aborted,
+      });
+      if (read.current()) throw error;
+      return;
+    }
+    if (disposed || read.commit(data.window) === 'stale') return;
+    if (!messages.some((message) => message.id === visibleStart))
+      visibleStart = messages[Math.max(0, messages.length - 30)]?.id || '';
     const follow = loading || atBottom();
     title = data.name;
     document.title = title;
     cwd = data.cwd;
     chatAvailable = data.chatAvailable || status.canControl;
     chatDisabledReason = data.chatDisabledReason;
-    const window = data.window;
-    if (!cursor || window.reset) {
-      windowEpoch++;
-      messages = window.messages;
-      before = window.before;
-    } else if (window.messages.length) {
-      messages = mergeMessages(messages, window.messages);
-    }
-    cursor = window.cursor;
     loading = false;
     contentError = '';
     await tick();
-    if (follow) bottom();
+    if (follow) bottom(true);
     rememberSession();
   }
 
@@ -190,12 +274,21 @@
     }
     chatAvailable = data.chatAvailable ?? chatAvailable;
     cwd = data.cwd || cwd;
-    if (changed) refreshSession.run();
+    if (changed) {
+      trace('session.leaf', {
+        session: diagnosticId(sessionId),
+        leaf: diagnosticId(data.leafId),
+        reply: diagnosticId(data.replyId),
+      });
+      messageWindow.invalidate('runtime-leaf');
+      refreshSession.run();
+    }
     if (!drawerOpen && !document.hidden && document.hasFocus() && status.replyId && status.unread)
       refreshAcknowledgement.run();
   }
 
   function disconnectRuntime() {
+    messageWindow.invalidate('stream-disconnected');
     runtimeStates.disconnect();
     status = runtimeStates.get(sessionId) || status;
   }
@@ -214,55 +307,108 @@
     if (!disposed && status.replyId === replyId) applyStatus({ ...status, unread: false });
   }
 
-  async function loadEarlier() {
-    if (historyLoading || !before) return;
-    historyLoading = true;
-    const epoch = windowEpoch;
-    const anchor = viewport?.querySelector('[data-message-id]');
-    const oldTop = anchor?.getBoundingClientRect().top;
-    try {
-      const data = await request(
-        endpoint('/api/session') + `&before=${encodeURIComponent(before)}`,
-      );
-      if (disposed || epoch !== windowEpoch) return;
-      if (data.window.reset) {
-        cursor = '';
-        await refreshSession.run();
-        return;
-      }
-      const ids = new Set(messages.map((message) => message.id));
-      messages = [...data.window.messages.filter((message) => !ids.has(message.id)), ...messages];
-      before = data.window.before;
-      await tick();
-      if (anchor && viewport) viewport.scrollTop += anchor.getBoundingClientRect().top - oldTop;
-    } catch (err) {
-      contentError = err.message;
-    } finally {
-      historyLoading = false;
+  function continueHistory() {
+    if (!disposed && historyDemand && nearHistory() && !historyError && hasEarlier) {
+      clearTimeout(historyTimer);
+      historyTimer = setTimeout(() => loadEarlier({ source: 'continuation' }), 200);
     }
   }
 
-  async function sendMessage(event) {
-    event.preventDefault();
+  async function loadEarlier({ background = false, signal, source = 'button' } = {}) {
+    if (disposed || loading || revealingHistory) return false;
+    trace('history.intent', {
+      session: diagnosticId(sessionId),
+      background,
+      source,
+      demand: historyDemand,
+      visible: messages.length - visibleIndex,
+      retained: messages.length,
+      scrollTop: Math.round(viewport.scrollTop),
+      height: viewport.clientHeight,
+    });
+    // Downloaded history can be read immediately, even while another page is in flight.
+    if (!background && visibleIndex > 0) {
+      revealingHistory = true;
+      const anchor = readingAnchor();
+      visibleStart = messages[Math.max(0, visibleIndex - 30)].id;
+      try {
+        await tick();
+        if (disposed) return false;
+        restoreAnchor(anchor);
+        rememberSession();
+        return true;
+      } finally {
+        revealingHistory = false;
+        continueHistory();
+      }
+    }
+    if (historyLoading || !messageWindow.state.before) return false;
+    historyLoading = true;
+    const controller = new AbortController();
+    historyController = controller;
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    const read = messageWindow.read(true);
+    try {
+      const data = await request(endpoint('/api/session') + read.query, {
+        signal: controller.signal,
+        background,
+        ...(background ? { retries: 0 } : {}),
+      });
+      if (disposed || controller.signal.aborted || !read.current()) return false;
+      if (
+        background &&
+        !data.window.reset &&
+        !canPrefetchView(`session:${sessionId}`, {
+          title,
+          cwd,
+          branch,
+          visibleStart,
+          ...$state.snapshot(messageWindow.state),
+          messages: [...data.window.messages, ...messages],
+        })
+      )
+        return 'full';
+      // Capture at commit time: the reader may have moved while the request was in flight.
+      const anchor = readingAnchor();
+      const result = read.commit(data.window);
+      if (result === 'stale') return false;
+      if (result === 'reset') {
+        await refreshSession.run();
+        return false;
+      }
+      if (!background) visibleStart = messages[0]?.id || '';
+      historyError = '';
+      await tick();
+      if (disposed) return false;
+      restoreAnchor(anchor);
+      rememberSession(background);
+      return true;
+    } catch (err) {
+      if (background) throw err;
+      if (!disposed && !controller.signal.aborted && read.current()) historyError = err.message;
+      return false;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (historyController === controller) historyController = null;
+      historyLoading = false;
+      if (!controller.signal.aborted) continueHistory();
+    }
+  }
+
+  async function sendMessage(event, delivery = 'steer') {
+    event?.preventDefault();
+    if (delivery === 'followUp' && !canQueue) return;
     if (!canSend || (!composer.text.trim() && !composer.images.length)) return;
     composer.sending = true;
-    composer.error = '';
-    composer.notice = '';
-    const submittedDraft = composer.text;
-    const submittedImages = composer.images;
-    const form = new FormData();
-    form.set('message', submittedDraft);
-    for (const image of submittedImages) form.append('images', image);
+    const submitted = captureDraft(composer);
     try {
-      await request(endpoint('/api/chat'), { method: 'POST', body: form });
+      if (!(await submitSessionMessage(sessionId, submitted, composer, delivery))) return;
       rememberSubmittedProject(cwd);
-      if (composer.text === submittedDraft) composer.text = '';
-      composer.images = composer.images.filter((image) => !submittedImages.includes(image));
-      composer.notice = '已接受 — 尚未确认处理';
+      completeDraft(composer, submitted);
       refreshSession.run();
       refreshStatus.run();
-    } catch (err) {
-      composer.error = err.message;
     } finally {
       composer.sending = false;
     }
@@ -272,7 +418,6 @@
     error = '';
     try {
       await post(endpoint(path), body);
-      notice = '已接受 — 尚未确认处理';
       refreshStatus.run();
     } catch (err) {
       error = err.message;
@@ -280,16 +425,42 @@
   }
 
   async function loadModels() {
-    if (modelsLoading || !status.canControl) return;
+    if (modelsLoading || !cwd) return;
     modelsLoading = true;
     modelsError = '';
     try {
-      models = (await request(endpoint('/api/models'))).models || [];
+      const url =
+        runtimeKnown && status.canControl
+          ? endpoint('/api/models')
+          : '/api/project-options?path=' + encodeURIComponent(cwd);
+      models = (await request(url)).models || [];
     } catch (err) {
       modelsError = err.message;
     } finally {
       modelsLoading = false;
     }
+  }
+
+  async function selectSettings(change, path, body) {
+    const defer = !runtimeKnown || !status.canControl || Object.keys(composer.settings).length > 0;
+    composer.settings = { ...composer.settings, ...change };
+    const selected = composer.settings;
+    if (defer) return;
+    try {
+      await post(endpoint(path), body);
+      if (composer.settings === selected) composer.settings = {};
+      refreshStatus.run();
+    } catch (err) {
+      error = err.message;
+    }
+  }
+
+  function selectSpeed(mode) {
+    if (mode === null) {
+      delete composer.settings.speed;
+      return;
+    }
+    return selectSettings({ speed: mode }, '/api/set-speed', { mode });
   }
 
   async function searchSkills() {
@@ -300,6 +471,33 @@
     } catch {
       skillsLoaded = false;
     }
+  }
+
+  $effect(() => {
+    if (status.canControl && composer.text.startsWith('/')) searchSkills();
+  });
+
+  function messageText(message, block) {
+    const text = typeof block.text === 'string' ? block.text : '';
+    if (message.role !== 'user' || !message.blocks.some((part) => part.type === 'image'))
+      return text;
+    return withoutImageCoordinates(text);
+  }
+
+  function commentaryBlocks(blocks) {
+    const grouped = [];
+    for (const block of blocks) {
+      const previous = grouped.at(-1);
+      if (block.type === 'text' && previous?.type === 'text') previous.text += '\n\n' + block.text;
+      else grouped.push(block.type === 'text' ? { ...block } : block);
+    }
+    return grouped;
+  }
+
+  function navigateFork(id) {
+    if (disposed) return;
+    history.pushState(null, '', '/session?id=' + encodeURIComponent(id));
+    window.dispatchEvent(new PopStateEvent('popstate'));
   }
 
   function revokePreview(key) {
@@ -313,7 +511,7 @@
 
   function clearPreview() {
     previewEpoch++;
-    if (preview) revokePreview(preview.key);
+    if (preview?.key) revokePreview(preview.key);
     preview = null;
     previewLoading = false;
   }
@@ -326,6 +524,14 @@
     previewLoading = true;
     if (!previewDialog.open) previewDialog.showModal();
     try {
+      if (isWebFile(path)) {
+        preview = {
+          url: fileDownloadURL(sessionId, path) + '&preview=1',
+          name: fileName(path),
+          source: path,
+        };
+        return;
+      }
       const data = await post(endpoint('/api/session/preview'), { path });
       if (disposed || epoch !== previewEpoch) {
         revokePreview(data.key);
@@ -339,12 +545,23 @@
     }
   }
 
-  function openNew() {
-    newTask.open();
+  function openNew(path) {
+    newTask.open(typeof path === 'string' ? path : undefined);
+  }
+
+  function openDrawer() {
+    if (info) info.open = false;
+    drawer?.open();
   }
 
   onMount(() => {
     disposed = false;
+    trace('view.mount', {
+      key: diagnosticId(`session:${sessionId}`),
+      session: diagnosticId(sessionId),
+      cached: Boolean(cached),
+      retained: messages.length,
+    });
     const fail = (err) => {
       if (!disposed) {
         contentError = err.retryable ? `连接不稳定，正在自动重试 — ${err.message}` : err.message;
@@ -355,12 +572,20 @@
     if (cached)
       tick().then(() => {
         if (disposed || !viewport) return;
-        if (cached.awayFromBottom) viewport.scrollTop = cached.scrollTop;
-        else bottom();
+        if (cached.awayFromBottom) {
+          if (!restoreAnchor(cached.anchor)) viewport.scrollTop = cached.scrollTop;
+          previousScrollTop = viewport.scrollTop;
+        } else bottom(true);
       });
     refreshSession = createRefreshCoordinator(loadSession, fail, { minInterval: 200 });
     refreshStatus = createRefreshCoordinator(loadStatus);
     refreshAcknowledgement = createRefreshCoordinator(acknowledgeCurrent, fail);
+    const releaseHistory = sessionId
+      ? activateHistory(sessionId, (signal) => {
+          if (loading || drawerOpen || newTask?.isOpen()) return false;
+          return loadEarlier({ background: true, signal, source: 'prefetch' });
+        })
+      : () => {};
     if (sessionId) {
       refreshSession.run();
       refreshStatus.run();
@@ -370,17 +595,13 @@
         })
         .catch(() => {});
     }
-    let opened = false;
     const unsubscribe = sessionId
       ? subscribeEvents(`/events?id=${encodeURIComponent(sessionId)}`, {
           open() {
             disconnectRuntime();
             connected = true;
-            if (opened) {
-              refreshSession.run();
-              refreshStatus.run();
-            }
-            opened = true;
+            refreshSession.run();
+            refreshStatus.run();
           },
           error() {
             connected = false;
@@ -409,6 +630,22 @@
     window.addEventListener('focus', onVisible);
     const onFilePreview = (event) => {
       if (info?.open && !info.contains(event.target)) info.open = false;
+      const image = event.target.closest?.('[data-image-url]');
+      if (image) {
+        event.preventDefault();
+        clearPreview();
+        previewPath = '';
+        previewError = '';
+        preview = {
+          image: true,
+          url: image.dataset.imageUrl,
+          name: image.dataset.imageName,
+          downloadURL: image.dataset.imageDownload,
+          source: image.dataset.imageSource,
+        };
+        previewDialog.showModal();
+        return;
+      }
       const button = event.target.closest?.('button[data-preview-path]');
       if (button) openPreview(button.dataset.previewPath);
     };
@@ -422,12 +659,24 @@
     onViewport();
     const resizeObserver = new ResizeObserver(() => {
       observedViewportHeight = viewport.clientHeight;
-      if (!awayFromBottom) bottom();
+      if (!awayFromBottom) bottom(true);
     });
-    if (viewport) resizeObserver.observe(viewport);
+    if (viewport) {
+      resizeObserver.observe(viewport);
+      // Auxiliary content can replace composer height without resizing the message viewport.
+      for (const selector of ['.remote-compose-context', '.remote-composer']) {
+        const node = drawerSurface.querySelector(selector);
+        if (node) resizeObserver.observe(node);
+      }
+    }
     return () => {
       rememberSession();
       disposed = true;
+      trace('view.dispose', { session: diagnosticId(sessionId) });
+      messageWindow.invalidate('dispose');
+      releaseHistory();
+      historyController?.abort();
+      clearTimeout(historyTimer);
       clearPreview();
       unsubscribe?.();
       refreshSession.dispose();
@@ -445,7 +694,7 @@
 </script>
 
 <!-- eslint-disable svelte/no-at-html-tags -- Lucide icons and escaped Markdown renderer -->
-<div class="remote-app" class:remote-home={!sessionId}>
+<div class="remote-app" class:remote-home={!sessionId} bind:this={drawerSurface}>
   <header class="remote-header">
     {#if sessionId}<button
         type="button"
@@ -455,60 +704,21 @@
         aria-haspopup="dialog"
         aria-controls="remote-sessions-drawer"
         aria-expanded={drawerOpen}
-        onclick={() => {
-          drawerOpen = true;
-          drawer.showModal();
-        }}>{@html icon(Menu)}</button
+        onclick={openDrawer}>{@html icon(Menu)}</button
       >{/if}
     <div class="remote-heading">
-      <HostSwitcher
-        {title}
-        subtitle={sessionId ? cwd?.split(/[\\/]/).filter(Boolean).at(-1) : ''}
-      />
+      <h1 {title}>{title}</h1>
     </div>
-    {#if sessionId}<span class="remote-state" data-state={activeState}
-        >{stateLabels[activeState] || '未知'}</span
-      >{/if}
+    {#if sessionId}<SessionStatus snapshot={status} {connected} />{/if}
     {#if sessionId}
       <details class="remote-info" bind:this={info}>
         <summary
-          aria-label="会话信息"
+          aria-label="更多"
           onkeydown={(event) => {
             if (event.key === 'Escape') info.open = false;
           }}>{@html icon(Ellipsis)}</summary
         >
         <div class="remote-info-panel">
-          <dl>
-            <dt>项目</dt>
-            <dd>{cwd}</dd>
-            <dt>分支</dt>
-            <dd>{branch || '未知'}</dd>
-            <dt>缓存命中</dt>
-            <dd>
-              {runtimeKnown && status.cacheHit != null ? `${Math.round(status.cacheHit)}%` : '未知'}
-            </dd>
-            <dt>上下文</dt>
-            <dd>
-              {runtimeKnown && status.context?.tokens != null
-                ? status.context.tokens.toLocaleString('zh-CN')
-                : '未知'} / {runtimeKnown && status.context?.contextWindow
-                ? status.context.contextWindow.toLocaleString('zh-CN')
-                : '未知'}
-            </dd>
-            <dt>加速</dt>
-            <dd>
-              {#if runtimeKnown && ['off', 'fast', 'ultrafast'].includes(status.fast?.mode)}
-                {fastLabels[status.fast.mode] || '未知'}
-                {#if status.fast.mode !== 'off' && status.fast.serviceTier == null}
-                  — 对此模型不生效
-                {/if}
-              {:else}未知{/if}
-            </dd>
-            <dt>模型</dt>
-            <dd>{runtimeKnown ? status.model || '未知' : '未知'}</dd>
-            <dt>思考</dt>
-            <dd>{runtimeKnown ? status.thinking || '未知' : '未知'}</dd>
-          </dl>
           <button
             type="button"
             class="remote-info-notifications"
@@ -519,6 +729,15 @@
               pushSettings.open();
             }}>{@html icon(Bell)}<span>通知设置</span></button
           >
+          <button
+            type="button"
+            class="remote-info-notifications"
+            disabled={interfaceRefresh.pending > 0 || interfaceRefresh.refreshing}
+            onclick={() => {
+              info.open = false;
+              refreshInterface();
+            }}>{@html icon(RefreshCw)}<span>刷新界面</span></button
+          >
         </div>
       </details>
     {:else}<button
@@ -526,14 +745,23 @@
         aria-label="通知"
         aria-haspopup="dialog"
         onclick={() => pushSettings.open()}>{@html icon(Bell)}</button
+      ><button
+        type="button"
+        aria-label="刷新界面"
+        disabled={interfaceRefresh.pending > 0 || interfaceRefresh.refreshing}
+        onclick={refreshInterface}>{@html icon(RefreshCw)}</button
       >{/if}
     <button type="button" class="remote-new-button" onclick={openNew} aria-label="新建会话"
       >{@html icon(SquarePen, { size: 23 })}</button
     >
   </header>
 
+  {#if sessionId}<SessionInfo {cwd} {branch} {status} known={runtimeKnown} />{/if}
+
+  <RefreshError />
+
   {#if !sessionId}
-    <SessionList {stateLabels} />
+    <SessionList onnew={openNew} />
     <footer class="remote-home-composer">
       <button type="button" class="remote-home-input" aria-label="开始新任务" onclick={openNew}>
         {@html icon(Plus, { size: 24 })}<span>给 Pi 一个新任务</span><span class="home-send"
@@ -546,74 +774,115 @@
       class="remote-main"
       aria-busy={loading || historyLoading}
       bind:this={viewport}
-      onscroll={() => {
-        if (viewport.clientHeight === observedViewportHeight) awayFromBottom = !atBottom();
-      }}
+      onscroll={scrollConversation}
     >
-      {#if !connected}<p class="remote-warning" role="status">已断开连接 — 状态未知</p>{/if}
+      {#if !connected}<p class="remote-warning" role="status">实时更新连接中…</p>{/if}
       {#if activeState === 'needs-you'}<p class="remote-warning">
           Pi 需要终端交互，请在电脑上处理原生对话框。
         </p>{/if}
       {#if contentError}<p class="remote-error" role="alert">
           {contentError}<button type="button" onclick={() => refreshSession.run()}>重试</button>
         </p>{/if}
-      {#if error || composer.error}<p class="remote-error" role="alert">
-          {composer.error || error}<button
-            type="button"
-            aria-label="关闭错误提示"
-            onclick={() => {
-              error = '';
-              composer.error = '';
-            }}>关闭</button
+      {#if error}<p class="remote-error" role="alert">
+          {error}<button type="button" aria-label="关闭错误提示" onclick={() => (error = '')}
+            >关闭</button
           >
         </p>{/if}
       {#if loading && !messages.length}<p role="status">加载中…</p>{/if}
-      {#if before}<button
-          type="button"
-          class="remote-earlier"
-          disabled={historyLoading}
-          onclick={loadEarlier}>{historyLoading ? '加载中…' : '加载更早的消息'}</button
-        >{/if}
-      {#each messages as message (message.id)}
-        <article
-          class:remote-user={message.role === 'user'}
-          data-message-id={message.id}
-          aria-label={message.role === 'user' ? '你' : 'Pi'}
-        >
-          {#each message.blocks as block (block.index)}
-            {#if block.type === 'text'}<div class="remote-markdown">
-                {@html markdown.parse(typeof block.text === 'string' ? block.text : '')}
-              </div>
-            {:else}<RemoteBlock {sessionId} entryId={message.id} {block} />{/if}
+      {#if hasEarlier}<div class="remote-history">
+          {#if historyError}<p class="remote-error" role="alert">
+              历史加载失败，已读内容仍保留。{historyError}
+            </p>{/if}
+          <button
+            type="button"
+            class="remote-earlier"
+            disabled={historyLoading && visibleIndex === 0}
+            onclick={() => {
+              historyError = '';
+              loadEarlier();
+            }}>{historyLoading && visibleIndex === 0 ? '加载中…' : '加载更早的消息'}</button
+          >
+        </div>{/if}
+      {#each visibleMessages as message (message.id)}
+        {@const inlineCopy =
+          message.role === 'assistant' && message.blocks.some((block) => block.type === 'tool')}
+        {@const blocks = inlineCopy ? commentaryBlocks(message.blocks) : message.blocks}
+        {@const body = message.blocks
+          .filter((block) => block.type === 'text')
+          .map((block) => messageText(message, block))
+          .join('\n\n')}
+        {#snippet content()}
+          {#each blocks as block (block.index)}
+            {#if block.type === 'text'}
+              {@const text = messageText(message, block)}
+              {#if text.trim()}
+                {#snippet copyText()}<CopyAction {text} inline />{/snippet}
+                <Markdown
+                  {text}
+                  {sessionId}
+                  compact={message.role === 'user'}
+                  trailing={inlineCopy ? copyText : undefined}
+                />
+              {/if}
+            {:else}<RemoteBlock
+                {sessionId}
+                entryId={message.id}
+                {block}
+                bind:this={blockViews[`${message.id}:${block.index}`]}
+              />{/if}
           {/each}
           {#if message.error}<p class="remote-error">{message.error}</p>{/if}
-        </article>
+        {/snippet}
+        {#if message.role === 'user'}
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (user bubbles expose a keyboard context menu) -->
+          <article
+            class="remote-user"
+            data-message-id={message.id}
+            aria-label="你"
+            aria-haspopup="menu"
+            tabindex="0"
+            use:contextMenu={(anchor) => messageActions.open(message, anchor, body)}
+          >
+            {@render content()}
+          </article>
+        {:else}
+          <article data-message-id={message.id} aria-label="Pi">
+            {@render content()}
+            {#if (!inlineCopy && body.trim()) || message.forkable}
+              <div class="remote-message-actions">
+                {#if !inlineCopy && body.trim()}<CopyAction text={body} />{/if}
+                {#if message.forkable}
+                  <ForkAction
+                    {sessionId}
+                    entryId={message.id}
+                    menu={false}
+                    bind:busy={forkBusy}
+                    onfork={navigateFork}
+                  />
+                {/if}
+              </div>
+            {/if}
+          </article>
+        {/if}
       {/each}
       {#if awayFromBottom}<button
           type="button"
           class="remote-bottom"
           aria-label="最新消息"
-          onclick={bottom}>{@html icon(ArrowDown, { size: 16 })}</button
+          onclick={() => bottom()}>{@html icon(ArrowDown, { size: 16 })}</button
         >{/if}
     </main>
 
     <div class="remote-compose-context">
-      {#if chatAvailable && !status.canControl}
-        <p>
-          {status.diagnostic || '控制桥接未连接。现有终端会话需要使用当前版本的 pi-web 扩展。'}
-        </p>
-        <button type="button" onclick={() => control('/api/session/continue', {})}
-          >在后台继续</button
-        >
-      {:else if !chatAvailable && !loading}<p>{chatDisabledReason}</p>{/if}
-      {#if composer.notice || notice}<small role="status">{composer.notice || notice}</small>{/if}
+      {#if !chatAvailable && !loading}<p>{chatDisabledReason}</p>{/if}
       {#if matchingSkills.length}<div class="remote-skills">
           {#each matchingSkills as skill (skill.name)}<button
               type="button"
+              title={skill.name}
               onclick={() => {
-                composer.text = `/${skill.name} `;
+                editDraft(composer, `/${skill.name} `);
                 textarea?.focus();
-              }}>{skill.name}<small>{skill.description}</small></button
+              }}>{skill.name}</button
             >{/each}
         </div>{/if}
     </div>
@@ -623,30 +892,28 @@
         {canSend}
         running={status.mainRunning || activeState === 'running'}
         onsend={sendMessage}
+        {canQueue}
+        onqueue={() => sendMessage(null, 'followUp')}
         onstop={() => control('/api/chat/cancel', {})}
         oninput={() => {
           if (info) info.open = false;
-          searchSkills();
         }}
         onfocus={() => {
           if (info) info.open = false;
         }}
-        status={{
-          ...status,
-          model: runtimeKnown ? status.model : '未知',
-          modelName: runtimeKnown ? status.modelName : '',
-          thinking: runtimeKnown ? status.thinking : '',
-          fast: runtimeKnown ? status.fast : null,
-          disabled: !runtimeKnown || !status.canControl,
-        }}
+        status={modelStatus}
         {models}
         {modelsLoading}
         {modelsError}
         onmodelopen={loadModels}
         onmodel={(model) =>
-          control('/api/set-model', { provider: model.provider, modelId: model.id })}
-        onthinking={(level) => control('/api/set-thinking-level', { level })}
-        onspeed={(mode) => control('/api/set-speed', { mode })}
+          selectSettings({ provider: model.provider, modelId: model.id }, '/api/set-model', {
+            provider: model.provider,
+            modelId: model.id,
+          })}
+        onthinking={(level) =>
+          selectSettings({ thinking: level }, '/api/set-thinking-level', { level })}
+        onspeed={selectSpeed}
         bind:textarea
       />
     </footer>
@@ -654,69 +921,51 @@
 </div>
 
 {#if sessionId}
-  <dialog
-    id="remote-sessions-drawer"
-    class="remote-drawer"
-    aria-labelledby="remote-drawer-title"
+  <MessageActions
+    bind:this={messageActions}
+    {sessionId}
+    bind:busy={forkBusy}
+    onfork={navigateFork}
+  />
+  <SelectionShare surface={viewport} {sessionId} {messages} {blockViews} {title} {cwd} />
+  <SessionDrawer
+    surface={drawerSurface}
+    currentSessionId={sessionId}
+    canSwipe={() => !info?.open}
     bind:this={drawer}
-    onkeydown={(event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        drawer.close();
-      } else if (event.key === 'Tab') {
-        const controls = [...drawer.querySelectorAll('button:not(:disabled), input, a[href]')];
-        const index = controls.indexOf(document.activeElement);
-        const next = event.shiftKey
-          ? (index - 1 + controls.length) % controls.length
-          : (index + 1) % controls.length;
-        event.preventDefault();
-        controls[next]?.focus();
-      }
-    }}
+    bind:isOpen={drawerOpen}
+    onnew={openNew}
     onclose={() => {
-      drawerOpen = false;
       if (!newTask?.isOpen()) drawerTrigger?.focus({ preventScroll: true });
       refreshAcknowledgement.run();
     }}
-    onclick={(event) => {
-      if (event.target !== drawer) return;
-      const box = drawer.getBoundingClientRect();
-      if (
-        event.clientX < box.left ||
-        event.clientX > box.right ||
-        event.clientY < box.top ||
-        event.clientY > box.bottom
-      )
-        drawer.close();
-    }}
-  >
-    <header>
-      <h2 id="remote-drawer-title">会话</h2>
-      <button type="button" aria-label="关闭会话列表" onclick={() => drawer.close()}
-        >{@html icon(X)}</button
-      >
-    </header>
-    <button
-      class="remote-drawer-new"
-      type="button"
-      onclick={() => {
-        drawer.close();
-        openNew();
-      }}>{@html icon(Plus)}新建会话</button
-    >
-    <SessionList {stateLabels} currentSessionId={sessionId} onselect={() => drawer.close()} />
-    <footer><a href="/">查看全部会话</a></footer>
-  </dialog>
+  />
 {/if}
 
-<dialog class="remote-preview" aria-label="预览" bind:this={previewDialog} onclose={clearPreview}>
+<dialog
+  class="remote-preview"
+  class:remote-preview-fullscreen={preview?.image}
+  aria-label="预览"
+  bind:this={previewDialog}
+  onclose={clearPreview}
+>
   <header>
     <strong title={preview?.name || previewPath}>{preview?.name || previewPath}</strong>
-    <button type="button" onclick={() => openPreview(previewPath)} disabled={previewLoading}
-      >重新加载</button
+    <button
+      type="button"
+      onclick={() => {
+        if (preview?.image) {
+          previewError = '';
+          const url = new URL(preview.url, location.href);
+          url.searchParams.set('attempt', Date.now());
+          preview = { ...preview, url: url.pathname + url.search };
+        } else openPreview(previewPath);
+      }}
+      disabled={previewLoading}>重新加载</button
     >
+    {#if preview?.source}<a href={preview.source} target="_blank" rel="noreferrer">原文</a>{/if}
     <a
-      href={fileDownloadURL(sessionId, previewPath)}
+      href={preview?.downloadURL || fileDownloadURL(sessionId, previewPath)}
       download={preview?.name || fileName(previewPath)}
       target="_blank"
       rel="noreferrer">下载</a
@@ -727,11 +976,19 @@
   </header>
   {#if previewLoading}<p role="status">加载中…</p>{/if}
   {#if previewError}<p role="alert">{previewError}</p>{/if}
-  {#if preview}
+  {#if preview?.image}
+    <div class="remote-preview-image">
+      <img
+        src={preview.url}
+        alt={preview.name}
+        onerror={() => (previewError = '图片加载失败，请重试。')}
+      />
+    </div>
+  {:else if preview}
     <iframe
       src={preview.url}
       title={preview.name}
-      sandbox="allow-scripts allow-forms allow-modals allow-downloads"
+      sandbox={preview.source ? '' : 'allow-scripts allow-forms allow-modals allow-downloads'}
       referrerpolicy="no-referrer"
     ></iframe>
   {/if}
@@ -841,12 +1098,21 @@
   .remote-home .remote-header {
     padding: 22px 20px 18px;
   }
-  .remote-header :global(.host-heading strong) {
+  .remote-heading h1 {
+    display: -webkit-box;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
     font-size: 16px;
     font-weight: 600;
     letter-spacing: -0.02em;
   }
-  .remote-home .remote-header :global(.host-heading strong) {
+  .remote-home .remote-heading h1 {
     font-size: 30px;
     font-weight: 500;
   }
@@ -863,26 +1129,11 @@
     flex: none;
   }
   .remote-heading {
+    display: flex;
+    align-items: center;
     flex: 1;
     min-width: 0;
-  }
-  .remote-header .remote-state {
-    display: block;
-    width: 6px;
-    height: 6px;
-    margin-right: 2px;
-    flex: none;
-    font-size: 0;
-    border-radius: 50%;
-    background: var(--muted);
-  }
-  .remote-header .remote-state[data-state='running'],
-  .remote-header .remote-state[data-state='background'] {
-    background: var(--accent);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-  .remote-header .remote-state[data-state='needs-you'] {
-    background: var(--warning);
+    min-height: 44px;
   }
   .remote-warning {
     color: var(--warning);
@@ -918,7 +1169,7 @@
   }
   .remote-info-panel {
     position: absolute;
-    top: 66px;
+    top: calc(100% - 2px);
     right: 12px;
     z-index: 5;
     width: min(360px, calc(100vw - 24px));
@@ -932,19 +1183,6 @@
     font-size: 12px;
     animation: info-in 150ms var(--ease-out);
   }
-  .remote-info dl {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 10px 18px;
-    margin: 0;
-  }
-  .remote-info dt {
-    color: var(--muted);
-  }
-  .remote-info dd {
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
   .remote-info-notifications {
     width: 100%;
     border: 0;
@@ -953,9 +1191,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-top: 14px;
-    padding-top: 10px;
-    border-top: 1px solid var(--dim);
+    padding: 10px 8px;
     color: var(--text-soft);
   }
   .remote-home-composer {
@@ -1018,50 +1254,50 @@
   article.remote-user:first-child {
     margin-top: 0;
   }
-  .remote-markdown {
-    margin: 12px 0;
-    font: var(--font-content-size)/1.65 var(--font-content);
+  article.remote-user:focus-visible {
+    outline: 2px solid var(--muted);
+    outline-offset: 3px;
   }
-  .remote-user .remote-markdown {
-    margin: 0;
+  @media (pointer: coarse) {
+    article.remote-user {
+      -webkit-touch-callout: none;
+      user-select: none;
+    }
   }
-  .remote-markdown :global(> :first-child) {
-    margin-top: 0;
+  .remote-message-actions {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 4px;
+    user-select: none;
   }
-  .remote-markdown :global(> :last-child) {
-    margin-bottom: 0;
+  .remote-message-actions :global(button) {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--muted);
   }
-  .remote-markdown :global(p) {
-    margin: 8px 0;
+  .remote-message-actions :global(button:first-of-type) {
+    /* 只将触控区向左外扩，让图标与正文左缘对齐。 */
+    margin-left: -19px;
   }
-  .remote-markdown :global(pre),
-  :global(.remote-block pre) {
-    padding: 12px;
-    overflow: auto;
-    max-width: 100%;
+  .remote-message-actions :global(button:first-of-type svg) {
+    transform: translateX(6px);
+  }
+  .remote-message-actions :global(button:nth-of-type(2) svg) {
+    transform: translateX(-6px);
+  }
+  .remote-message-actions :global(button:hover),
+  .remote-message-actions :global(button:focus-visible) {
     background: var(--surface-2);
-    border-radius: 6px;
-    font: var(--font-content-size)/1.5 var(--font-code);
-  }
-  .remote-markdown :global(code) {
-    font-family: var(--font-code);
-  }
-  .remote-markdown :global(table) {
-    display: block;
-    overflow: auto;
-    border-collapse: collapse;
-  }
-  .remote-markdown :global(th),
-  .remote-markdown :global(td) {
-    border: 1px solid var(--dim);
-    padding: 6px 10px;
+    color: var(--text);
   }
   :global(.remote-block) {
     min-width: 0;
-  }
-  :global(.remote-block img) {
-    max-width: 100%;
-    height: auto;
   }
   .remote-earlier {
     display: block;
@@ -1104,49 +1340,45 @@
     display: block;
     width: 100%;
     text-align: left;
-  }
-  .remote-skills small {
-    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   :global(.remote-file) {
     display: inline-flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 4px 12px;
+    gap: 8px;
     max-width: 100%;
-    padding: 6px 10px;
+    padding: 2px 8px;
     margin: 4px 0;
     border: 1px solid var(--dim);
     border-radius: 8px;
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 20px;
   }
   :global(.remote-file-name) {
+    flex: 1;
     min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  :global(.remote-image-actions) {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 4px 8px;
-  }
-  :global(.remote-image-actions a) {
-    display: inline-flex;
-    align-items: center;
-    min-height: 44px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   :global(.remote-file-actions) {
     display: inline-flex;
-    flex-wrap: wrap;
+    flex: none;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
   }
-  :global(.remote-file-actions button) {
-    padding: 8px;
+  :global(.remote-file-actions button),
+  :global(.remote-file-actions a) {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 3px 2px;
+    line-height: 20px;
+    white-space: nowrap;
     background: transparent;
   }
-  :global(.remote-file-actions a),
   .remote-preview header a {
     display: inline-flex;
     align-items: center;
@@ -1162,6 +1394,16 @@
     border-radius: 12px;
     color: var(--text);
     background: var(--surface);
+  }
+  .remote-preview-fullscreen {
+    inset: 0;
+    width: 100vw;
+    max-width: none;
+    height: var(--remote-height, 100dvh);
+    max-height: var(--remote-height, 100dvh);
+    margin: 0;
+    border: 0;
+    border-radius: 0;
   }
   .remote-preview[open] {
     display: flex;
@@ -1193,90 +1435,22 @@
     padding: 0 12px;
     overflow-wrap: anywhere;
   }
+  .remote-preview-image {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .remote-preview-image img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
   .remote-preview iframe {
     width: 100%;
     flex: 1;
     min-height: 0;
     border: 0;
     background: white;
-  }
-  .remote-drawer {
-    position: fixed;
-    inset: 0 auto auto 0;
-    width: min(360px, calc(100vw - 48px));
-    max-width: none;
-    height: var(--remote-height, 100dvh);
-    max-height: var(--remote-height, 100dvh);
-    margin: 0;
-    padding: env(safe-area-inset-top) 0 0 env(safe-area-inset-left);
-    overflow: hidden;
-    color: var(--text);
-    background: var(--surface);
-    border: 0;
-    border-right: 1px solid var(--dim);
-    border-radius: 0 16px 16px 0;
-    box-shadow: 12px 0 40px #0003;
-  }
-  .remote-drawer[open] {
-    display: flex;
-    flex-direction: column;
-    animation: remote-drawer-in 180ms ease-out;
-  }
-  .remote-drawer::backdrop {
-    background: #0008;
-  }
-  .remote-drawer header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 12px;
-    flex: none;
-  }
-  .remote-drawer h2 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-  }
-  .remote-drawer header button {
-    display: grid;
-    place-items: center;
-    padding: 9px;
-    background: transparent;
-    border-color: transparent;
-  }
-  .remote-drawer-new {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    margin: 0 12px;
-    flex: none;
-  }
-  .remote-drawer footer {
-    padding: 8px 12px max(8px, env(safe-area-inset-bottom));
-    border-top: 1px solid var(--dim);
-    flex: none;
-  }
-  .remote-drawer footer a {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 44px;
-    text-decoration: none;
-    font-size: 13px;
-  }
-  @keyframes remote-drawer-in {
-    from {
-      transform: translateX(-100%);
-    }
-    to {
-      transform: translateX(0);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .remote-drawer[open] {
-      animation: none;
-    }
   }
 </style>

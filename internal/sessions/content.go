@@ -86,9 +86,6 @@ func readContentIndex(path, dirName, fileName string) (*Content, error) {
 			}
 			continue
 		}
-		if raw.Message != nil && (raw.Message.Role == "user" || raw.Message.Role == "assistant") && raw.Timestamp != "" {
-			c.LastActivity = raw.Timestamp
-		}
 		if raw.Type == "session_info" && raw.Name != "" {
 			sessionInfoName = raw.Name
 		}
@@ -96,9 +93,6 @@ func readContentIndex(path, dirName, fileName string) (*Content, error) {
 		if raw.Message != nil {
 			entry.role, entry.outcome = raw.Message.Role, raw.Message.StopReason
 			entry.callID, entry.failed = raw.Message.ToolCallID, raw.Message.IsError
-			if entry.role == "user" && firstUserText == "" && headerName == "" && sessionInfoName == "" {
-				firstUserText = summaryText(line)
-			}
 			if entry.role == "assistant" {
 				eachPart(line, func(part contentPart) {
 					if part.kind == "text" || part.kind == "thinking" {
@@ -114,6 +108,15 @@ func readContentIndex(path, dirName, fileName string) (*Content, error) {
 					}
 				})
 			}
+		}
+		if isInlineSkillMessage(line) {
+			entry.role = "user"
+		}
+		if (entry.role == "user" || entry.role == "assistant") && raw.Timestamp != "" {
+			c.LastActivity = raw.Timestamp
+		}
+		if entry.role == "user" && firstUserText == "" && headerName == "" && sessionInfoName == "" {
+			firstUserText = summaryText(line)
 		}
 		if entry.id != "" {
 			c.byID[entry.id] = len(c.entries)
@@ -213,6 +216,10 @@ type contentPart struct {
 }
 
 func eachPart(line []byte, visit func(contentPart)) {
+	if isInlineSkillMessage(line) {
+		eachInlineSkillPart(line, visit)
+		return
+	}
 	value, kind, _, err := jsonparser.Get(line, "message", "content")
 	if err != nil {
 		return
@@ -348,9 +355,9 @@ func (c *Content) Block(id string, index int, leaf *string) (map[string]any, err
 		}
 		switch selected.kind {
 		case "thinking":
-			return map[string]any{"text": stringField(selected.raw, "thinking")}, nil
+			return map[string]any{"text": stringField(selected.raw, "thinking"), "version": entry.id}, nil
 		case "toolCall":
-			out := map[string]any{"input": rawField(selected.raw, "arguments")}
+			out := map[string]any{"input": rawField(selected.raw, "arguments"), "version": entry.id}
 			if result := resultEntries(path)[stringField(selected.raw, "id")]; result != nil {
 				line, err := c.record(f, result)
 				if err != nil {
@@ -362,6 +369,7 @@ func (c *Content) Block(id string, index int, leaf *string) (map[string]any, err
 						texts = append(texts, part.text())
 					}
 				})
+				out["version"] = result.id
 				out["text"] = strings.Join(texts, "\n")
 				out["details"] = rawField(line, "message", "details")
 			}

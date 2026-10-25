@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"database/sql"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"pi-web/internal/auth"
 	"pi-web/internal/render"
 	"pi-web/internal/sessions"
+	"pi-web/internal/workers"
 
 	_ "modernc.org/sqlite"
 )
@@ -24,7 +24,7 @@ type Deps struct {
 	AgentDir       string
 	SessionsDir    string
 	Auth           *auth.Middleware
-	ChatSender     ChatSender
+	WorkerFactory  workers.Factory
 	Cache          *sessions.Cache
 	RenderAppShell func(w io.Writer) error
 	Now            func() time.Time
@@ -38,7 +38,7 @@ type Server struct {
 	clientsMu      sync.RWMutex
 	fileMod        map[string]time.Time
 	fileModMu      sync.RWMutex
-	chatSender     ChatSender
+	executors      *workers.Manager
 	cache          *sessions.Cache
 	auth           *auth.Middleware
 	now            func() time.Time
@@ -53,6 +53,7 @@ type Server struct {
 	wg             sync.WaitGroup
 	db             *sql.DB
 	push           *pushModule
+	diagnostics    *diagnosticLog
 }
 
 func New(deps Deps) (*Server, error) {
@@ -77,8 +78,9 @@ func New(deps Deps) (*Server, error) {
 	}
 	s := &Server{
 		agentDir: deps.AgentDir, sessionsDir: deps.SessionsDir, auth: deps.Auth,
-		chatSender: deps.ChatSender, cache: deps.Cache, now: deps.Now,
+		cache: deps.Cache, now: deps.Now,
 		renderAppShell: deps.RenderAppShell,
+		diagnostics:    &diagnosticLog{dir: filepath.Join(deps.AgentDir, "pi-web", "diagnostics")},
 		fileMod:        make(map[string]time.Time), runtimeStates: make(map[string]runtimeSnapshot), observations: make(map[string]ownerObservation),
 		stopCh: make(chan struct{}), db: db, previews: make(map[string]*previewGrant),
 	}
@@ -89,6 +91,7 @@ func New(deps Deps) (*Server, error) {
 	}
 	s.wg.Add(1)
 	go func() { defer s.wg.Done(); s.push.run(s.stopCh, s.pushEventActive) }()
+	s.executors = workers.NewManager(deps.WorkerFactory, deps.AgentDir)
 	s.watchFiles()
 	s.wg.Add(1)
 	go s.runOwnerDiscovery()
@@ -103,6 +106,8 @@ func initDB(agentDir string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	for _, statement := range []string{
 		`PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`,
+		`CREATE TABLE IF NOT EXISTS session_management (session_id TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS project_management (project TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS session_results (session_id TEXT NOT NULL, result_id TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, completion_pending INTEGER NOT NULL DEFAULT 0, completion_children TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(session_id,result_id))`,
 	} {
@@ -111,53 +116,19 @@ func initDB(agentDir string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
-	if err := migrateCompletionTime(db); err != nil {
+	// Remove retired manual positions while retaining archive preferences.
+	var hasOrder int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('session_management') WHERE name='order_index'`).Scan(&hasOrder); err != nil {
 		db.Close()
 		return nil, err
 	}
+	if hasOrder != 0 {
+		if _, err := db.Exec(`ALTER TABLE session_management DROP COLUMN order_index`); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return db, nil
-}
-
-func migrateCompletionTime(db *sql.DB) error {
-	ctx := context.Background()
-	connection, err := db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer connection.Close()
-	if _, err := connection.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return err
-	}
-	defer connection.ExecContext(ctx, "ROLLBACK")
-	rows, err := connection.QueryContext(ctx, "PRAGMA table_info(session_results)")
-	if err != nil {
-		return err
-	}
-	found := false
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, kind string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &pk); err != nil {
-			rows.Close()
-			return err
-		}
-		if name == "completed_at" {
-			found = true
-		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	if !found {
-		if _, err := connection.ExecContext(ctx, "ALTER TABLE session_results ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return err
-		}
-	}
-	_, err = connection.ExecContext(ctx, "COMMIT")
-	return err
 }
 
 func (s *Server) Shutdown() {
@@ -171,6 +142,9 @@ func (s *Server) Shutdown() {
 		}
 		s.previewsMu.Unlock()
 		s.wg.Wait()
+		if s.executors != nil {
+			_ = s.executors.Close()
+		}
 		if s.db != nil {
 			s.db.Close()
 		}
@@ -181,10 +155,15 @@ func (s *Server) Register(mux *http.ServeMux) {
 	for path, handler := range map[string]http.HandlerFunc{
 		"/": s.handleIndex, "/session": s.handleSession,
 		"/api/session": s.handleApiSession, "/api/session/block": s.handleSessionBlock,
-		"/api/session/image": s.handleSessionImage, "/api/sessions": s.handleApiSessions,
-		"/api/session/file": s.handleAttachment, "/api/session/preview": s.handleCreatePreview,
+		"/api/session/context": s.handleSessionContext,
+		"/api/session/fork":    s.handleForkSession,
+		"/api/session/image":   s.handleSessionImage, "/api/sessions": s.handleApiSessions,
+		"/api/session/name": s.handleRenameSession, "/api/session/archive": s.handleArchiveSession,
+		"/api/project/archive":               s.handleArchiveProject,
+		"/api/sessions/archive-disconnected": s.handleArchiveDisconnected,
+		"/api/session/file":                  s.handleAttachment, "/api/session/preview": s.handleCreatePreview,
 		"/api/chat": s.handleChat, "/api/chat/cancel": s.handleCancelChat,
-		"/api/session/continue": s.handleContinueSession, "/api/status": s.handleSessionStatus,
+		"/api/status":              s.handleSessionStatus,
 		"/api/session/acknowledge": s.handleAcknowledgement,
 		"/api/set-model":           s.handleSetModel, "/api/set-thinking-level": s.handleSetThinkingLevel,
 		"/api/models": s.handleAvailableModels, "/api/commands": s.handleCommands,
@@ -195,6 +174,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		"/api/push/config": s.handlePushConfig, "/api/push/subscription": s.handlePushSubscription,
 		"/api/push/status": s.handlePushStatus, "/api/push/test": s.handlePushTest,
 		"/api/push/eligibility": s.handlePushEligibility,
+		"/api/diagnostics":      s.handleDiagnostics,
 	} {
 		mux.HandleFunc(path, s.auth.Wrap(handler))
 	}

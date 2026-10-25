@@ -1,4 +1,7 @@
 import {
+  Circle,
+  CircleHelp,
+  CircleX,
   ArrowUp,
   ArrowLeft,
   ChevronsUpDown,
@@ -21,7 +24,18 @@ import {
   Check,
   CircleDashed,
   CircleAlert,
+  Unplug,
+  LoaderCircle,
+  Layers,
+  WifiOff,
   ChevronRight,
+  RefreshCw,
+  Archive,
+  History,
+  Share2,
+  Download,
+  Copy,
+  GitFork,
 } from 'lucide';
 
 export function icon(node, { size = 20 } = {}) {
@@ -37,6 +51,9 @@ export function icon(node, { size = 20 } = {}) {
 }
 
 export {
+  Circle,
+  CircleHelp,
+  CircleX,
   ArrowUp,
   ArrowLeft,
   ChevronsUpDown,
@@ -59,5 +76,16 @@ export {
   Check,
   CircleDashed,
   CircleAlert,
+  Unplug,
+  LoaderCircle,
+  Layers,
+  WifiOff,
   ChevronRight,
+  RefreshCw,
+  Archive,
+  History,
+  Share2,
+  Download,
+  Copy,
+  GitFork,
 };

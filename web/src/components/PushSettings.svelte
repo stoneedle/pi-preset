@@ -1,16 +1,25 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { request } from '../remote-api.js';
   import { icon, X } from '../shared/icons.js';
 
   const stateText = {
     off: '此浏览器的通知已关闭。',
-    checking: '正在检查此浏览器的订阅…',
     unknown: '无法验证浏览器订阅。',
-    enabled: '此浏览器已订阅此主机。',
+    enabled: '此浏览器的通知已启用。',
     denied: '通知已被阻止。请使用普通浏览器窗口，或在浏览器设置中修改此网站的通知权限。',
     unsupported:
       '网页推送需要 HTTPS 和支持的浏览器。在 iPhone 或 iPad 上，请将此网站添加到主屏幕并从那里打开。',
     expired: '订阅已过期。请重新启用通知以续订。',
+  };
+  const operationText = {
+    checking: '正在检查此浏览器的订阅…',
+    permission: '正在等待浏览器的通知授权，请在权限提示中选择允许…',
+    preparing: '正在准备此浏览器的通知服务…',
+    subscribing: '正在连接浏览器推送服务…',
+    saving: '正在保存此浏览器的订阅…',
+    disabling: '正在停用此浏览器的通知…',
+    testing: '正在提交测试通知…',
   };
   const deliveryText = {
     pending: '已排队或等待重试。',
@@ -30,7 +39,8 @@
   let dialog = $state(null);
   let supported = $state(false);
   let subscribed = $state(false);
-  let busy = $state(false);
+  let operation = $state('');
+  let busy = $derived(Boolean(operation));
   let state = $state('off');
   let delivery = $state('');
   let failure = $state('');
@@ -38,27 +48,63 @@
   let registration;
   let subscription;
   let config;
+  let currentOperation;
+  let connecting;
+  const connectionHint =
+    '浏览器需要直接连接自身的推送服务（Chrome 使用 Google FCM），不经过 Pi 主机。请检查手机的推送支持和该通道的网络。';
 
-  const post = (path, body, method = 'POST') =>
-    timed(
-      request(path, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }),
-    );
+  function startOperation(next) {
+    if (busy) return;
+    const controller = new AbortController();
+    currentOperation = controller;
+    operation = next;
+    error = '';
+    return controller;
+  }
 
-  async function timed(promise) {
+  function finishOperation(controller) {
+    if (currentOperation !== controller) return;
+    currentOperation = null;
+    operation = '';
+  }
+
+  function stopWaiting() {
+    if (!currentOperation) return;
+    const controller = currentOperation;
+    finishOperation(controller);
+    state = 'unknown';
+    error = '已停止等待。浏览器操作可能仍在进行，请刷新状态确认结果。';
+    controller.abort(new Error('通知操作已取消。'));
+  }
+
+  onDestroy(stopWaiting);
+
+  const post = (path, body, signal, method = 'POST') =>
+    request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+      timeout: 20000,
+      retries: 0,
+    });
+
+  async function timed(promise, signal, message = '通知操作超时。请刷新状态后重试。') {
     let timer;
+    let abort;
     try {
+      signal.throwIfAborted();
       return await Promise.race([
         promise,
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('通知操作超时。请刷新状态后重试。')), 20000);
+          abort = () => reject(signal.reason);
+          signal.addEventListener('abort', abort, { once: true });
+          timer = setTimeout(() => reject(new Error(message)), 20000);
         }),
       ]);
     } finally {
       clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
     }
   }
 
@@ -72,7 +118,14 @@
     return previous && Array.from(new Uint8Array(previous)).join(',') === Array.from(key).join(',');
   }
 
-  async function workerSettings(value) {
+  function subscriptionExpired(status) {
+    return (
+      status?.failure === 'expired' ||
+      (subscription?.expirationTime != null && subscription.expirationTime <= Date.now())
+    );
+  }
+
+  async function workerSettings(value, signal) {
     const channel = new MessageChannel();
     try {
       await timed(
@@ -81,22 +134,28 @@
             event.data?.saved ? resolve() : reject(new Error('此浏览器的通知存储不可用。'));
           registration.active.postMessage({ type: 'pi-web:push-settings', value }, [channel.port2]);
         }),
+        signal,
+        '保存浏览器通知设置超时。请刷新状态后重试。',
       );
     } finally {
       channel.port1.close();
     }
   }
 
-  async function prepare() {
-    config = await timed(request('/api/push/config'));
-    await timed(navigator.serviceWorker.register('/sw.js', { scope: '/' }));
-    registration = await timed(navigator.serviceWorker.ready);
-    subscription = await timed(registration.pushManager.getSubscription());
+  async function prepare(signal) {
+    config = await request('/api/push/config', { signal, timeout: 20000, retries: 0 });
+    // Registration is independent of page refresh; a waiting update does not block push.
+    const workerTimeout = '浏览器通知服务尚未就绪。请刷新状态后重试。';
+    registration = await timed(navigator.serviceWorker.getRegistration('/'), signal, workerTimeout);
+    if (!registration?.active)
+      registration = await timed(navigator.serviceWorker.ready, signal, workerTimeout);
+    subscription = await timed(registration.pushManager.getSubscription(), signal);
   }
 
   async function refresh() {
-    busy = true;
-    error = '';
+    const controller = startOperation('checking');
+    if (!controller) return;
+    const { signal } = controller;
     supported = Boolean(
       window.isSecureContext &&
       'Notification' in window &&
@@ -120,98 +179,116 @@
         failure = '';
         return;
       }
-      state = 'checking';
-      await prepare();
+      await prepare(signal);
       const status = subscription
-        ? await post('/api/push/status', { endpoint: subscription.endpoint })
+        ? await post('/api/push/status', { endpoint: subscription.endpoint }, signal)
         : { subscribed: false, delivery: '', failure: '' };
       subscribed = Boolean(
-        status.subscribed && Notification.permission === 'granted' && sameKey(applicationKey()),
+        status.subscribed &&
+        Notification.permission === 'granted' &&
+        sameKey(applicationKey()) &&
+        !subscriptionExpired(status),
       );
-      state = subscribed ? 'enabled' : status.failure === 'expired' ? 'expired' : 'off';
+      state = subscribed ? 'enabled' : subscriptionExpired(status) ? 'expired' : 'off';
       delivery = status.delivery;
       failure = status.failure;
       if (subscribed)
-        await workerSettings({
-          endpoint: subscription.endpoint,
-          publicKey: applicationKey(),
-        });
+        await workerSettings(
+          { endpoint: subscription.endpoint, publicKey: applicationKey() },
+          signal,
+        );
     } catch (err) {
+      if (signal.aborted) return;
       state = 'unknown';
       error = err.message;
     } finally {
-      busy = false;
+      finishOperation(controller);
     }
   }
 
   async function enable() {
-    busy = true;
-    error = '';
+    const controller = startOperation('permission');
+    if (!controller) return;
+    const { signal } = controller;
     try {
       const permission =
         Notification.permission === 'default'
-          ? await Notification.requestPermission()
+          ? await timed(
+              Notification.requestPermission(),
+              signal,
+              '浏览器尚未返回通知权限结果。请检查浏览器或系统的通知权限，然后刷新状态。',
+            )
           : Notification.permission;
       if (permission !== 'granted') {
         state = permission === 'denied' ? 'denied' : 'off';
         return;
       }
-      await prepare();
+      operation = 'preparing';
+      await prepare(signal);
       const oldEndpoint = subscription?.endpoint;
       const status = subscription
-        ? await post('/api/push/status', { endpoint: oldEndpoint })
+        ? await post('/api/push/status', { endpoint: oldEndpoint }, signal)
         : null;
-      if (subscription && (!sameKey(applicationKey()) || !status?.subscribed)) {
-        await timed(subscription.unsubscribe());
+      // Missing server metadata does not invalidate a browser subscription.
+      if (subscription && (!sameKey(applicationKey()) || subscriptionExpired(status))) {
+        await timed(subscription.unsubscribe(), signal);
         subscription = null;
       }
-      if (!subscription)
-        subscription = await timed(
-          registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: applicationKey(),
-          }),
-        );
-      await workerSettings({
-        endpoint: subscription.endpoint,
-        publicKey: applicationKey(),
-      });
-      await post('/api/push/subscription', {
-        subscription: subscription.toJSON(),
-        previousEndpoint: oldEndpoint,
-      });
+      if (!subscription) {
+        operation = 'subscribing';
+        // subscribe() cannot be aborted; explicit retries share the outstanding browser call.
+        connecting ??= registration.pushManager
+          .subscribe({ userVisibleOnly: true, applicationServerKey: applicationKey() })
+          .finally(() => (connecting = null));
+        subscription = await timed(connecting, signal, '连接浏览器推送服务超时。');
+      }
+      if (!sameKey(applicationKey())) throw new Error('浏览器订阅密钥已变化，请刷新状态后重试。');
+      operation = 'saving';
+      await workerSettings(
+        { endpoint: subscription.endpoint, publicKey: applicationKey() },
+        signal,
+      );
+      await post(
+        '/api/push/subscription',
+        { subscription: subscription.toJSON(), previousEndpoint: oldEndpoint },
+        signal,
+      );
       subscribed = true;
       state = 'enabled';
       delivery = '';
       failure = '';
     } catch (err) {
-      error = err.message;
+      if (signal.aborted) return;
+      state = 'unknown';
+      error = operation === 'subscribing' ? `${err.message} ${connectionHint}` : err.message;
     } finally {
-      busy = false;
+      finishOperation(controller);
     }
   }
 
   async function disable() {
-    busy = true;
-    error = '';
+    const controller = startOperation('disabling');
+    if (!controller) return;
+    const { signal } = controller;
     try {
       const endpoint = subscription?.endpoint;
       if (subscription) {
-        await timed(subscription.unsubscribe());
-        const remaining = await timed(registration.pushManager.getSubscription());
+        await timed(subscription.unsubscribe(), signal);
+        const remaining = await timed(registration.pushManager.getSubscription(), signal);
         if (remaining?.endpoint === endpoint) throw new Error('无法移除浏览器订阅，请重试。');
       }
       subscription = null;
       subscribed = false;
       state = 'off';
-      await workerSettings(null);
-      if (endpoint) await post('/api/push/subscription', { endpoint }, 'DELETE');
+      await workerSettings(null, signal);
+      if (endpoint) await post('/api/push/subscription', { endpoint }, signal, 'DELETE');
       delivery = '';
       failure = '';
     } catch (err) {
+      if (signal.aborted) return;
       error = err.message;
     } finally {
-      busy = false;
+      finishOperation(controller);
     }
   }
 
@@ -221,28 +298,48 @@
   }
 
   async function testNotification() {
-    busy = true;
-    error = '';
+    const controller = startOperation('testing');
+    if (!controller) return;
+    const { signal } = controller;
     try {
-      await post('/api/push/test', { endpoint: subscription.endpoint });
+      await post('/api/push/test', { endpoint: subscription.endpoint }, signal);
       delivery = 'pending';
       failure = '';
     } catch (err) {
+      if (signal.aborted) return;
       error = err.message;
     } finally {
-      busy = false;
+      finishOperation(controller);
     }
   }
 </script>
 
+<svelte:window onoffline={stopWaiting} />
+
 <!-- eslint-disable svelte/no-at-html-tags -- trusted Lucide icons -->
-<dialog class="push-dialog" aria-label="通知" bind:this={dialog}>
+<dialog
+  class="push-dialog"
+  aria-label="通知"
+  bind:this={dialog}
+  oncancel={stopWaiting}
+  onclose={() => {
+    if (!dialog.open) stopWaiting();
+  }}
+>
   <header>
     <h2>通知</h2>
-    <button type="button" aria-label="关闭" onclick={() => dialog.close()}>{@html icon(X)}</button>
+    <button
+      type="button"
+      aria-label="关闭"
+      onclick={() => {
+        stopWaiting();
+        dialog.close();
+      }}>{@html icon(X)}</button
+    >
   </header>
-  <p role="status">{stateText[state]}</p>
-  <p>通知仅标明主机、会话和状态，不含回复正文。接收或关闭通知不会将回复标为已读。</p>
+  <p role="status">{operation ? operationText[operation] : stateText[state]}</p>
+  {#if operation === 'subscribing'}<p>{connectionHint}</p>{/if}
+  <p>通知仅标明会话和状态，不含回复正文。接收或关闭通知不会将回复标为已读。</p>
   {#if delivery}<p>{deliveryText[delivery]}</p>{/if}
   {#if failure && failure !== 'expired'}<p role="alert">
       {failure.startsWith('http:')
@@ -256,7 +353,8 @@
         ><button type="button" disabled={busy} onclick={testNotification}>发送测试通知</button>
       {:else}<button type="button" disabled={busy} onclick={enable}>为此浏览器启用</button>{/if}
     {/if}
-    <button type="button" disabled={busy} onclick={refresh}>{busy ? '加载中…' : '刷新状态'}</button>
+    {#if busy}<button type="button" onclick={stopWaiting}>停止等待</button>
+    {:else}<button type="button" onclick={refresh}>刷新状态</button>{/if}
   </div>
 </dialog>
 

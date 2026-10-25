@@ -4,6 +4,30 @@ import { openFixtureOwner } from '../lib/runtime-owner.mjs';
 import { assistantTextEntry, buildSession, uniqueSessionName, writeSession } from '../lib/sessions';
 
 // These tests hold the actual fetch consumer, including WebKit service-worker requests.
+test('losing live updates is not a bridge error and does not block a single HTTP send', async ({ page, sessionsDir, agentDir, workingDir }, info) => {
+  const id = writeSession(sessionsDir, uniqueSessionName(info, 'transport-not-owner'), buildSession({ cwd: workingDir }).entries);
+  const sends: string[] = [];
+  const owner = await openFixtureOwner({ agentDir,
+    sessionPath: join(sessionsDir, '--home-user-demo-project--', id),
+    control: (input) => { if (input.action === 'send') sends.push(input.chat.message); return { status: 'accepted' }; } });
+  try {
+    await page.goto(`/session?id=${encodeURIComponent(id)}`);
+    await expect(page.locator('.remote-header > .remote-state')).toHaveAttribute('data-state', 'idle');
+    // Lose only SSE; HTTP remains usable, as with an interrupted mobile stream.
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await expect(page.locator('.remote-header > .remote-state')).toHaveAttribute('data-state', 'unknown');
+    await expect(page.getByText('控制桥接未连接', { exact: false })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '在后台继续', exact: true })).toHaveCount(0);
+    await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('send despite lost live updates');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect.poll(() => sends).toEqual(['send despite lost live updates']);
+    await expect(page.getByRole('textbox', { name: '给 Pi 发消息…' })).toHaveValue('');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page.locator('.remote-header > .remote-state')).toHaveAttribute('data-state', 'idle');
+  } finally { await owner.close(); }
+});
+
 test('empty native text never takes down a conversation', async ({ page, sessionsDir, workingDir }, info) => {
   const { entries, lastId } = buildSession({ cwd: workingDir });
   entries.push({ type: 'message', id: 'empty-text', parentId: lastId,
@@ -25,6 +49,7 @@ test('drawer retains its loaded rows and search without waiting for another netw
   const trigger = page.getByRole('button', { name: '会话列表', exact: true });
   const drawer = page.getByRole('dialog', { name: '会话', exact: true });
   await trigger.click();
+  await drawer.getByRole('button', { name: '搜索会话', exact: true }).click();
   const search = drawer.getByRole('searchbox');
   await search.fill(id);
   await expect(drawer.locator('.remote-session')).toHaveCount(1);
@@ -53,6 +78,7 @@ test('returning to a visited conversation is local and preserves its draft durin
   await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('保留未发送草稿');
   await page.getByRole('button', { name: '会话列表', exact: true }).click();
   const drawer = page.getByRole('dialog', { name: '会话', exact: true });
+  await drawer.getByRole('button', { name: '搜索会话', exact: true }).click();
   await drawer.getByRole('searchbox').fill(other);
   await expect(drawer.locator('.remote-session')).toHaveCount(1);
   await drawer.locator('.remote-session').click();
@@ -95,6 +121,7 @@ test('a send receipt survives session navigation without losing the next draft',
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.waitForFunction(() => (window as any).__releaseSend);
     await page.getByRole('button', { name: '会话列表', exact: true }).click();
+    await page.getByRole('dialog', { name: '会话', exact: true }).getByRole('button', { name: '搜索会话', exact: true }).click();
     await page.getByRole('dialog', { name: '会话', exact: true }).getByRole('searchbox').fill(other);
     await page.locator(`a.remote-session[href="/session?id=${encodeURIComponent(other)}"]`).click();
     await expect(page).toHaveURL(`/session?id=${encodeURIComponent(other)}`);
@@ -105,6 +132,7 @@ test('a send receipt survives session navigation without losing the next draft',
     await page.evaluate(() => (window as any).__releaseSend());
     await expect(input).toHaveValue('发送期间继续写的下一份草稿');
     await expect(page.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
+    await expect(page.locator('.remote-compose-context [role=status]')).toHaveCount(0);
   } finally { await owner.close(); }
 });
 
@@ -211,10 +239,13 @@ test('an uncertain send is never replayed automatically and keeps the unsent dra
     await page.waitForFunction(() => (window as any).__releaseContent);
     await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('不能重复发送');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('Simulated lost acknowledgement');
+    const recovery = page.locator('[data-recovery-message]');
+    await expect(recovery).toContainText('未确认是否发送成功');
+    await recovery.getByRole('button', { name: '未确认是否发送成功', exact: true }).click();
+    await expect(recovery).toContainText('Simulated lost acknowledgement');
     await page.evaluate(() => (window as any).__releaseContent());
     await expect(page.getByText('Initial reply.', { exact: true })).toBeVisible();
-    await expect(page.getByRole('alert')).toContainText('Simulated lost acknowledgement');
+    await expect(recovery).toContainText('Simulated lost acknowledgement');
     await page.waitForTimeout(1800);
     expect(await page.evaluate(() => (window as any).__chatAttempts)).toBe(1);
     await expect(page.getByRole('textbox', { name: '给 Pi 发消息…' })).toHaveValue('不能重复发送');

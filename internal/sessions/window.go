@@ -24,6 +24,7 @@ type ViewBlock struct {
 	Name    string      `json:"name,omitempty"`
 	Summary string      `json:"summary,omitempty"`
 	State   string      `json:"state,omitempty"`
+	Version string      `json:"version,omitempty"`
 	Files   []string    `json:"files,omitempty"`
 	Images  []ViewImage `json:"images,omitempty"`
 }
@@ -34,6 +35,7 @@ type ViewMessage struct {
 	Timestamp string      `json:"timestamp,omitempty"`
 	Blocks    []ViewBlock `json:"blocks"`
 	Error     string      `json:"error,omitempty"`
+	Forkable  bool        `json:"forkable,omitempty"`
 }
 
 type Window struct {
@@ -64,6 +66,7 @@ func (c *Content) Window(before, after string, leaf *string) (Window, error) {
 		}
 	}
 	results := resultEntries(path)
+	points := forkPoints(path)
 	start, end := 0, len(path)
 	changedTools := make(map[string]bool)
 	if before != "" || after != "" {
@@ -114,6 +117,7 @@ func (c *Content) Window(before, after string, leaf *string) (Window, error) {
 		if len(view.Blocks) == 0 && view.Error == "" {
 			continue
 		}
+		view.Forkable = entry.forkMessage() && points[entry.id]
 		raw, _ := json.Marshal(view)
 		bytes += len(raw)
 		window.Messages = append(window.Messages, view)
@@ -141,6 +145,7 @@ func (c *Content) project(f *os.File, entry *nativeEntry, results map[string]*na
 				return
 			}
 		case "thinking":
+			block.Version = entry.id
 			value, kind, _, _ := jsonparser.Get(part.raw, "thinking")
 			if kind != jsonparser.String {
 				return
@@ -173,8 +178,10 @@ func (c *Content) project(f *os.File, entry *nativeEntry, results map[string]*na
 				break
 			}
 			block.State = "pending"
+			block.Version = entry.id
 			if result := results[stringField(part.raw, "id")]; result != nil {
 				block.State = "done"
+				block.Version = result.id
 				if result.failed {
 					block.State = "error"
 				}

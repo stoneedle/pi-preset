@@ -1,15 +1,9 @@
-// Conversation data is never cached by the service worker.
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) =>
-  event.waitUntil(self.clients.claim()),
-);
-
 function openPushDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("pi-web-push", 1);
+    const request = indexedDB.open('pi-web-push', 1);
     request.onupgradeneeded = () => {
-      request.result.createObjectStore("tags");
-      request.result.createObjectStore("settings");
+      request.result.createObjectStore('tags');
+      request.result.createObjectStore('settings');
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -20,10 +14,7 @@ async function pushRecord(store, key, value) {
   const db = await openPushDB();
   try {
     return await new Promise((resolve, reject) => {
-      const transaction = db.transaction(
-        store,
-        value === undefined ? "readonly" : "readwrite",
-      );
+      const transaction = db.transaction(store, value === undefined ? 'readonly' : 'readwrite');
       const request =
         value === undefined
           ? transaction.objectStore(store).get(key)
@@ -42,39 +33,40 @@ async function pushRecord(store, key, value) {
 }
 
 function notificationTarget(data) {
-  if (data.kind === "test") return new URL("/", self.location.origin);
+  if (data.kind === 'test') return new URL('/', self.location.origin);
   if (
-    !["completed", "attention"].includes(data.kind) ||
-    typeof data.sessionId !== "string" ||
-    !data.sessionId.endsWith(".jsonl") ||
+    !['completed', 'attention'].includes(data.kind) ||
+    typeof data.sessionId !== 'string' ||
+    !data.sessionId.endsWith('.jsonl') ||
     data.sessionId.length > 512 ||
-    /[\\/\x00]/.test(data.sessionId)
+    /[\\/]/.test(data.sessionId) ||
+    data.sessionId.includes('\0')
   )
     return null;
-  const url = new URL("/session", self.location.origin);
-  url.searchParams.set("id", data.sessionId);
+  const url = new URL('/session', self.location.origin);
+  url.searchParams.set('id', data.sessionId);
   return url;
 }
 
 async function receivePush(data) {
   if (
     !data ||
-    typeof data.eventId !== "string" ||
+    typeof data.eventId !== 'string' ||
     data.eventId.length > 128 ||
-    typeof data.tag !== "string" ||
+    typeof data.tag !== 'string' ||
     !Number.isSafeInteger(data.sequence) ||
     data.sequence < 1 ||
-    typeof data.title !== "string" ||
-    typeof data.body !== "string" ||
+    typeof data.title !== 'string' ||
+    typeof data.body !== 'string' ||
     !notificationTarget(data)
   )
     return;
-  const previous = await pushRecord("tags", data.tag);
+  const previous = await pushRecord('tags', data.tag);
   if (previous && previous.sequence >= data.sequence) return;
   try {
     const response = await fetch(
       `/api/push/eligibility?event=${encodeURIComponent(data.eventId)}`,
-      { cache: "no-store" },
+      { cache: 'no-store' },
     );
     if (response.ok && (await response.json()).active === false) return;
   } catch {
@@ -84,8 +76,8 @@ async function receivePush(data) {
     body: data.body,
     tag: data.tag,
     renotify: false,
-    icon: "/icon-192.png",
-    badge: "/icon-maskable-512.png",
+    icon: '/icon-192.png',
+    badge: '/icon-maskable-512.png',
     data: {
       eventId: data.eventId,
       kind: data.kind,
@@ -93,11 +85,11 @@ async function receivePush(data) {
       identity: data.identity,
     },
   });
-  await pushRecord("tags", data.tag, { sequence: data.sequence });
+  await pushRecord('tags', data.tag, { sequence: data.sequence });
 }
 
 let pushWork = Promise.resolve();
-self.addEventListener("push", (event) => {
+self.addEventListener('push', (event) => {
   let data;
   try {
     data = event.data?.json();
@@ -108,14 +100,14 @@ self.addEventListener("push", (event) => {
   event.waitUntil(pushWork);
 });
 
-self.addEventListener("notificationclick", (event) => {
+self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const target = notificationTarget(event.notification.data);
   if (!target) return;
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({
-        type: "window",
+        type: 'window',
         includeUncontrolled: true,
       });
       for (const client of windows) {
@@ -123,7 +115,7 @@ self.addEventListener("notificationclick", (event) => {
         if (
           url.origin === target.origin &&
           url.pathname === target.pathname &&
-          url.searchParams.get("id") === target.searchParams.get("id")
+          url.searchParams.get('id') === target.searchParams.get('id')
         ) {
           await client.focus();
           return;
@@ -134,21 +126,21 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
-self.addEventListener("message", (event) => {
+self.addEventListener('message', (event) => {
   const message = event.data;
-  if (message?.type === "pi-web:push-settings") {
+  if (message?.type === 'pi-web:push-settings') {
     event.waitUntil(
-      pushRecord("settings", "subscription", message.value).then(
+      pushRecord('settings', 'subscription', message.value).then(
         () => event.ports[0]?.postMessage({ saved: true }),
         () => event.ports[0]?.postMessage({ saved: false }),
       ),
     );
-  } else if (message?.type === "pi-web:read") {
+  } else if (message?.type === 'pi-web:read') {
     event.waitUntil(
       self.registration.getNotifications().then((notifications) => {
         for (const notification of notifications) {
           if (
-            notification.data?.kind === "completed" &&
+            notification.data?.kind === 'completed' &&
             notification.data.sessionId === message.sessionId &&
             notification.data.identity === message.replyId
           )
@@ -159,10 +151,10 @@ self.addEventListener("message", (event) => {
   }
 });
 
-self.addEventListener("pushsubscriptionchange", (event) => {
+self.addEventListener('pushsubscriptionchange', (event) => {
   event.waitUntil(
     (async () => {
-      const saved = await pushRecord("settings", "subscription");
+      const saved = await pushRecord('settings', 'subscription');
       if (!saved?.endpoint || !saved.publicKey) return;
       const subscription =
         event.newSubscription ||
@@ -172,16 +164,16 @@ self.addEventListener("pushsubscriptionchange", (event) => {
             applicationServerKey: saved.publicKey,
           },
         ));
-      const response = await fetch("/api/push/subscription", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const response = await fetch('/api/push/subscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subscription: subscription.toJSON(),
           previousEndpoint: event.oldSubscription?.endpoint || saved.endpoint,
         }),
       });
-      if (!response.ok) throw new Error("推送订阅续订失败");
-      await pushRecord("settings", "subscription", {
+      if (!response.ok) throw new Error('推送订阅续订失败');
+      await pushRecord('settings', 'subscription', {
         endpoint: subscription.endpoint,
         publicKey: saved.publicKey,
       });

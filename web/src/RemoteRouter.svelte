@@ -1,10 +1,16 @@
 <script>
   import { onMount } from 'svelte';
   import RemoteApp from './routes/RemoteApp.svelte';
+  import { startHistoryPrefetch } from './remote-history.js';
 
   let sessionId = $state(new URLSearchParams(location.search).get('id') || '');
+  let app = $state(null);
   onMount(() => {
-    const sync = () => (sessionId = new URLSearchParams(location.search).get('id') || '');
+    const stopPrefetch = startHistoryPrefetch();
+    const sync = () => {
+      app?.rememberSession();
+      sessionId = new URLSearchParams(location.search).get('id') || '';
+    };
     const navigate = (event) => {
       if (
         event.defaultPrevented ||
@@ -32,6 +38,7 @@
     document.addEventListener('click', navigate);
     window.addEventListener('popstate', sync);
     return () => {
+      stopPrefetch();
       document.removeEventListener('click', navigate);
       window.removeEventListener('popstate', sync);
     };
@@ -39,5 +46,5 @@
 </script>
 
 {#key sessionId}
-  <RemoteApp {sessionId} />
+  <RemoteApp {sessionId} bind:this={app} />
 {/key}

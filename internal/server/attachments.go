@@ -78,6 +78,13 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if raw := r.URL.Query().Get("path"); strings.HasPrefix(strings.ToLower(raw), "https://") || strings.HasPrefix(strings.ToLower(raw), "http://") {
+		if _, err := s.cache.ResolveHeader(s.sessionsDir, r.URL.Query().Get("id")); resolveOrWriteError(w, err) {
+			return
+		}
+		s.handleRemoteAttachment(w, r, raw)
+		return
+	}
 	path := s.attachmentPath(w, r, r.URL.Query().Get("path"))
 	if path == "" {
 		return
@@ -93,11 +100,31 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not a regular file")
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": info.Name()}))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	if r.URL.Query().Get("thumbnail") == "1" {
+		body, err := io.ReadAll(io.LimitReader(file, (32<<20)+1))
+		if err == nil && len(body) <= 32<<20 {
+			body, err = imageThumbnail(body)
+		} else {
+			err = fmt.Errorf("image unavailable or too large")
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusUnprocessableEntity, "thumbnail unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(body)
+		return
+	}
+	mediaType := previewMediaTypes[strings.ToLower(filepath.Ext(path))]
+	if r.URL.Query().Get("inline") == "1" && strings.HasPrefix(mediaType, "image/") {
+		w.Header().Set("Content-Type", mediaType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": info.Name()}))
+	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 }
 
@@ -118,6 +145,22 @@ var previewMediaTypes = map[string]string{
 	".svg": "image/svg+xml", ".avif": "image/avif", ".ico": "image/x-icon",
 	".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
 	".mp3": "audio/mpeg", ".mp4": "video/mp4", ".ogg": "audio/ogg", ".wav": "audio/wav", ".webm": "video/webm",
+}
+
+func markdownDocument(source []byte, name, base string) (string, error) {
+	var body bytes.Buffer
+	if err := goldmark.New(goldmark.WithExtensions(extension.GFM)).Convert(source, &body); err != nil {
+		return "", err
+	}
+	return attachmentDocument(name, base, body.String()), nil
+}
+
+func attachmentDocument(name, base, body string) string {
+	baseTag := ""
+	if base != "" {
+		baseTag = `<base href="` + html.EscapeString(base) + `">`
+	}
+	return fmt.Sprintf("<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">%s<title>%s</title><style>body{max-width:760px;margin:0 auto;padding:24px;font:16px/1.6 system-ui,sans-serif;overflow-wrap:anywhere;color:#20242b;background:white}img,video{max-width:100%%;height:auto}pre,table{display:block;max-width:100%%;overflow:auto}pre{padding:16px;background:#f4f5f7;border-radius:8px}code{font-family:ui-monospace,monospace}td,th{padding:6px 12px;border:1px solid #ddd}table{border-collapse:collapse}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #ddd}</style></head><body>%s</body></html>", baseTag, html.EscapeString(name), body)
 }
 
 func (s *Server) handleCreatePreview(w http.ResponseWriter, r *http.Request) {
@@ -288,14 +331,14 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "document is unavailable", http.StatusNotFound)
 			return
 		}
-		var body bytes.Buffer
-		if err := goldmark.New(goldmark.WithExtensions(extension.GFM)).Convert(source, &body); err != nil {
+		document, err := markdownDocument(source, info.Name(), "")
+		if err != nil {
 			http.Error(w, "document could not be rendered", http.StatusUnprocessableEntity)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if r.Method != http.MethodHead {
-			fmt.Fprintf(w, "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>%s</title><style>body{max-width:760px;margin:0 auto;padding:24px;font:16px/1.6 system-ui,sans-serif;overflow-wrap:anywhere;color:#20242b;background:white}img,video{max-width:100%%;height:auto}pre,table{display:block;max-width:100%%;overflow:auto}pre{padding:16px;background:#f4f5f7;border-radius:8px}code{font-family:ui-monospace,monospace}td,th{padding:6px 12px;border:1px solid #ddd}table{border-collapse:collapse}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #ddd}</style></head><body>%s</body></html>", html.EscapeString(info.Name()), body.String())
+			_, _ = io.WriteString(w, document)
 		}
 		return
 	}

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"pi-web/internal/workers"
 )
 
 func TestRuntimeSubscriptionSeparatesActivityFromConnection(t *testing.T) {
@@ -58,7 +60,7 @@ func TestRuntimeSubscriptionSeparatesActivityFromConnection(t *testing.T) {
 	n, _ := strconv.Atoi(port)
 	directory := filepath.Join(s.agentDir, "pi-web", "owners")
 	os.MkdirAll(directory, 0700)
-	data, _ := json.Marshal(remoteOwner{PID: int32(os.Getpid()), Port: n, Token: "secret", SessionID: "sid"})
+	data, _ := json.Marshal(workers.Registration{PID: int32(os.Getpid()), Port: n, Token: "secret", SessionID: "sid"})
 	os.WriteFile(filepath.Join(directory, "session.jsonl.json"), data, 0600)
 	waitState := func(expected string) {
 		t.Helper()
@@ -85,13 +87,13 @@ func TestRuntimeSubscriptionSeparatesActivityFromConnection(t *testing.T) {
 		mu.Unlock()
 		waitState(state)
 	}
-	if !s.RuntimeIdle("session.jsonl") {
-		t.Fatal("confirmed idle runtime not eligible for reaping")
+	if s.runtimeState("session.jsonl").Availability != "connected" {
+		t.Fatal("native idle snapshot was not connected")
 	}
 	ownerHTTP.CloseClientConnections()
 	waitState("unknown")
-	if s.RuntimeIdle("session.jsonl") {
-		t.Fatal("disconnect became idle")
+	if s.runtimeState("session.jsonl").Availability != "disconnected" {
+		t.Fatal("disconnect remained connected")
 	}
 	if _, err := os.Stat(filepath.Join(s.agentDir, "session-status")); !os.IsNotExist(err) {
 		t.Fatal("old activity directory was created")

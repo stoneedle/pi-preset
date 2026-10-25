@@ -9,11 +9,10 @@ export default defineConfig({
   retries: isCI ? 1 : 0,
   workers: 2,
   reporter: isCI ? [["html", { open: "never" }], ["list"]] : [["list"]],
-  globalSetup: "./global-setup.ts",
   use: {
     trace: "on-first-retry",
-    // baseURL is injected per-test by the fixture in lib/test.ts from the
-    // server started in global-setup (random free port).
+    // Each worker owns an isolated server/agent directory via lib/test.ts.
+    // Worker teardown also stops its detached test runtimes.
   },
   projects: [
     { name: "Desktop Chrome", use: { ...devices["Desktop Chrome"] } },

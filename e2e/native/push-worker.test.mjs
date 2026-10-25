@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { IDBFactory } from 'fake-indexeddb';
 
-const source = readFileSync(fileURLToPath(new URL('../../internal/ui/embedded/assets/sw.js', import.meta.url)), 'utf8');
+const source = readFileSync(fileURLToPath(new URL('../../web/src/push-worker.js', import.meta.url)), 'utf8');
 
 function workerHarness() {
   const indexedDB = new IDBFactory();
@@ -57,10 +57,11 @@ test('production worker persists dedup, ignores reordered/read events, and click
   const harness = workerHarness();
   let dispatch = harness.boot();
   const data = { eventId: 'one', kind: 'completed', sessionId: 'session one.jsonl', identity: 'r1',
-    sequence: 1, tag: 'session-tag', title: 'Reply ready', body: 'Host / session / state',
+    sequence: 1, tag: 'session-tag', title: 'Reply ready', body: '',
     url: 'https://untrusted.invalid/api/chat' };
   await dispatch('push', { data: { json: () => data } });
   assert.equal(harness.shown.size, 1);
+  assert.equal(harness.shown.get(data.tag).body, '');
   let focused = 0, navigated = 0;
   harness.setWindows([{ url: harness.origin + '/session?id=other.jsonl', focus: async () => focused++, navigate: async () => navigated++ }]);
   await dispatch('notificationclick', { notification: harness.shown.get(data.tag) });

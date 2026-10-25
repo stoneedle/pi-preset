@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"pi-web/internal/sessions"
+	"pi-web/internal/workers"
 )
 
 type runtimeSnapshot struct {
@@ -30,11 +31,11 @@ type runtimeSnapshot struct {
 	LeafID        *string         `json:"leafId"`
 	Unread        *bool           `json:"unread"`
 	Completed     bool            `json:"completed"`
-	CompletedAt   int64           `json:"completedAt"`
 	Outcome       string          `json:"outcome,omitempty"`
 	AttentionID   string          `json:"attentionId,omitempty"`
 	AttentionKind string          `json:"attentionKind,omitempty"`
 	CanControl    bool            `json:"canControl"`
+	CanQueue      bool            `json:"canQueue"`
 	CWD           string          `json:"cwd,omitempty"`
 	ChatAvailable bool            `json:"chatAvailable"`
 	Model         string          `json:"model,omitempty"`
@@ -42,13 +43,14 @@ type runtimeSnapshot struct {
 	Provider      string          `json:"provider,omitempty"`
 	Thinking      string          `json:"thinking,omitempty"`
 	Context       json.RawMessage `json:"context,omitempty"`
+	Usage         json.RawMessage `json:"usage,omitempty"`
 	CacheHit      *float64        `json:"cacheHit"`
 	Fast          any             `json:"fast"`
 	Diagnostic    string          `json:"diagnostic,omitempty"`
 }
 
 type ownerObservation struct {
-	owner  remoteOwner
+	owner  workers.Registration
 	cancel context.CancelFunc
 }
 
@@ -63,18 +65,14 @@ func (s *Server) runtimeState(id string) runtimeSnapshot {
 
 func (s *Server) sessionState(id string) string { return s.runtimeState(id).State }
 
-func (s *Server) RuntimeIdle(id string) bool {
-	snapshot := s.runtimeState(id)
-	return snapshot.Availability == "connected" && !snapshot.MainRunning && snapshot.Children != nil && *snapshot.Children == 0 && snapshot.State == "idle"
-}
-
-func (s *Server) publishRuntime(id string, owner remoteOwner, snapshot runtimeSnapshot) {
+func (s *Server) publishRuntime(id string, owner workers.Registration, snapshot runtimeSnapshot) {
 	s.lastKnownMu.Lock()
 	observation, ok := s.observations[id]
 	if !ok || observation.owner != owner {
 		s.lastKnownMu.Unlock()
 		return
 	}
+	s.executors.Observe(id, owner)
 	if s.runtimeStates == nil {
 		s.runtimeStates = make(map[string]runtimeSnapshot)
 	}
@@ -99,15 +97,14 @@ func (s *Server) publishRuntime(id string, owner remoteOwner, snapshot runtimeSn
 // Discovery records only locate an owner. Their timestamps never determine activity.
 func (s *Server) discoverOwners(ctx context.Context) {
 	files, _ := os.ReadDir(filepath.Join(s.agentDir, "pi-web", "owners"))
-	found := make(map[string]remoteOwner)
+	found := make(map[string]workers.Registration)
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl.json") {
 			continue
 		}
 		id := strings.TrimSuffix(file.Name(), ".json")
-		data, err := readRuntimeFile(filepath.Join(s.agentDir, "pi-web", "owners", file.Name()))
-		var owner remoteOwner
-		if err != nil || json.Unmarshal(data, &owner) != nil || !owner.valid() {
+		owner, err := workers.ReadRegistration(filepath.Join(s.agentDir, "pi-web", "owners", file.Name()))
+		if err != nil {
 			continue
 		}
 		found[id] = owner
@@ -120,6 +117,7 @@ func (s *Server) discoverOwners(ctx context.Context) {
 			snapshot := s.runtimeStates[id]
 			snapshot.ID, snapshot.State, snapshot.Availability, snapshot.CanControl = id, "unknown", "disconnected", false
 			s.runtimeStates[id] = snapshot
+			s.executors.Observe(id, observation.owner)
 			data, _ := json.Marshal(snapshot)
 			s.broadcast(globalSessID, "event: status-delta\ndata: "+string(data))
 			s.broadcast(id, "event: status-delta\ndata: "+string(data))
@@ -132,7 +130,7 @@ func (s *Server) discoverOwners(ctx context.Context) {
 		ownerCtx, cancel := context.WithCancel(ctx)
 		s.observations[id] = ownerObservation{owner, cancel}
 		s.wg.Add(1)
-		go func(id string, owner remoteOwner) { defer s.wg.Done(); s.observeOwner(ownerCtx, id, owner) }(id, owner)
+		go func(id string, owner workers.Registration) { defer s.wg.Done(); s.observeOwner(ownerCtx, id, owner) }(id, owner)
 	}
 	s.lastKnownMu.Unlock()
 }
@@ -154,7 +152,7 @@ func (s *Server) runOwnerDiscovery() {
 	}
 }
 
-func (s *Server) observeOwner(ctx context.Context, id string, owner remoteOwner) {
+func (s *Server) observeOwner(ctx context.Context, id string, owner workers.Registration) {
 	for ctx.Err() == nil {
 		err := s.readOwnerStream(ctx, id, owner)
 		if ctx.Err() != nil {
@@ -174,7 +172,7 @@ func (s *Server) observeOwner(ctx context.Context, id string, owner remoteOwner)
 	}
 }
 
-func (s *Server) readOwnerStream(ctx context.Context, id string, owner remoteOwner) error {
+func (s *Server) readOwnerStream(ctx context.Context, id string, owner workers.Registration) error {
 	header, err := s.cache.ResolveHeader(s.sessionsDir, id)
 	if err != nil || header.Session.SessionUUID != owner.SessionID {
 		return fmt.Errorf("runtime owner does not match native session header")
@@ -291,11 +289,9 @@ func (s *Server) handleAcknowledgement(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 500, err.Error())
 		return
 	}
-	if owner, err := s.remoteOwner(resolved.Session); err == nil && owner != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
-		defer cancel()
-		_, _ = owner.call(ctx, map[string]any{"action": "acknowledge", "sessionId": resolved.Session.SessionUUID, "replyId": body.ReplyID})
-	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	_, _ = s.executors.Control(ctx, resolved, map[string]any{"action": "acknowledge", "replyId": body.ReplyID})
 	current = s.sessionSnapshot(resolved.Session.SessionSummary)
 	if current.ReplyID == body.ReplyID {
 		unread := false

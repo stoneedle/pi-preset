@@ -4,7 +4,7 @@ import { watch, type FSWatcher } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { SessionState } from './lib/session-state.ts';
 import { openRemote } from './lib/remote.ts';
-import { SessionTitle, firstUserText, titleModel } from './lib/title/session-title.ts';
+import { SessionTitle, firstUserText, openingTaskText, titleModel } from './lib/title/session-title.ts';
 import { externalBadge, renderTitle } from './lib/title/format.ts';
 import { observeTerminalFocus } from './lib/title/focus.ts';
 import management from './lib/management.ts';
@@ -24,7 +24,7 @@ export default function (pi: ExtensionAPI) {
   function render() {
     if (!ctxRef || ctxRef.mode !== 'tui' || !state) return;
     const snapshot = state.snapshot();
-    ctxRef.ui.setTitle(renderTitle({ state: snapshot.state, unread: snapshot.unread === true,
+    ctxRef.ui.setTitle(renderTitle({ ...snapshot,
       cwdName: basename(ctxRef.cwd), title: title?.name,
       badge: externalBadge(process.env.PI_TITLE_GLYPHS_STATUS_FILE
         ?? join(getAgentDir(), 'extension-data', 'pi-title-glyphs', `status-${process.pid}.json`)),
@@ -110,16 +110,21 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_tree', updateContext);
   pi.on('model_select', updateContext);
   pi.on('thinking_level_select', updateContext);
-  pi.on('message_end', updateContext);
+  pi.on('message_end', async (event, ctx) => {
+    if (state?.sessionId !== ctx.sessionManager.getSessionId()) return;
+    updateContext(event, ctx);
+    const text = openingTaskText(event.message);
+    if (!text || title?.name) return;
+    try {
+      if (remote) await remote.initialize(text);
+      else title?.initialize(text);
+    } catch (error) { ctx.ui.notify(`自动命名失败： ${error}`, 'error'); }
+    render();
+  });
   pi.on('input', (event, ctx) => {
     if (state?.sessionId !== ctx.sessionManager.getSessionId()) return;
     updateContext(event, ctx);
-    if (event.source === 'extension') return;
     if (event.source === 'interactive') { focused = true; acknowledge(); }
-    if (event.text) {
-      if (remote) void remote.initialize(event.text).catch((error) => ctx.ui.notify(`自动命名失败： ${error}`, 'error'));
-      else title?.initialize(event.text);
-    }
     render();
   });
   pi.on('agent_start', (_event, ctx) => {

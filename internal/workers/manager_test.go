@@ -3,351 +3,231 @@ package workers
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"pi-web/internal/chat"
+	"pi-web/internal/sessions"
 )
 
 type fakeChatWorker struct {
-	mu              sync.Mutex
-	streaming       bool
-	prompts         []map[string]any
-	commands        []SlashCommand
-	getCommandsCall int
+	mu         sync.Mutex
+	state      State
+	actions    []string
+	closed     atomic.Int32
+	onPrompt   func()
+	onCommands func()
 }
 
-func (f *fakeChatWorker) Prompt(ctx context.Context, chat chat.Request) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cmd := map[string]any{"id": "test", "type": "prompt", "message": chat.Message}
-	if f.streaming {
-		cmd["streamingBehavior"] = "steer"
+func (w *fakeChatWorker) record(action string) {
+	w.mu.Lock()
+	w.actions = append(w.actions, action)
+	w.mu.Unlock()
+}
+func (w *fakeChatWorker) Prompt(context.Context, chat.Request) error {
+	w.record("send")
+	if w.onPrompt != nil {
+		w.onPrompt()
 	}
-	f.prompts = append(f.prompts, cmd)
-	f.streaming = true
 	return nil
 }
-
-func (f *fakeChatWorker) Status() WorkerStatus {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.streaming {
-		return WorkerStatus{State: WorkerStateRunning}
+func (w *fakeChatWorker) SetModel(context.Context, string, string) error {
+	w.record("model")
+	return nil
+}
+func (w *fakeChatWorker) SetThinkingLevel(context.Context, string) error {
+	w.record("thinking")
+	return nil
+}
+func (w *fakeChatWorker) Abort(context.Context) error { w.record("abort"); return nil }
+func (w *fakeChatWorker) GetCommands(context.Context) ([]SlashCommand, error) {
+	if w.onCommands != nil {
+		w.onCommands()
 	}
-	return WorkerStatus{State: WorkerStateIdle}
+	return []SlashCommand{{Name: "reload", Source: "extension"}, {Name: "skill:memory", Source: "skill"}}, nil
+}
+func (w *fakeChatWorker) Status() WorkerStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return WorkerStatus{State: w.state}
+}
+func (w *fakeChatWorker) Close() error { w.closed.Add(1); return nil }
+
+func target(id string) sessions.ResolvedSession {
+	return sessions.ResolvedSession{Session: sessions.Session{SessionSummary: sessions.SessionSummary{ID: id, SessionUUID: id, ChatAvailable: true}}, Path: "/fixture/" + id}
 }
 
-func (f *fakeChatWorker) SetModel(ctx context.Context, provider, modelID string) error { return nil }
-
-func (f *fakeChatWorker) SetThinkingLevel(ctx context.Context, level string) error { return nil }
-func (f *fakeChatWorker) Abort(ctx context.Context) error                          { return nil }
-
-func (f *fakeChatWorker) GetState(ctx context.Context) (WorkerStatus, error) {
-	return f.Status(), nil
+func send(m *Manager, id string, settings *chat.Settings) error {
+	_, err := m.Control(context.Background(), target(id), map[string]any{"action": "send", "chat": chat.Request{Message: "message", Settings: settings}})
+	return err
 }
 
-func (f *fakeChatWorker) GetCommands(ctx context.Context) ([]SlashCommand, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.getCommandsCall++
-	return f.commands, nil
-}
-
-func (f *fakeChatWorker) Close() error { return nil }
-
-func TestManagerCreatesOneWorkerPerSession(t *testing.T) {
-	created := 0
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) {
-		created++
+func TestManagerCreatesAndReusesOneWorkerPerSession(t *testing.T) {
+	var created atomic.Int32
+	m := NewManager(func(id, path string) (ChatWorker, error) {
+		if path != "/fixture/"+id {
+			t.Error("resume changed session path")
+		}
+		created.Add(1)
 		return &fakeChatWorker{}, nil
-	}, nil)
+	}, "")
+	t.Cleanup(func() { m.Close() })
+	for _, id := range []string{"a.jsonl", "b.jsonl", "a.jsonl"} {
+		if err := send(m, id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if created.Load() != 2 {
+		t.Fatalf("created=%d", created.Load())
+	}
+}
 
-	ctx := context.Background()
-	if err := manager.Send(ctx, "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "a"}); err != nil {
+func TestManagerSerializesConcurrentStartAndDelivery(t *testing.T) {
+	var created atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	worker := &fakeChatWorker{}
+	m := NewManager(func(string, string) (ChatWorker, error) {
+		created.Add(1)
+		close(started)
+		<-release
+		return worker, nil
+	}, "")
+	t.Cleanup(func() { m.Close() })
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := send(m, "a.jsonl", nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	if created.Load() != 1 || len(worker.actions) != 8 {
+		t.Fatalf("created=%d actions=%v", created.Load(), worker.actions)
+	}
+}
+
+func TestManagerPassiveCommandsDoNotStartWorkers(t *testing.T) {
+	var created atomic.Int32
+	m := NewManager(func(string, string) (ChatWorker, error) { created.Add(1); return &fakeChatWorker{}, nil }, "")
+	t.Cleanup(func() { m.Close() })
+	for _, action := range []string{"model", "thinking", "speed", "commands", "models", "abort", "acknowledge"} {
+		if _, err := m.Control(context.Background(), target("a.jsonl"), map[string]any{"action": action}); err == nil {
+			t.Fatalf("%s started a dormant session", action)
+		}
+	}
+	if created.Load() != 0 {
+		t.Fatal("passive controls created worker")
+	}
+}
+
+func TestManagerExplicitNewSessionStartsWithoutPrompt(t *testing.T) {
+	worker := &fakeChatWorker{}
+	m := NewManager(func(string, string) (ChatWorker, error) { return worker, nil }, "")
+	t.Cleanup(func() { m.Close() })
+	if err := m.Ensure(context.Background(), target("new.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Send(ctx, "b.jsonl", "/tmp/b.jsonl", chat.Request{Message: "b"}); err != nil {
+	if len(worker.actions) != 0 {
+		t.Fatal("prepare sent a message")
+	}
+	response, err := m.Control(context.Background(), target("new.jsonl"), map[string]any{"action": "commands"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Send(ctx, "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "again"}); err != nil {
+	commands := response["commands"].([]SlashCommand)
+	if len(commands) != 1 || commands[0].Name != "skill:memory" {
+		t.Fatalf("commands=%v", commands)
+	}
+}
+
+func TestManagerAppliesFrozenSettingsBeforeFirstPrompt(t *testing.T) {
+	worker := &fakeChatWorker{}
+	m := NewManager(func(string, string) (ChatWorker, error) { return worker, nil }, "")
+	t.Cleanup(func() { m.Close() })
+	if err := send(m, "a.jsonl", &chat.Settings{Provider: "test", ModelID: "selected", Thinking: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(worker.actions, []string{"model", "thinking", "send"}) {
+		t.Fatal(worker.actions)
+	}
+	if err := send(m, "a.jsonl", &chat.Settings{Speed: "fast"}); err == nil {
+		t.Fatal("unsupported setting must fail before sending")
+	}
+	if len(worker.actions) != 3 {
+		t.Fatal("failed settings delivered message")
+	}
+}
+
+func TestManagerFailedStartIsNotReplayedAndNextSendResumes(t *testing.T) {
+	created := 0
+	m := NewManager(func(string, string) (ChatWorker, error) {
+		created++
+		if created == 1 {
+			return nil, errors.New("startup failed")
+		}
+		return &fakeChatWorker{}, nil
+	}, "")
+	t.Cleanup(func() { m.Close() })
+	if send(m, "a.jsonl", nil) == nil || created != 1 {
+		t.Fatal("failed start was silently retried")
+	}
+	if err := send(m, "a.jsonl", nil); err != nil {
 		t.Fatal(err)
 	}
 	if created != 2 {
-		t.Fatalf("created workers = %d, want 2", created)
+		t.Fatal(created)
 	}
 }
 
-func TestManagerGetCommandsPeeksWithoutSpawning(t *testing.T) {
+func TestManagerReplacesErroredWorkerOnlyOnNewSend(t *testing.T) {
+	worker := &fakeChatWorker{}
 	created := 0
-	manager := NewManager(func(string, string) (ChatWorker, error) {
+	m := NewManager(func(string, string) (ChatWorker, error) {
 		created++
+		if created == 1 {
+			return worker, nil
+		}
 		return &fakeChatWorker{}, nil
-	}, nil)
-
-	cmds, ready, err := manager.GetCommands(context.Background(), "missing.jsonl")
-	if err != nil {
-		t.Fatalf("GetCommands error: %v", err)
-	}
-	if ready {
-		t.Fatalf("ready = true, want false when no worker exists")
-	}
-	if len(cmds) != 0 {
-		t.Fatalf("commands = %#v, want none", cmds)
-	}
-	if created != 0 {
-		t.Fatalf("created = %d, want 0 (peek must not spawn)", created)
-	}
-}
-
-func TestManagerGetCommandsReturnsWorkerCommands(t *testing.T) {
-	worker := &fakeChatWorker{commands: []SlashCommand{{Name: "skill:memory", Source: "skill"}}}
-	manager := NewManager(func(string, string) (ChatWorker, error) { return worker, nil }, nil)
-	if err := manager.EnsureWorker(context.Background(), "a.jsonl", "/tmp/a.jsonl"); err != nil {
-		t.Fatal(err)
-	}
-	cmds, ready, err := manager.GetCommands(context.Background(), "a.jsonl")
-	if err != nil {
-		t.Fatalf("GetCommands error: %v", err)
-	}
-	if !ready {
-		t.Fatalf("ready = false, want true when worker exists")
-	}
-	if len(cmds) != 1 || cmds[0].Name != "skill:memory" {
-		t.Fatalf("commands = %#v", cmds)
-	}
-}
-
-func TestManagerReportsMissingWorkerIdle(t *testing.T) {
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) { return &fakeChatWorker{}, nil }, nil)
-	status := manager.Status("missing.jsonl")
-	if status.State != WorkerStateIdle {
-		t.Fatalf("status = %q, want idle", status.State)
-	}
-}
-
-func TestManagerStatusReportsRunningWhileSendSpawnsWorker(t *testing.T) {
-	spawnStarted := make(chan struct{})
-	releaseSpawn := make(chan struct{})
-	manager := NewManager(func(string, string) (ChatWorker, error) {
-		close(spawnStarted)
-		<-releaseSpawn
-		return &fakeChatWorker{}, nil
-	}, nil)
-
-	sendDone := make(chan error, 1)
-	go func() {
-		sendDone <- manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"})
-	}()
-	<-spawnStarted
-	// The worker is still spawning: without the pending-send mark this would
-	// report idle and the queue drainer would dispatch queued items into the
-	// still-starting run.
-	if status := manager.Status("a.jsonl"); status.State != WorkerStateRunning {
-		t.Fatalf("status during worker spawn = %q, want running", status.State)
-	}
-	close(releaseSpawn)
-	if err := <-sendDone; err != nil {
-		t.Fatal(err)
-	}
-	// The worker's own Running status has taken over by the time the pending
-	// mark is released — no observable idle dip.
-	if status := manager.Status("a.jsonl"); status.State != WorkerStateRunning {
-		t.Fatalf("status after prompt ack = %q, want running", status.State)
-	}
-}
-
-func TestManagerStatusIdleAfterFailedSend(t *testing.T) {
-	manager := NewManager(func(string, string) (ChatWorker, error) {
-		return nil, errors.New("spawn failed")
-	}, nil)
-
-	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err == nil {
-		t.Fatal("Send should surface the spawn error")
-	}
-	if status := manager.Status("a.jsonl"); status.State != WorkerStateIdle {
-		t.Fatalf("status after failed send = %q, want idle", status.State)
-	}
-}
-
-func TestManagerEvictsErroredWorker(t *testing.T) {
-	created := 0
-	factory := func(sessionID, sessionPath string) (ChatWorker, error) {
-		created++
-		return &fakeChatWorker{}, nil
-	}
-	manager := NewManager(factory, nil)
-	ctx := context.Background()
-	if err := manager.Send(ctx, "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "a"}); err != nil {
-		t.Fatal(err)
-	}
-	// Force the existing worker into an error state.
-	manager.mu.Lock()
-	dead := manager.workers["a.jsonl"].(*fakeChatWorker)
-	manager.mu.Unlock()
-	dead.mu.Lock()
-	dead.streaming = false
-	dead.mu.Unlock()
-	// Replace its Status by swapping in a wrapper that reports error.
-	manager.mu.Lock()
-	manager.workers["a.jsonl"] = erroredWorker{}
-	manager.mu.Unlock()
-
-	if err := manager.Send(ctx, "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "retry"}); err != nil {
-		t.Fatal(err)
-	}
-	if created != 2 {
-		t.Fatalf("created workers = %d, want 2 (errored worker should be replaced)", created)
-	}
-}
-
-// reapableWorker implements idleReportable so the reaper will evict it once
-// it has been idle longer than the manager's TTL.
-type reapableWorker struct {
-	idleFor time.Duration
-	closed  bool
-}
-
-func (r *reapableWorker) Prompt(ctx context.Context, chat chat.Request) error          { return nil }
-func (r *reapableWorker) SetModel(ctx context.Context, provider, modelID string) error { return nil }
-func (r *reapableWorker) SetThinkingLevel(ctx context.Context, level string) error     { return nil }
-func (r *reapableWorker) Abort(ctx context.Context) error                              { return nil }
-func (r *reapableWorker) GetState(ctx context.Context) (WorkerStatus, error)           { return r.Status(), nil }
-func (r *reapableWorker) GetCommands(ctx context.Context) ([]SlashCommand, error)      { return nil, nil }
-func (r *reapableWorker) Status() WorkerStatus                                         { return WorkerStatus{State: WorkerStateIdle} }
-func (r *reapableWorker) Close() error                                                 { r.closed = true; return nil }
-func (r *reapableWorker) IdleSince(now time.Time) time.Duration                        { return r.idleFor }
-
-func TestManagerReapsIdleWorkersBeyondTTL(t *testing.T) {
-	w := &reapableWorker{idleFor: time.Hour}
-	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute, nil)
-	defer manager.Close()
-	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err != nil {
-		t.Fatal(err)
-	}
-	manager.reapOnce(time.Now())
-	manager.mu.Lock()
-	_, present := manager.workers["a.jsonl"]
-	manager.mu.Unlock()
-	if present {
-		t.Fatalf("worker should have been reaped")
-	}
-	if !w.closed {
-		t.Fatalf("reaped worker should have been Closed")
-	}
-}
-
-func TestManagerKeepsFreshWorker(t *testing.T) {
-	w := &reapableWorker{idleFor: time.Second}
-	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute, nil)
-	defer manager.Close()
-	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err != nil {
-		t.Fatal(err)
-	}
-	manager.reapOnce(time.Now())
-	manager.mu.Lock()
-	_, present := manager.workers["a.jsonl"]
-	manager.mu.Unlock()
-	if !present {
-		t.Fatalf("fresh worker should not be reaped")
-	}
-}
-
-func TestManagerDoesNotReapRunningWorker(t *testing.T) {
-	// streaming=true → Status reports running, so reap should skip even if idle for > TTL.
-	w := &runningReapable{}
-	manager := NewManagerWithTTL(func(string, string) (ChatWorker, error) { return w, nil }, time.Minute, nil)
-	defer manager.Close()
-	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "hi"}); err != nil {
-		t.Fatal(err)
-	}
-	manager.reapOnce(time.Now())
-	manager.mu.Lock()
-	_, present := manager.workers["a.jsonl"]
-	manager.mu.Unlock()
-	if !present {
-		t.Fatalf("running worker should not be reaped")
-	}
-}
-
-type runningReapable struct{}
-
-func (runningReapable) Prompt(ctx context.Context, chat chat.Request) error          { return nil }
-func (runningReapable) SetModel(ctx context.Context, provider, modelID string) error { return nil }
-func (runningReapable) SetThinkingLevel(ctx context.Context, level string) error     { return nil }
-func (runningReapable) Abort(ctx context.Context) error                              { return nil }
-func (runningReapable) GetState(ctx context.Context) (WorkerStatus, error) {
-	return WorkerStatus{State: WorkerStateRunning}, nil
-}
-func (runningReapable) GetCommands(ctx context.Context) ([]SlashCommand, error) { return nil, nil }
-func (runningReapable) Status() WorkerStatus                                    { return WorkerStatus{State: WorkerStateRunning} }
-func (runningReapable) Close() error                                            { return nil }
-func (runningReapable) IdleSince(now time.Time) time.Duration                   { return time.Hour }
-
-type erroredWorker struct{}
-
-func (erroredWorker) Prompt(ctx context.Context, chat chat.Request) error          { return nil }
-func (erroredWorker) SetModel(ctx context.Context, provider, modelID string) error { return nil }
-func (erroredWorker) SetThinkingLevel(ctx context.Context, level string) error     { return nil }
-func (erroredWorker) Abort(ctx context.Context) error                              { return nil }
-func (erroredWorker) GetState(ctx context.Context) (WorkerStatus, error) {
-	return WorkerStatus{State: WorkerStateError}, nil
-}
-func (erroredWorker) GetCommands(ctx context.Context) ([]SlashCommand, error) { return nil, nil }
-func (erroredWorker) Status() WorkerStatus {
-	return WorkerStatus{State: WorkerStateError, Error: "dead"}
-}
-func (erroredWorker) Close() error { return nil }
-
-func TestBusyWorkerUsesSteeringCommand(t *testing.T) {
-	worker := &fakeChatWorker{streaming: true}
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) { return worker, nil }, nil)
-	if err := manager.Send(context.Background(), "a.jsonl", "/tmp/a.jsonl", chat.Request{Message: "steer"}); err != nil {
+	}, "")
+	t.Cleanup(func() { m.Close() })
+	if err := send(m, "a.jsonl", nil); err != nil {
 		t.Fatal(err)
 	}
 	worker.mu.Lock()
-	defer worker.mu.Unlock()
-	if len(worker.prompts) != 1 {
-		t.Fatalf("prompts = %d, want 1", len(worker.prompts))
+	worker.state = WorkerStateError
+	worker.mu.Unlock()
+	if err := send(m, "a.jsonl", nil); err != nil {
+		t.Fatal(err)
 	}
-	if worker.prompts[0]["streamingBehavior"] != "steer" {
-		t.Fatalf("streamingBehavior = %v, want steer", worker.prompts[0]["streamingBehavior"])
+	if created != 2 || worker.closed.Load() != 1 {
+		t.Fatal("did not replace failed process")
 	}
 }
 
-func TestManagerFactoryReceivesSessionIDAndPath(t *testing.T) {
-	var gotID, gotPath string
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) {
-		gotID = sessionID
-		gotPath = sessionPath
-		return &fakeChatWorker{}, nil
-	}, nil)
-
-	if err := manager.EnsureWorker(context.Background(), "a.jsonl", "/tmp/a.jsonl"); err != nil {
+func TestManagerCanceledSendNeverStartsWorker(t *testing.T) {
+	m := NewManager(func(string, string) (ChatWorker, error) { t.Fatal("canceled send started worker"); return nil, nil }, "")
+	t.Cleanup(func() { m.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := m.Control(ctx, target("a.jsonl"), map[string]any{"action": "send", "chat": chat.Request{Message: "canceled"}})
+	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
-	}
-	if gotID != "a.jsonl" || gotPath != "/tmp/a.jsonl" {
-		t.Fatalf("factory got id=%q path=%q, want a.jsonl /tmp/a.jsonl", gotID, gotPath)
 	}
 }
 
-func TestEnsureWorkerCreatesWorkerWithoutSendingMessage(t *testing.T) {
-	created := 0
-	manager := NewManager(func(sessionID, sessionPath string) (ChatWorker, error) {
-		created++
-		return &fakeChatWorker{}, nil
-	}, nil)
-
-	ctx := context.Background()
-	if err := manager.EnsureWorker(ctx, "a.jsonl", "/tmp/a.jsonl"); err != nil {
+func TestManagerClosedNeverStartsWorker(t *testing.T) {
+	m := NewManager(func(string, string) (ChatWorker, error) { t.Fatal("started after close"); return nil, nil }, "")
+	if err := m.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if created != 1 {
-		t.Fatalf("created workers = %d, want 1", created)
-	}
-	status := manager.Status("a.jsonl")
-	if status.State != WorkerStateIdle {
-		t.Fatalf("status = %q, want idle", status.State)
+	if err := send(m, "a.jsonl", nil); err == nil {
+		t.Fatal("closed manager accepted send")
 	}
 }

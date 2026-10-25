@@ -1,3 +1,5 @@
+import { beginControl, beginRead } from './remote-activity.js';
+
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
     const finish = (error) => {
@@ -15,57 +17,69 @@ function wait(ms, signal) {
 
 export async function request(url, options = {}) {
   const safe = !options.method || options.method === 'GET' || options.method === 'HEAD';
-  const { signal, timeout = safe ? 12000 : 45000, retries = safe ? 2 : 0, ...init } = options;
-  for (let attempt = 0; ; attempt++) {
-    signal?.throwIfAborted();
-    const controller = new AbortController();
-    const abort = () => controller.abort(signal.reason);
-    signal?.addEventListener('abort', abort, { once: true });
-    const timeoutError = Object.assign(
-      new Error(safe ? '读取超时，正在重新连接。' : '请求超时，结果尚未确认；请查看会话后再试。'),
-      { retryable: true },
-    );
-    const timer = setTimeout(() => controller.abort(timeoutError), timeout);
-    let retryAfter = 0;
-    try {
-      // The deadline also covers body download and interrupted browser/network adapters.
-      const operation = (async () => {
-        const response = await fetch(url, {
-          ...init,
-          signal: controller.signal,
-          headers: { Accept: 'application/json', ...init.headers },
-        });
-        retryAfter = Math.min(
-          30000,
-          Math.max(0, Number(response.headers.get('Retry-After')) * 1000),
-        );
-        const data = response.headers.get('content-type')?.includes('application/json')
-          ? await response.json()
-          : { error: await response.text() };
-        if (!response.ok)
-          throw Object.assign(new Error(data.error || `HTTP ${response.status}`), {
-            retryable: [408, 429, 500, 502, 503, 504].includes(response.status),
-            status: response.status,
-          });
-        return data;
-      })();
-      return await Promise.race([
-        operation,
-        new Promise((_, reject) => {
-          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
-            once: true,
-          });
-        }),
-      ]);
-    } catch (error) {
+  const {
+    signal,
+    timeout = safe ? 12000 : 45000,
+    retries = safe ? 2 : 0,
+    background = false,
+    ...init
+  } = options;
+  const finish = safe ? (background ? () => {} : beginRead()) : beginControl();
+  try {
+    for (let attempt = 0; ; attempt++) {
       signal?.throwIfAborted();
-      error.retryable ??= error instanceof TypeError || error instanceof SyntaxError;
-      if (!safe || !error.retryable || attempt >= retries) throw error;
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      signal?.addEventListener('abort', abort, { once: true });
+      const timeoutError = Object.assign(
+        new Error(safe ? '读取超时，正在重新连接。' : '请求超时，结果尚未确认；请查看会话后再试。'),
+        { retryable: true },
+      );
+      const timer = setTimeout(() => controller.abort(timeoutError), timeout);
+      let retryAfter = 0;
+      try {
+        // The deadline also covers body download and interrupted browser/network adapters.
+        const operation = (async () => {
+          const response = await fetch(url, {
+            priority: background ? 'low' : 'auto',
+            ...init,
+            signal: controller.signal,
+            headers: { Accept: 'application/json', ...init.headers },
+          });
+          retryAfter = Math.min(
+            30000,
+            Math.max(0, Number(response.headers.get('Retry-After')) * 1000),
+          );
+          const data = response.headers.get('content-type')?.includes('application/json')
+            ? await response.json()
+            : { error: await response.text() };
+          if (!response.ok)
+            throw Object.assign(new Error(data.error || `HTTP ${response.status}`), {
+              retryable: [408, 429, 500, 502, 503, 504].includes(response.status),
+              status: response.status,
+            });
+          return data;
+        })();
+        return await Promise.race([
+          operation,
+          new Promise((_, reject) => {
+            controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
+              once: true,
+            });
+          }),
+        ]);
+      } catch (error) {
+        signal?.throwIfAborted();
+        error.retryable ??= error instanceof TypeError || error instanceof SyntaxError;
+        if (!safe || !error.retryable || attempt >= retries) throw error;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+      }
+      await wait(Math.max(retryAfter, 400 * 2 ** attempt * (0.8 + Math.random() * 0.4)), signal);
     }
-    await wait(Math.max(retryAfter, 400 * 2 ** attempt * (0.8 + Math.random() * 0.4)), signal);
+  } finally {
+    finish();
   }
 }
 
@@ -156,14 +170,4 @@ export function createRuntimeStateStore() {
       return value;
     },
   };
-}
-
-export function mergeMessages(current, incoming) {
-  const updates = new Map(incoming.map((message) => [message.id, message]));
-  const merged = current.map((message) => {
-    const next = updates.get(message.id);
-    updates.delete(message.id);
-    return next || message;
-  });
-  return [...merged, ...updates.values()];
 }

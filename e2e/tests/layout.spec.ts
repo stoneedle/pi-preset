@@ -1,5 +1,5 @@
 import { test, expect } from '../lib/test';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildSession, uniqueSessionName, writeSession, appendEntry, assistantTextEntry } from '../lib/sessions';
 import { openFixtureOwner } from '../lib/runtime-owner.mjs';
@@ -19,10 +19,15 @@ test('首页单行入口展开为全屏草稿，选择无历史项目后发送�
   const projectSessions = '/api/sessions?project=' + encodeURIComponent(workingDir) + '&limit=100';
   const before = (await (await request.get(projectSessions)).json()).total;
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: '会话', exact: true })).toBeVisible();
+  await expect(page.locator('.remote-heading button, .remote-heading svg')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '模型设置', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '开始新任务', exact: true }).click();
   const editor = page.getByRole('dialog', { name: '新对话', exact: true });
   await expect(editor).toBeVisible();
+  await expect(editor).not.toContainText(new URL(page.url()).host);
+  await expect(editor.locator('.new-task-context > *')).toHaveCount(1);
+  await expect(editor.getByRole('button', { name: '选择项目', exact: true })).toBeVisible();
   await editor.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('A draft that must survive closing');
   expect((await (await request.get(projectSessions)).json()).total).toBe(before);
   await editor.getByRole('button', { name: '选择项目', exact: true }).click();
@@ -48,7 +53,7 @@ test('首页单行入口展开为全屏草稿，选择无历史项目后发送�
   await page.keyboard.press('Escape');
   await editor.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page).toHaveURL(/\/session\?id=/);
-  await expect(page.locator('article').last()).toContainText('Stub reply: A draft that must survive closing');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Stub reply: A draft that must survive closing');
   await expect.poll(async () => {
     const status = await (await request.get('/api/status?id=' + encodeURIComponent(new URL(page.url()).searchParams.get('id')!))).json();
     return {thinking:status.thinking,mode:status.fast?.mode};
@@ -72,7 +77,7 @@ test('配色随系统实时切换且首页与全屏编辑器在320px均不横向
   await expect(send).toBeInViewport();
 });
 
-test('项目固定按名称排序，工具活动和失败不移动会话，成功完成的置顶跨刷新保留', async ({page,request,sessionsDir,workingDir,agentDir}, info) => {
+test('项目固定按名称排序，工具活动、停止和成功完成均不移动会话', async ({page,request,sessionsDir,workingDir,agentDir}, info) => {
   const prefix = uniqueSessionName(info,'stable-sort').replace(/\.jsonl$/,'');
   const alpha = join(workingDir,'Alpha'), zulu = join(workingDir,'Zulu');
   mkdirSync(alpha); mkdirSync(zulu);
@@ -110,34 +115,44 @@ test('项目固定按名称排序，工具活动和失败不移动会话，成�
     const result = assistantTextEntry('tool-2','Stable completion');
     appendEntry(sessionsDir,older.id,result.entry);
     completed = true; owner.publish();
-    await expect.poll(order).toEqual([older.id,newer.id]);
+    await expect.poll(order).toEqual([newer.id,older.id]);
     await expect(projects).toHaveText(['Alpha','Zulu']);
     await owner.close();
     await page.reload();
     await page.getByRole('searchbox').fill(prefix);
-    await expect.poll(order).toEqual([older.id,newer.id]);
+    await expect.poll(order).toEqual([newer.id,older.id]);
     await expect(projects).toHaveText(['Alpha','Zulu']);
   } finally { await owner.close(); }
 });
 
-test('模型、思考强度和闪电速度入口修改原生状态，而非仅更换显示', async ({page,request,sessionsDir,workingDir},info) => {
+test('休眠历史会话首条消息前可选择模型、强度和速度，发送前先应用设置', async ({page,request,sessionsDir,workingDir,agentDir},info) => {
   const native = buildSession({cwd:workingDir});
   const id = writeSession(sessionsDir,uniqueSessionName(info,'model-popover'),native.entries);
-  await request.post('/api/session/continue?id=' + encodeURIComponent(id),{data:{}});
+  await page.route(/\/api\/project-options\?/, route => route.fulfill({json:{models:[
+    {provider:'test',id:'other-model',name:'Other model',thinkingLevels:['off','low','medium','high']},
+  ]}}));
+  const ownerFile = join(agentDir,'pi-web','owners',id+'.json');
   await page.goto('/session?id=' + encodeURIComponent(id));
   await page.getByRole('button',{name:'模型设置',exact:true}).click();
   const picker = page.getByRole('dialog',{name:'模型设置',exact:true});
   await picker.getByRole('group',{name:'模型',exact:true}).getByRole('button',{name:'Other model test',exact:true}).click();
   await picker.getByRole('group',{name:'思考强度',exact:true}).getByRole('button',{name:'高',exact:true}).click();
   await picker.getByRole('group',{name:'速度',exact:true}).getByRole('button',{name:'快速',exact:true}).click();
-  await expect.poll(async () => (await (await request.get('/api/status?id=' + encodeURIComponent(id))).json()).fast?.mode).toBe('fast');
+  expect(existsSync(ownerFile)).toBe(false);
   await picker.getByRole('button',{name:'关闭模型设置',exact:true}).click();
+  await page.getByRole('textbox',{name:'给 Pi 发消息…',exact:true}).fill('First message with selected settings');
+  await page.getByRole('button',{name:'发送',exact:true}).click();
+  await expect(page.getByText('Stub reply: First message with selected settings',{exact:true})).toBeVisible();
+  await expect.poll(async () => {
+    const state = await (await request.get('/api/status?id=' + encodeURIComponent(id))).json();
+    return [state.model,state.thinking,state.fast?.mode];
+  }).toEqual(['other-model','high','fast']);
   await expect(page.locator('.model-trigger')).toContainText('Other model');
   await expect(page.locator('.model-trigger')).toContainText('高');
   await expect(page.locator('.model-fast')).toHaveAttribute('title','快速');
 });
 
-test('分页外项目仍显示未读，子任务仅发完成状态时也会加载并置顶', async ({page,sessionsDir,workingDir,agentDir,request},info) => {
+test('分页外项目仍显示未读，子任务完成不擅自加载或重排会话', async ({page,sessionsDir,workingDir,agentDir,request},info) => {
   const prefix = uniqueSessionName(info,'unloaded-completion').replace(/\.jsonl$/,'');
   const inboxPath = join(workingDir,'Inbox'), otherPath = join(workingDir,'Other');
   mkdirSync(inboxPath); mkdirSync(otherPath);
@@ -162,7 +177,8 @@ test('分页外项目仍显示未读，子任务仅发完成状态时也会加�
     await expect.poll(async () => (await (await request.get('/api/session?id=' + encodeURIComponent(id))).json()).window.messages.at(-1).id).toBe(reply.id);
     await expect(project.locator('.remote-session')).toHaveCount(0);
     state = 'idle'; completed = true; owner.publish();
-    await expect(project.locator('.remote-session')).toHaveCount(1);
+    await expect(project.locator('.remote-project-unread')).toBeVisible();
+    await expect(project.locator('.remote-session')).toHaveCount(0);
     await expect(page.locator('.remote-project-label strong')).toHaveText(['Inbox','Other']);
   } finally { await owner.close(); }
 });

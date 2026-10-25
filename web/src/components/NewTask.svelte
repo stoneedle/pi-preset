@@ -1,15 +1,20 @@
 <script>
   import { onDestroy, flushSync } from 'svelte';
-  import { icon, X, Folder, ChevronsUpDown, Terminal } from '../shared/icons.js';
+  import { icon, X, Folder, ChevronsUpDown } from '../shared/icons.js';
   import { request } from '../remote-api.js';
+  import { beginControl } from '../remote-activity.js';
   import {
     newTaskDraft as draft,
     lastSubmittedProject,
     rememberSubmittedProject,
-    sessionComposer,
+    moveNewTaskDraft,
+    captureDraft,
+    completeDraft,
+    submitSessionMessage,
   } from '../remote-drafts.svelte.js';
   import RemoteComposer from './RemoteComposer.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
+  import RefreshError from './RefreshError.svelte';
   let dialog = $state(null);
   let opened = $state(false);
   let closing = $state(false);
@@ -21,7 +26,7 @@
   let modelsError = $state('');
   let optionsEpoch = 0;
   let optionsController;
-  const host = location.host;
+  let disposed = false;
   const post = (url, body) =>
     request(url, {
       method: 'POST',
@@ -32,11 +37,13 @@
   export function isOpen() {
     return dialog?.open || false;
   }
-  export function open() {
+  export function open(path) {
+    if (typeof path === 'string' && path && !draft.createdId) draft.path = path;
     if (!draft.path) draft.path = lastSubmittedProject();
     draft.error = '';
     closing = false;
     clearTimeout(closeTimer);
+    draft.open = true;
     flushSync(() => (opened = true));
     dialog.showModal();
     textarea?.focus({ preventScroll: true });
@@ -80,33 +87,21 @@
     }
   }
   function navigate(id) {
+    if (disposed || !dialog?.open) return;
     dialog.close();
     history.pushState(null, '', '/session?id=' + encodeURIComponent(id));
     window.dispatchEvent(new PopStateEvent('popstate'));
   }
-  function clearContext() {
-    draft.createdId = '';
-    draft.path = '';
-    draft.modelEdited = false;
-    draft.thinkingEdited = false;
-    draft.model = '';
-    draft.provider = '';
-    draft.thinking = '';
-    draft.fast = null;
+  function selectedSettings() {
+    return {
+      ...(draft.provider && draft.model ? { provider: draft.provider, modelId: draft.model } : {}),
+      ...(draft.thinking ? { thinking: draft.thinking } : {}),
+      ...(draft.fast?.mode ? { speed: draft.fast.mode } : {}),
+    };
   }
   function recover() {
     const id = draft.createdId;
-    const target = sessionComposer(id);
-    if (draft.text && target.text !== draft.text)
-      target.text = [target.text, draft.text].filter(Boolean).join('\n\n');
-    target.images = [
-      ...target.images,
-      ...draft.images.filter((image) => !target.images.includes(image)),
-    ];
-    draft.text = '';
-    draft.images = [];
-    draft.error = '';
-    clearContext();
+    moveNewTaskDraft(id, selectedSettings());
     navigate(id);
   }
   async function send(event) {
@@ -114,43 +109,27 @@
     if (draft.sending || !draft.path || (!draft.text.trim() && !draft.images.length)) return;
     draft.sending = true;
     draft.error = '';
-    const submittedText = draft.text,
-      submittedImages = draft.images;
-    const settings = {
-      provider: draft.provider,
-      model: draft.model,
-      thinking: draft.thinking,
-      mode: draft.fast?.mode,
-    };
+    const submitted = captureDraft(draft, selectedSettings());
+    const finish = beginControl();
     try {
       if (!draft.createdId)
         draft.createdId = (await post('/api/new-session', { path: draft.path })).id;
-      const suffix = '?id=' + encodeURIComponent(draft.createdId);
-      if (settings.provider && settings.model)
-        await post('/api/set-model' + suffix, {
-          provider: settings.provider,
-          modelId: settings.model,
-        });
-      if (settings.thinking)
-        await post('/api/set-thinking-level' + suffix, { level: settings.thinking });
-      if (settings.mode) await post('/api/set-speed' + suffix, { mode: settings.mode });
-      const form = new FormData();
-      form.set('message', submittedText);
-      for (const image of submittedImages) form.append('images', image);
-      await request('/api/chat' + suffix, { method: 'POST', body: form });
+      if (!(await submitSessionMessage(draft.createdId, submitted, draft))) return;
       rememberSubmittedProject(draft.path);
       const id = draft.createdId;
-      if (draft.text === submittedText) draft.text = '';
-      draft.images = draft.images.filter((image) => !submittedImages.includes(image));
-      clearContext();
+      completeDraft(draft, submitted);
+      moveNewTaskDraft(id);
       navigate(id);
     } catch (err) {
       draft.error = err.message;
     } finally {
       draft.sending = false;
+      finish();
     }
   }
   onDestroy(() => {
+    disposed = true;
+    draft.open = false;
     optionsEpoch++;
     clearTimeout(closeTimer);
     optionsController?.abort();
@@ -164,6 +143,8 @@
   aria-label="新对话"
   bind:this={dialog}
   onclose={() => {
+    if (dialog.open) return;
+    draft.open = false;
     opened = false;
     closing = false;
     optionsEpoch++;
@@ -184,7 +165,6 @@
     <div class="new-task-body">
       <div class="new-task-space"></div>
       <div class="new-task-context">
-        <div class="new-task-host">{@html icon(Terminal, { size: 20 })}<span>{host}</span></div>
         <button
           class="new-task-project"
           type="button"
@@ -197,9 +177,10 @@
           >{@html icon(ChevronsUpDown, { size: 16 })}
         </button>
       </div>
+      <RefreshError />
       {#if draft.error}<p class="new-task-error" role="alert">{draft.error}</p>{/if}
-      {#if draft.createdId && draft.error}<p class="new-task-recovery">
-          会话已创建，草稿仍保留。<button type="button" onclick={recover}>打开会话继续</button>
+      {#if draft.createdId && (draft.error || draft.recoveries.length)}<p class="new-task-recovery">
+          会话已创建，内容仍保留。<button type="button" onclick={recover}>打开会话继续</button>
         </p>{/if}
       <RemoteComposer
         composer={draft}
@@ -325,12 +306,11 @@
     min-height: 12px;
   }
   .new-task-context {
-    flex: 0 1 auto;
+    flex: none;
     min-height: 0;
     overflow: auto;
     margin: 0 12px 16px;
   }
-  .new-task-host,
   .new-task-project {
     display: flex;
     align-items: center;

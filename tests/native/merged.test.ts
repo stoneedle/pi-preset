@@ -104,12 +104,10 @@ test('one real merged extension owns native controls, snapshots, branch results 
   assert.equal((await snapshot()).state, 'idle');
   assert.equal((await snapshot()).replyId, firstReply);
   assert.equal((await snapshot()).completed, true);
-  const firstCompletedAt = (await snapshot()).completedAt;
-  assert.ok(firstCompletedAt > 0, 'completion time comes from the successful native settle');
   assert.equal((await snapshot()).unread, true);
   assert.equal((await call('acknowledge', { replyId: firstReply })).status, 200);
   assert.equal((await snapshot()).unread, false);
-  assert.equal((await snapshot()).completedAt, firstCompletedAt, 'acknowledgement cannot reorder a session');
+  assert.equal((await snapshot()).completed, true, 'acknowledgement preserves completion');
   for (const outcome of ['error', 'aborted']) {
     await session.extensionRunner!.emit({ type: 'agent_start' });
     manager.appendMessage({ role: 'assistant', content: [], api: 'test', model: 'test', provider: 'test', stopReason: outcome, timestamp: Date.now() } as any);
@@ -121,7 +119,7 @@ test('one real merged extension owns native controls, snapshots, branch results 
   manager.branch(firstReply);
   await session.extensionRunner!.emit({ type: 'session_tree', newLeafId: firstReply } as any);
   assert.equal((await snapshot()).outcome, 'stop', 'a later abort must not overwrite an earlier branch result outcome');
-  assert.equal((await snapshot()).completedAt, firstCompletedAt, 'branch navigation preserves the original completion time');
+  assert.equal((await snapshot()).completed, true, 'branch navigation preserves the original completion receipt');
   manager.appendMessage({ role: 'user', content: 'Next', timestamp: Date.now() });
   await session.extensionRunner!.emit({ type: 'agent_start' });
   const secondReply = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Second result' }],
@@ -183,18 +181,12 @@ test('one real merged extension owns native controls, snapshots, branch results 
     assert.equal(JSON.parse(readFileSync(ownerFile, 'utf8')).token, originalToken, 'a peer cannot replace a live owner');
     await peerSession.extensionRunner!.emit({ type: 'agent_start' });
     await session.extensionRunner!.emit({ type: 'session_shutdown' });
-    for (let attempt = 0; attempt < 80; attempt++) {
-      try { owner = JSON.parse(readFileSync(ownerFile, 'utf8')); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      if (owner.token !== originalToken) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.notEqual(owner.token, originalToken, 'a surviving peer must acquire the vacant registration');
-    assert.equal((await snapshot()).state, 'running', 'the new owner publishes its own native execution');
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(existsSync(ownerFile), false, 'an old peer must not promote its stale execution context');
     assert.deepEqual(errors, []);
   } finally {
     await peerSession.extensionRunner!.emit({ type: 'session_shutdown' });
     peerSession.dispose();
   }
-  assert.equal(existsSync(ownerFile), false, 'peer shutdown revokes its registration and discovery');
+  assert.equal(existsSync(ownerFile), false, 'peer shutdown does not claim a missing owner');
 });

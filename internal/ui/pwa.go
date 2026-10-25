@@ -2,14 +2,12 @@ package ui
 
 import (
 	_ "embed"
+	"io/fs"
 	"net/http"
 )
 
 //go:embed embedded/assets/manifest.webmanifest
 var manifestJSON string
-
-//go:embed embedded/assets/sw.js
-var swJS string
 
 //go:embed embedded/assets/icon.svg
 var iconSVG string
@@ -29,10 +27,14 @@ var iconMaskablePNG []byte
 //go:embed embedded/assets/pi-logo.svg
 var piLogoSVG string
 
-func RegisterPWAHandlers(mux *http.ServeMux) {
+func RegisterPWAHandlers(mux *http.ServeMux, frontend fs.FS) {
+	sw, err := fs.ReadFile(frontend, "sw.js")
+	if err != nil {
+		panic("frontend service worker missing: " + err.Error())
+	}
 	for path, asset := range map[string]struct{ content, kind string }{
 		"/manifest.webmanifest":  {manifestJSON, "application/manifest+json"},
-		"/sw.js":                 {swJS, "application/javascript; charset=utf-8"},
+		"/sw.js":                 {string(sw), "application/javascript; charset=utf-8"},
 		"/icon.svg":              {iconSVG, "image/svg+xml"},
 		"/icon-192.png":          {string(icon192PNG), "image/png"},
 		"/icon-512.png":          {string(icon512PNG), "image/png"},

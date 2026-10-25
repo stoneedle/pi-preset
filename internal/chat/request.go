@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -21,9 +22,32 @@ type Image struct {
 	MimeType string `json:"mimeType"`
 }
 
+type Settings struct {
+	Provider string `json:"provider,omitempty"`
+	ModelID  string `json:"modelId,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+	Speed    string `json:"speed,omitempty"`
+}
+
+func (s Settings) Commands() []map[string]any {
+	commands := make([]map[string]any, 0, 3)
+	if s.Provider != "" && s.ModelID != "" {
+		commands = append(commands, map[string]any{"action": "model", "provider": s.Provider, "modelId": s.ModelID})
+	}
+	if s.Thinking != "" {
+		commands = append(commands, map[string]any{"action": "thinking", "level": s.Thinking})
+	}
+	if s.Speed != "" {
+		commands = append(commands, map[string]any{"action": "speed", "mode": s.Speed})
+	}
+	return commands
+}
+
 type Request struct {
-	Message string  `json:"message"`
-	Images  []Image `json:"images"`
+	Message  string    `json:"message"`
+	Images   []Image   `json:"images"`
+	Settings *Settings `json:"settings,omitempty"`
+	Delivery string    `json:"delivery,omitempty"`
 }
 
 func ParseRequest(r *http.Request, maxImageBytes, maxRequestBytes int64) (Request, error) {
@@ -32,7 +56,20 @@ func ParseRequest(r *http.Request, maxImageBytes, maxRequestBytes int64) (Reques
 		return Request{}, err
 	}
 
-	chat := Request{Message: strings.TrimSpace(r.FormValue("message"))}
+	chat := Request{Message: strings.TrimSpace(r.FormValue("message")), Delivery: r.FormValue("delivery")}
+	if chat.Delivery != "" && chat.Delivery != "followUp" {
+		return Request{}, errors.New("invalid message delivery")
+	}
+	if settings := r.FormValue("settings"); settings != "" {
+		var selected Settings
+		if err := json.Unmarshal([]byte(settings), &selected); err != nil {
+			return Request{}, errors.New("invalid message settings")
+		}
+		if (selected.Provider == "") != (selected.ModelID == "") {
+			return Request{}, errors.New("model provider and id must be selected together")
+		}
+		chat.Settings = &selected
+	}
 	if r.MultipartForm == nil {
 		if chat.Message == "" {
 			return Request{}, ErrEmptyRequest

@@ -269,9 +269,9 @@ func (p *pushModule) send(ctx context.Context, job *pushDelivery) (string, strin
 	}
 	topicBytes := sha256.Sum256([]byte(p.keys.Public + "\x00" + event.SessionID + "\x00" + event.Kind))
 	topic := base64.RawURLEncoding.EncodeToString(topicBytes[:24])
-	body := strings.TrimPrefix(strings.TrimPrefix(subscription.Origin, "https://"), "http://")
+	body := ""
 	if event.Kind == "attention" {
-		body += " · 需要终端交互"
+		body = "需要终端交互"
 		if reason := (map[string]string{"select": "选择选项", "confirm": "确认操作", "input": "输入文本", "editor": "编辑文本", "custom": "自定义终端对话框"})[event.Reason]; reason != "" {
 			body += "：" + reason
 		}

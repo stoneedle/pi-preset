@@ -18,6 +18,9 @@
     <key>KeepAlive</key>
     <true/>
 
+    <key>AbandonProcessGroup</key>
+    <true/>
+
     <key>StandardOutPath</key>
     <string>/tmp/pi-web.log</string>
 

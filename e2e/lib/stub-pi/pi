@@ -25,7 +25,7 @@ function append(role, text, images = []) {
 function run(message, images = []) {
   const delay = /\[\[slow:(\d+)\]\]/.exec(message);
   const text = message.replace(/\s*\[\[slow:\d+\]\]\s*/, '').trim();
-  state = 'running'; send({ type: 'agent_start' }); append('user', text, images); owner.publish();
+  state = 'running'; send({ type: 'agent_start' }); append('user', message, images); owner.publish();
   timer = setTimeout(() => {
     append('assistant', `Stub reply: ${text}`);
     send({ type: 'agent_end' });
@@ -45,6 +45,7 @@ const owner = await openFixtureOwner({ agentDir: process.env.PI_CODING_AGENT_DIR
     switch (input.action) {
       case 'send': prompt(input.chat.message, input.chat.images || [], input.chat.delivery); break;
       case 'abort': abort(); break;
+      case 'retire': if (state !== 'idle') throw new Error('not idle'); return { status: 'retiring' };
       case 'thinking': thinkingLevel = input.level; break;
       case 'speed': speed = input.mode; break;
       case 'model': model = { id: input.modelId, name: input.modelId, provider: input.provider }; break;
@@ -66,6 +67,7 @@ input.on('line', (line) => {
     case 'set_thinking_level': thinkingLevel = command.level; owner.publish(); respond(command.id, command.type, { thinkingLevel }); break;
     case 'abort': abort(); respond(command.id, command.type); break;
     case 'prompt': respond(command.id, command.type); prompt(command.message, command.images, command.streamingBehavior); break;
+    case 'follow_up': respond(command.id, command.type); prompt(command.message, command.images, 'followUp'); break;
     default: send({ type: 'response', id: command.id, success: false, error: 'unsupported command' });
   }
 });

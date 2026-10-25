@@ -214,7 +214,8 @@ test("signature-only thinking never creates an empty expandable row or message",
   const requests = await openBlocks({ page, sessionsDir, workingDir }, info);
   await expect(
     page.locator(".remote-block-name").filter({ hasText: /^思考$/ }),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
+  await expect(page.locator('.remote-block-thinking')).toHaveCount(1);
   await expect(page.locator('[data-message-id="signature-only"]')).toHaveCount(
     0,
   );
@@ -296,13 +297,10 @@ test("thinking has a bounded preview without downloading folded bodies", async (
     false,
   );
   await thinking.click();
-  await expect(page.locator(".remote-block pre").first()).toContainText(
-    "full-thinking-body-only-after-click",
+  await expect(page.locator('.remote-block-thinking .remote-markdown')).toContainText(
+    'full-thinking-body-only-after-click',
   );
-  await expect(page.locator(".remote-thinking")).toHaveCSS(
-    "white-space",
-    "pre-wrap",
-  );
+  await expect(page.locator('.remote-block-thinking .remote-markdown p')).not.toHaveCount(0);
   await page.screenshot({
     path: info.outputPath("thinking-expanded.png"),
     fullPage: true,

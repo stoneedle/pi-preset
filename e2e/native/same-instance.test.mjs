@@ -53,7 +53,7 @@ test('authenticated phone controls the installed merged extension in the same na
           await options?.onPayload?.({ text }, model);
           stream.push({ type: 'start', partial: message });
           await new Promise((resolve) => {
-            const timeout = setTimeout(done, text.includes('silent') ? 16000 : text === 'delivery boundary' ? 2500 : 80);
+            const timeout = setTimeout(done, text.includes('silent') ? 16000 : text === 'queue boundary' ? 5000 : text === 'delivery boundary' ? 2500 : 80);
             function done() { clearTimeout(timeout); options?.signal?.removeEventListener('abort', done); resolve(); }
             options?.signal?.addEventListener('abort', done, { once: true });
           });
@@ -105,6 +105,20 @@ test('authenticated phone controls the installed merged extension in the same na
     assert.equal(response.status, 200); return response.json();
   };
   const status = () => api(`/api/status?id=${encodeURIComponent(id)}`);
+  const fork = async (body = {}, expected = 201) => {
+    const response = await fetch(server.baseURL + '/api/session/fork?id=' + encodeURIComponent(id), {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, origin: server.baseURL, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    assert.equal(response.status, expected, JSON.stringify(result));
+    if (expected !== 201) return result;
+    const copy = SessionManager.open(join(root, 'sessions', '--native--', result.id));
+    assert.notEqual(copy.getSessionId(), manager.getSessionId());
+    assert.equal(copy.getHeader().parentSession, manager.getSessionFile());
+    assert.equal(existsSync(join(root, 'pi-web', 'owners', result.id + '.json')), false);
+    return copy;
+  };
   const pushPublicKey = (await api('/api/push/config')).publicKey;
   const completedEvents = (resultId) => {
     const db = new DatabaseSync(join(root, 'pi-web.sqlite'), { readOnly: true });
@@ -114,13 +128,15 @@ test('authenticated phone controls the installed merged extension in the same na
   };
   await expect.poll(async () => (await status()).availability).toBe('connected');
   assert.equal((await status()).completed, false, 'historical restore cannot manufacture a completion');
+  assert.deepEqual((await status()).usage, { input: 1, output: 1 });
+  assert.equal((await status()).canQueue, true);
   assert.equal(completedEvents(historicalResult).length, 0, 'historical restore must not enter the notification outbox');
   assert.equal((await fetch(server.baseURL + '/api/status?id=' + encodeURIComponent(id))).status, 401);
   await page.goto(`${server.baseURL}/session?id=${encodeURIComponent(id)}&token=${token}`);
   await expect(page.locator('.model-trigger')).toContainText('one');
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('phone text');
   await page.getByRole('button', { name: "发送", exact: true }).click();
-  await expect(page.locator('article').last()).toContainText('Native reply: phone text');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: phone text');
   assert.ok(manager.getBranch().some((entry) => entry.message?.role === 'user' && JSON.stringify(entry.message.content).includes('phone text')));
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('/pro');
   await page.getByRole('button', { name: /skill:probe/ }).click();
@@ -129,28 +145,37 @@ test('authenticated phone controls the installed merged extension in the same na
   await page.locator('input[type=file]').setInputFiles({ name: 'photo.png', mimeType: 'image/png',
     buffer: await page.screenshot() });
   await page.getByRole('button', { name: "发送", exact: true }).click();
-  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: photo');
   assert.equal(modelCalls.at(-1).images, 1);
   await session.waitForIdle();
   const photoLeaf = manager.getLeafId();
   const firstResult = manager.getBranch().find((entry) => entry.message?.role === 'assistant' && JSON.stringify(entry.message.content).includes('Native reply: phone text')).id;
   await session.navigateTree(firstResult, { summarize: false });
-  await expect(page.locator('article').last()).toContainText('Native reply: phone text');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: phone text');
   await expect(page.locator('.remote-main')).not.toContainText('Native reply: photo');
   assert.equal((await status()).unread, false);
+  const sourceBeforeFork = readFileSync(manager.getSessionFile(), 'utf8');
+  const branchCopy = await fork();
+  assert.ok(branchCopy.getEntry(firstResult), 'includes the current entry');
+  assert.equal(branchCopy.getEntry(photoLeaf), undefined, 'uses live leaf, not the later disk tail');
+  assert.equal(manager.getLeafId(), firstResult, 'fork cannot move the source runtime');
+  assert.equal(readFileSync(manager.getSessionFile(), 'utf8'), sourceBeforeFork);
+  assert.deepEqual(JSON.parse(readFileSync(ownerFile, 'utf8')), originalOwner);
+  await fork({ entryId: photoLeaf }, 409);
   await session.navigateTree(photoLeaf, { summarize: false });
-  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: photo');
   const imageEntry = manager.getBranch().find((entry) => entry.message?.role === 'user' && Array.isArray(entry.message.content) && entry.message.content.some((part) => part.type === 'image'));
   assert.equal((await api(`/api/session/block?id=${encodeURIComponent(id)}&entry=${photoLeaf}&index=1`)).text, 'Native image reasoning');
   manager.resetLeaf();
   await session.extensionRunner.emit({ type: 'session_tree', newLeafId: null });
   assert.equal(manager.getBranch().length, 0);
+  await fork({}, 409);
   await expect.poll(async () => (await api(`/api/session?id=${encodeURIComponent(id)}`)).window.messages.length).toBe(0);
-  await expect(page.locator('article')).toHaveCount(0);
+  await expect(page.locator('[data-message-id]')).toHaveCount(0);
   for (const path of [`/api/session/block?id=${encodeURIComponent(id)}&entry=${photoLeaf}&index=1`, `/api/session/image?id=${encodeURIComponent(id)}&entry=${imageEntry.id}&index=0`])
     assert.equal((await fetch(server.baseURL + path, { headers: { authorization: `Bearer ${token}` } })).status, 404, 'known empty root must not expose previous-branch bodies');
   await session.navigateTree(photoLeaf, { summarize: false });
-  await expect(page.locator('article').last()).toContainText('Native reply: photo');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: photo');
   const previewDir = join(root, 'native-preview');
   mkdirSync(previewDir);
   writeFileSync(join(previewDir, 'index.html'), '<!doctype html><h1>Native prototype</h1><button>Try prototype</button><p></p><script type="module" src="./app.mjs"></script>');
@@ -160,7 +185,7 @@ test('authenticated phone controls the installed merged extension in the same na
   writeFileSync(join(previewDir, 'readme.md'), nativeDocument);
   const previewPath = pathToFileURL(join(previewDir, 'index.html')).href;
   await session.prompt(`[Native prototype](${previewPath}) and [Native document](${pathToFileURL(join(previewDir, 'readme.md')).href})`, { source: 'extension' });
-  await expect(page.locator('article').last()).toContainText('Native prototype');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native prototype');
   assert.equal((await context.cookies()).find((cookie) => cookie.name === 'pi_token').value, token);
   await page.getByRole('group', { name: 'index.html', exact: true }).last().getByRole('button', { name: "预览" }).click();
   const previewFrame = page.frameLocator('.remote-preview iframe');
@@ -190,19 +215,22 @@ test('authenticated phone controls the installed merged extension in the same na
   assert.equal(Buffer.concat(nativeChunks).toString(), nativeDocument);
   await session.navigateTree(firstResult, { summarize: false });
   await session.prompt('A different native branch', { source: 'extension' });
-  await expect(page.locator('article').last()).toContainText('A different native branch');
+  await expect(page.locator('[data-message-id]').last()).toContainText('A different native branch');
   await session.navigateTree(photoLeaf, { summarize: false });
-  await expect(page.locator('article').last()).toContainText('Native reply: photo');
-  const returnedImageResponse = page.waitForResponse((response) => response.url().includes('/api/session/image?'));
-  await page.getByRole('button', { name: "打开图片", exact: true }).click();
-  assert.equal((await returnedImageResponse).status(), 200);
-  await expect.poll(() => page.locator('.remote-block img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: photo');
+  await expect.poll(() => page.locator('.remote-image-preview img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('.remote-image-preview img')).toHaveAttribute('src', /thumbnail=1/);
+  await expect(page.getByRole('link', { name: "打开图片", exact: true })).not.toHaveAttribute('href', /[?&]thumbnail=/);
   const photoEntry = manager.getBranch().find((entry) => entry.message?.role === 'user' && Array.isArray(entry.message.content) && entry.message.content.some((part) => part.type === 'image'));
+  await expect(page.locator('.remote-image').getByRole('link', { name: '下载', exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: '打开图片', exact: true }).click();
+  const imagePreview = page.getByRole('dialog', { name: '预览', exact: true });
   const nativeImagePromise = page.waitForEvent('download');
-  await page.locator('.remote-image-actions').getByRole('link', { name: "下载" }).click();
+  await imagePreview.getByRole('link', { name: '下载', exact: true }).click();
   const nativeImageChunks = [];
   for await (const chunk of await (await nativeImagePromise).createReadStream()) nativeImageChunks.push(chunk);
   assert.deepEqual(Buffer.concat(nativeImageChunks), Buffer.from(photoEntry.message.content.find((part) => part.type === 'image').data, 'base64'));
+  await imagePreview.getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('button', {name:'模型设置',exact:true}).click();
   const modelSettings = page.getByRole('dialog', {name:'模型设置',exact:true});
   await modelSettings.getByRole('group', {name:'模型',exact:true}).getByRole('button', {name:'two remote-test',exact:true}).click();
@@ -215,7 +243,7 @@ test('authenticated phone controls the installed merged extension in the same na
   assert.equal(savedSettings.defaultModel, 'one');
   assert.equal(savedSettings.defaultThinkingLevel, 'medium');
   session.setThinkingLevel('low');
-  await expect(page.locator('.remote-info dd').last()).toHaveText('low');
+  await expect(page.locator('.model-thinking')).toHaveText('低');
   await page.locator('.remote-info summary').click();
   const deliveryStart = modelCalls.length;
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('delivery boundary');
@@ -224,17 +252,41 @@ test('authenticated phone controls the installed merged extension in the same na
   await expect(page.getByRole('combobox', { name: "消息投递" })).toHaveCount(0);
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('change direction');
   await page.getByRole('button', { name: "发送", exact: true }).click();
-  await expect(page.locator('article').last()).toContainText('Native reply: change direction');
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: change direction');
   assert.deepEqual(modelCalls.slice(deliveryStart).map((call) => call.text), ['delivery boundary', 'change direction']);
+  await session.waitForIdle();
+  const queueStart = modelCalls.length;
+  const queueRun = session.prompt('queue boundary', { source: 'extension' });
+  await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
+  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('native follow-up only');
+  await page.getByRole('button', { name: '发送', exact: true }).click({ button: 'right' });
+  await page.getByRole('menu', { name: '发送选项', exact: true }).getByRole('menuitem', { name: '排队', exact: true }).click();
+  await expect.poll(() => session.getFollowUpMessages()).toEqual(['native follow-up only']);
+  assert.deepEqual(modelCalls.slice(queueStart).map((call) => call.text), ['queue boundary']);
+  assert.equal(manager.getBranch().some((entry) => entry.message?.role === 'user' && JSON.stringify(entry.message.content).includes('native follow-up only')), false);
+  await queueRun;
+  await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: native follow-up only');
+  assert.deepEqual(modelCalls.slice(queueStart).map((call) => call.text), ['queue boundary', 'native follow-up only']);
+  await expect(page.locator('[data-recovery-message]')).toHaveCount(0);
+  assert.equal(typeof (await status()).usage.input, 'number');
+  assert.ok((await status()).usage.input > 0);
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('silent task');
   await page.getByRole('button', { name: "发送", exact: true }).click();
   await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
+  const runningLeaf = manager.getLeafId();
+  const runningSource = readFileSync(manager.getSessionFile(), 'utf8');
+  const runningCopy = await fork();
+  assert.ok(runningCopy.getEntry(runningLeaf));
+  assert.equal(session.isStreaming, true, 'fork must not abort an active response');
+  assert.equal(manager.getLeafId(), runningLeaf);
+  assert.equal(readFileSync(manager.getSessionFile(), 'utf8'), runningSource);
+  assert.deepEqual(JSON.parse(readFileSync(ownerFile, 'utf8')), originalOwner);
   await page.waitForTimeout(11000);
   await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
   await page.getByRole('button', { name: "停止主代理", exact: true }).click();
   await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'idle');
   assert.equal((await status()).outcome, 'aborted');
-  await page.goto(server.baseURL + '/');
+  await page.evaluate(() => { history.pushState(null, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); });
   await session.prompt('terminal result', { source: 'extension' });
   await expect.poll(async () => (await status()).unread).toBe(true, { message: 'list browsing must not acknowledge' });
   const notifiedResult = (await status()).replyId;
@@ -243,9 +295,9 @@ test('authenticated phone controls the installed merged extension in the same na
   assert.ok(!JSON.stringify(completedEvents(notifiedResult)).includes('Native reply: terminal result'));
   await api('/api/session/acknowledge?id=' + encodeURIComponent(id), { replyId: firstResult });
   assert.equal((await status()).unread, true, 'late old confirmation cannot clear the current result');
-  await page.goto(server.baseURL + '/session?id=' + encodeURIComponent(id));
+  await page.evaluate(id => { history.pushState(null, '', '/session?id=' + encodeURIComponent(id)); window.dispatchEvent(new PopStateEvent('popstate')); }, id);
   await expect.poll(async () => (await status()).unread).toBe(false);
-  await page.goto(server.baseURL + '/');
+  await page.evaluate(() => { history.pushState(null, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); });
   await session.prompt('offline terminal result', { source: 'extension' });
   const previewBeforeRestart = await api('/api/session/preview?id=' + encodeURIComponent(id), { path: previewPath });
   await stopServer(server.child);
@@ -266,6 +318,6 @@ test('authenticated phone controls the installed merged extension in the same na
   assert.equal(existsSync(join(root, 'session-status')), false);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ runtime: 'real Pi', ownerPidMatches: true, nativeMessages: manager.getBranch().filter((entry) => entry.type === 'message').length,
-    provider: 'deterministic test adapter', authenticatedHTTP: true, isolatedInteractivePreview: true, exactNativeDownload: true, returnedBranchImage: true, nativeNotificationOutbox: true, persistentPushCredentials: true, nativeBranchReturn: true, nativeSteerOnly: true, bidirectionalReceipts: true, goRestart: true, runtimeReload: true }));
+    provider: 'deterministic test adapter', authenticatedHTTP: true, isolatedInteractivePreview: true, exactNativeDownload: true, returnedBranchImage: true, nativeNotificationOutbox: true, persistentPushCredentials: true, nativeBranchReturn: true, nativeSteerAndFollowUp: true, bidirectionalReceipts: true, goRestart: true, runtimeReload: true }));
   } catch (error) { console.error(error); throw error; }
 });

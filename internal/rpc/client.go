@@ -33,10 +33,13 @@ func WriteCommand(w io.Writer, cmd map[string]any) error {
 
 func BuildPromptCommand(id string, chat chat.Request, streaming bool) map[string]any {
 	cmd := map[string]any{"id": id, "type": "prompt", "message": chat.Message}
+	if chat.Delivery == "followUp" {
+		cmd["type"] = "follow_up"
+	}
 	if len(chat.Images) > 0 {
 		cmd["images"] = chat.Images
 	}
-	if streaming {
+	if streaming && chat.Delivery != "followUp" {
 		cmd["streamingBehavior"] = "steer"
 	}
 	return cmd

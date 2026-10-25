@@ -180,6 +180,17 @@ export class SessionState {
         }
       }
     } catch (error) { receiptKnown = false; this.report(error); }
+    const usageTotals = { input: 0, output: 0 };
+    // Match the native footer: include usage entries, summaries and tool usage across the session.
+    for (const entry of this.ctx.sessionManager.getEntries()) {
+      const usage = entry.type === 'message'
+        ? (entry.message.role === 'assistant' || entry.message.role === 'toolResult' ? entry.message.usage : undefined)
+        : (entry.type === 'usage' || entry.type === 'branch_summary' || entry.type === 'compaction' ? entry.usage : undefined);
+      if (usage) {
+        usageTotals.input += usage.input;
+        usageTotals.output += usage.output;
+      }
+    }
     let cacheHit: number | null = null;
     const branch = this.ctx.sessionManager.getBranch();
     for (let i = branch.length - 1; i >= 0; i--) {
@@ -196,12 +207,12 @@ export class SessionState {
       id: this.id, name: (this.ctx.sessionManager.getSessionName() || '').slice(0, 160), sessionId: this.sessionId, instanceId: this.instanceId,
       state, mainRunning, children: this.children, replyId: result.id, leafId: this.ctx.sessionManager.getLeafId(),
       unread: result.id ? (receiptKnown ? !record?.acknowledged : null) : false,
-      completed: Boolean(record?.completed), completedAt: record?.completed_at || 0, outcome: childFailure ? 'error' : result.outcome,
-      attentionId: prompt?.id ?? null, attentionKind: prompt?.kind ?? null, availability: 'connected', canControl: true,
+      completed: Boolean(record?.completed), outcome: childFailure ? 'error' : result.outcome,
+      attentionId: prompt?.id ?? null, attentionKind: prompt?.kind ?? null, availability: 'connected', canControl: true, canQueue: true,
       model: this.ctx.model?.id, modelName: this.ctx.model?.name, provider: this.ctx.model?.provider,
       thinking: this.pi.getThinkingLevel(), context: this.ctx.getContextUsage() ?? null,
       cwd: this.ctx.cwd, chatAvailable: this.ctx.mode === 'tui' || this.ctx.mode === 'rpc',
-      cacheHit, fast: readFastState(this.pi, this.ctx.model), diagnostic: this.diagnostic,
+      usage: usageTotals, cacheHit, fast: readFastState(this.pi, this.ctx.model), diagnostic: this.diagnostic,
     };
   }
 
