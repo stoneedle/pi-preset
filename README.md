@@ -1,105 +1,92 @@
-# Pi Preset
+# 我的 Pi Preset
 
-我的 Pi 日常工作配置：追加系统提示词、自写扩展、技能、代理角色，以及第三方插件的固定版本清单。用于自己在两台 PC 间同步，也供他人阅读、取用和改造。
+我日常使用的 [Pi](https://pi.dev/) 提示词、扩展、技能和代理配置合集。
 
-这是通过 Git 管理并部署到 Pi 用户目录的 preset，不是把整个 `~/.pi` 打包，也不使用 `pi install` 安装本仓库。
+这里分享的是一套个人使用习惯：怎样约束 agent 的工作方式、怎样与 Gemini 协作、用哪些工具补充 Pi，以及哪些技能值得放在手边。自己的内容直接收录，第三方内容保留来源和许可证；独立维护的项目提供仓库链接。
 
-## 收录范围
+## 提示词与代理
 
-- `APPEND_SYSTEM.md`：现用追加系统提示词，初次收录保留原文。
-- `extensions/`：`agy-gemini`、bash 超时单位检查、Codex Fast 快捷键。
-- `skills/`：30 个现用技能及其脚本、参考资料、素材和许可证。
-- `agents/`、`references/`：自定义代理角色和协作约定。
-- `packages/inline-skill-completion/`：已改造的行内技能补全，保留上游 MIT。
-- `config/settings.json`：明确选出的共享设置，不含登录信息和机器路径。
-- `config/packages.json`：第三方插件的固定来源。已有独立开发仓库的 `pi-web` 以固定 Git 提交引用，不复制整个项目。
-- `config/sources.json`、[第三方声明](THIRD_PARTY_NOTICES.md)：技能和改造代码的来源。
-
-不收录 agy 技能、whiteboard、Hussar 技能、项目 memory、其他工具的符号链接技能，以及登录凭据、MCP 连接配置、会话、数据库、缓存、运行产物和 `node_modules`。`agy-gemini` 仍需要机器上另行安装并登录 **agy CLI**；排除的是 agy 技能，不是这个运行依赖。
-
-## 首次使用
-
-需要 Node.js 24+、npm、Git，以及已安装的 Pi（本次整理基于 Pi 1.4.0）。模型名称是个人配置，使用者应按自己实际可用的模型调整共享设置和代理定义。Chrome DevTools 等 MCP 工具的连接配置和登录态由各机器自己维护。
-
-```sh
-git clone <本仓库地址>
-cd pi-preset
-npm run status
-npm run setup
-```
-
-仓库本身没有 npm 运行依赖，无需先在根目录执行 `npm install`。`setup` 会应用受管文件、合并共享设置，安装清单中的第三方 Pi 包和 `agy-gemini` 依赖。安装过程需要网络，不会调用模型或产生 Gemini 请求。
-
-如果本机已有不同内容的同名文件，命令会在写入前停下，列出冲突。先核对 `npm run status`；希望保留本机内容时运行 `npm run capture` 并检查 `git diff`。确定使用仓库版本后才运行：
-
-```sh
-npm run apply -- --overwrite
-npm run setup
-```
-
-完成后重新启动 Pi 或 `/reload`。不在已有运行任务中自动重载或重启 Pi。
-
-### 本机开发仓库
-
-自己开发 `pi-web` 时，将 `config/machine.example.json` 复制为 `config/machine.local.json`，填写这台 PC 上的真实路径。这个文件被 Git 忽略，两台机器可以使用不同盘符或用户名。
-
-`setup` 不安装、构建或重启这些本机开发仓库。`pi-web` 的源码、未提交改动、服务安装与部署仍在它自己的 Git 仓库管理；preset 只保存引用。另一台 PC 需要在那个仓库提交、推送、拉取代码，而不是依赖 preset 带走未提交工作。
-
-没有本机覆盖时，使用共享清单中的固定 Git 提交。首次整理时 `pi-web` 有未提交改动，因此这个引用不等同于当时整个工作区的最新内容。
-
-## 两台 PC 的日常同步
-
-**优先直接修改本仓库，让 Git 保存配置的权威版本。**
-
-PC A：
-
-```sh
-# 修改提示词、扩展、技能或共享设置
-npm test
-npm run apply
-git add .
-git commit -m "调整我的 Pi 配置"
-git push
-```
-
-PC B：
-
-```sh
-git pull --ff-only
-npm run setup
-```
-
-若在 Pi 用户目录中直接改过已经收录的文件，先 `npm run capture` 将这些改动采回仓库，再检查 `git diff`。`capture` 只读取明确列入 `config/resources.json` 的文件及共享设置中的字段，不扫描整个个人目录，不采集凭据、未声明文件或包安装目录。包版本和来源变更直接修改 `config/packages.json`；新收录资源需加入 `config/resources.json`。
-
-管理入口：
-
-| 命令 | 行为 |
+| 内容 | 分享了什么 |
 |---|---|
-| `npm run status` | 只读预览文件差异和设置合并 |
-| `npm run apply` | 应用文件和设置，不联网安装依赖 |
-| `npm run setup` | 应用配置并安装缺少或版本不同的依赖 |
-| `npm run capture` | 采回已经受管的本机内容，不推断文件删除 |
+| [追加系统提示词](APPEND_SYSTEM.md) | 我的工程判断、沟通习惯、前端设计原则，以及浏览器、子代理和 Codemode 的使用约定 |
+| [Pi 设置](settings.json) | 模型、思考等级、上下文压缩、工具和显示偏好，不含登录凭据 |
+| [advisor](agents/advisor.md) | 独立工程顾问，讨论架构、取舍和关键假设 |
+| [implementer](agents/implementer.md) | 负责调查、实现、修复和工程交付的代理 |
+| [luna](agents/luna.md) | 检索、资料整理和做法已经明确的轻量任务 |
+| [designer](agents/designer.md) | 负责产品体验、交互和视觉表达的独立设计角色 |
+| [designer 协作约定](references/designer-collaboration.md) | 主 agent、设计者与用户之间怎样交接、决策和承接实现 |
 
-共享设置按字段递归合并，其他设置和无关插件保留；同包版本更新保留已有资源筛选。以后删除受管文件，只删除本机登记且未被另行修改的那份，不清空整个目录。安装清单删掉某个包时，不自动卸载它；是否卸载由用户通过 `pi remove` 明确决定。
+这些是我的实际偏好，不是通用最佳实践。模型名称、工具和路径可按自己的环境调整。
 
-安装记录位于 Pi 用户目录的 `pi-preset-state.json`，不进入仓库。默认使用 `~/.pi/agent` 和 `~/.agents`，也支持 `PI_CODING_AGENT_DIR`。预览、应用和采集可通过 `--home <目录>` 或 `--agent-dir <目录>` 指向隔离目录。
+## 扩展与改造
 
-## Codex Fast 的边界
+### [agy-gemini](extensions/agy-gemini/)
 
-本机 `@calesennett/pi-codex-fast` 有源码改动，但上游当前没有声明许可证。因此不收录它的原版源码、改造源码或补丁，只保留 npm 依赖引用和我们自己写的快捷键。
+把 agy CLI 接入 `pi-subagents`，让 Gemini 作为独立角色参与探索、设计和写作。支持连续讨论、异步执行和原始回复交付；协作身份随扩展注入，不需要在每次请求里重写双方约定。
 
-`setup` 遇到已经安装的同版本 npm 包时保留原目录，不会覆盖本机改造。新 PC 从 npm 安装的是上游发行版，**不会自动获得该插件的本机修改**。取得明确授权前，这部分不通过公开仓库同步。
+目录中包含扩展代码、[Gemini 协作身份](extensions/agy-gemini/collaboration.md)、[角色提示词](extensions/agy-gemini/role.md)和执行协议。依赖 `pi-subagents`，使用者需要自行安装并登录 agy CLI。
 
-## 验证
+### [行内技能补全](extensions/inline-skill-completion/)
 
-```sh
-npm test
-```
+基于 [CNife/pi-extensions](https://github.com/CNife/pi-extensions) 改造。在输入正文和后续行中使用 `/skill:` 补全，支持多个技能的折叠展示。保留上游 MIT 许可。
 
-测试在系统临时目录模拟两台 PC，覆盖真实仓库 CLI 部署、重复应用、冲突拦截、采集、设置合并、路径替换、受管删除及私人文件保留，并用隔离的假包管理进程验证 setup 的调用和跳过规则；不会写入真实用户目录、安装第三方包或调用模型。
+### 两个小扩展
 
-`agy-gemini` 的原有测试与烟测入口保留在其目录中。真实 Gemini 烟测需要单独明确授权，不属于 preset 同步测试。
+- [bash-timeout-guard.ts](extensions/bash-timeout-guard.ts)：拦截超过一小时的 bash 超时参数，提醒 agent 参数单位是秒，减少把毫秒误填成秒的问题。
+- [codex-fast-shortcut.ts](extensions/codex-fast-shortcut.ts)：通过 `Alt+Shift+F` 切换 Codex Fast 模式，并处理 Windows Tabby 的按键编码。需要另装 `pi-codex-fast`。
 
-## 许可证
+### [Pi Web](https://github.com/stoneedle/pi-web)
 
-原创配置、提示词和代码采用 [MIT](LICENSE)。第三方代码、技能、字体、品牌标记和其他素材遵循各自许可证与声明，根许可证不替代它们；详见 [第三方声明](THIRD_PARTY_NOTICES.md)。本仓库尚未自动发布到远端，公开前应检查自己的 Git 差异和文件清单。
+我单独维护的 Pi 手机遥控界面，侧重弱网下查看真实状态、完整阅读内容，以及继续电脑上的工作。项目继续放在自己的仓库中，这里作为合集入口，不复制整份源码。
+
+## 使用中的第三方插件
+
+这些插件不复制源码，链接到原项目或 npm。
+
+| 插件 | 本次收录时使用的版本 | 用途 |
+|---|---|---|
+| [pi-web-access](https://github.com/nicobailon/pi-web-access) | 0.37.0 | 网页搜索、内容读取与来源查证 |
+| [pi-codex-image-gen](https://www.npmjs.com/package/pi-codex-image-gen) | 0.1.15 | 通过 Codex 登录调用图片生成与编辑 |
+| [pi-subagents](https://github.com/nicobailon/pi-subagents) | 0.78.0 | 子代理委派、并行任务与异步协作 |
+| [pi-compact-transcript](https://github.com/avhagedorn/pi-compact-transcript) | 0.11.1 | 紧凑的会话记录展示 |
+| [pi-goal](https://www.npmjs.com/package/pi-goal) | 0.1.7 | 持续目标模式 |
+| [pi-codex-fast](https://github.com/calesennett/pi-codex-fast) | 0.1.11 | Codex Fast 模式 |
+
+`pi-codex-fast` 上游目前没有声明许可证，因此这里仅分享链接和我自己写的快捷键，不收录该插件源码、本机改造或补丁。
+
+## 技能合集
+
+每个链接都指向技能正文；有辅助脚本、参考资料或素材的技能一并保留。
+
+### 设计与可视化
+
+- [impeccable](skills/impeccable/SKILL.md)：前端体验、视觉设计、界面评审和打磨。来源：[pbakaus/impeccable](https://github.com/pbakaus/impeccable)。
+- [archify](skills/archify/SKILL.md)：将架构、流程、时序、数据流和状态关系做成可浏览的图示。来源：[tt-a1i/archify](https://github.com/tt-a1i/archify)。
+
+### 工程与协作
+
+以下技能来自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，保留了我的本地使用版本及其 MIT 许可。
+
+| 场景 | 技能 |
+|---|---|
+| 不确定该从哪里开始 | [ask-matt](skills/ask-matt/SKILL.md) |
+| 澄清问题、追问方案 | [grilling](skills/grilling/SKILL.md)、[grill-me](skills/grill-me/SKILL.md)、[grill-with-docs](skills/grill-with-docs/SKILL.md) |
+| 大任务规划与需求拆解 | [wayfinder](skills/wayfinder/SKILL.md)、[to-spec](skills/to-spec/SKILL.md)、[to-tickets](skills/to-tickets/SKILL.md)、[to-questionnaire](skills/to-questionnaire/SKILL.md) |
+| 调查与快速探索 | [research](skills/research/SKILL.md)、[prototype](skills/prototype/SKILL.md) |
+| 模块、架构与领域概念 | [codebase-design](skills/codebase-design/SKILL.md)、[improve-codebase-architecture](skills/improve-codebase-architecture/SKILL.md)、[domain-modeling](skills/domain-modeling/SKILL.md) |
+| 实现、诊断与评审 | [implement](skills/implement/SKILL.md)、[implement-spec](skills/implement-spec/SKILL.md)、[diagnosing-bugs](skills/diagnosing-bugs/SKILL.md)、[tdd](skills/tdd/SKILL.md)、[code-review](skills/code-review/SKILL.md) |
+| Issue 与 PR | [triage](skills/triage/SKILL.md)、[pr](skills/pr/SKILL.md)、[setup-matt-pocock-skills](skills/setup-matt-pocock-skills/SKILL.md) |
+| 交接、复盘与教学 | [handoff](skills/handoff/SKILL.md)、[retro](skills/retro/SKILL.md)、[teach](skills/teach/SKILL.md)、[wait-what](skills/wait-what/SKILL.md) |
+| 编写 agent 指令、引导人工操作 | [writing-for-agents](skills/writing-for-agents/SKILL.md)、[wizard](skills/wizard/SKILL.md) |
+
+另外还有 Vercel 的 [find-skills](skills/find-skills/SKILL.md)，用于发现可安装的技能。来源：[vercel-labs/skills](https://github.com/vercel-labs/skills)。
+
+## 按需取用
+
+可以直接阅读、复制所需内容，也可以 clone 或 fork 后保留自己的版本。追加提示词对应 Pi 用户目录的 `APPEND_SYSTEM.md`；技能按目录取用；扩展的依赖和使用方式见各自目录。
+
+不必整套采用，也不会自动更改使用者的 Pi 配置。登录凭据、会话、数据库、缓存，以及 agy 技能、whiteboard、Hussar 和项目 memory 不在分享范围内。
+
+## 许可
+
+原创部分采用 [MIT](LICENSE)。第三方内容遵循各自许可证，字体、品牌标记等素材另有条款，见 [第三方声明](THIRD_PARTY_NOTICES.md)。

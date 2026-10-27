@@ -7,7 +7,7 @@ fast: true
 thinking: max
 tools: read, bash, edit, write, grep, find, ls, web_enable, web_search, fetch_content, get_search_content
 extensions:
-  - {{agentDir}}/npm/node_modules/pi-web-access/dist/index.js
+  - ~/.pi/agent/npm/node_modules/pi-web-access/dist/index.js
 inheritProjectContext: true
 inheritSkills: false
 defaultContext: fresh

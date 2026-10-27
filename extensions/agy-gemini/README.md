@@ -36,6 +36,3 @@ SQLite 与原始回复位于系统临时目录；保留状态及 Pi 运行记录
 
 adapter 使用 `--mode plan --dangerously-skip-permissions` 读取用户授权的可信材料。只读行为由 planning 模式与提示词承担；OS 隔离需要独立的部署边界。
 
-## 验证
-
-`npm test` 检查 CLI 回复解析契约，不调用 Gemini。用户明确授权真实 Gemini 验证后，设置 `PI_SDK_ROOT` 指向实际 Pi SDK 并运行 `npm run smoke`，验证常驻角色、单一通用入口、完整声明传入 CLI、产品设计与两轮完善、只读材料、精确 artifact、重开后续聊，以及 native stop 终止 agy。
