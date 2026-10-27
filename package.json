@@ -1,0 +1,18 @@
+{
+  "name": "@stoneedle/pi-preset",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "个人 Pi 扩展、技能与提示词配置，供多台 PC 同步与开源分享",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "status": "node scripts/sync.mjs status",
+    "apply": "node scripts/sync.mjs apply",
+    "capture": "node scripts/sync.mjs capture",
+    "setup": "node scripts/setup.mjs",
+    "test": "node --test tests/*.test.mjs"
+  }
+}

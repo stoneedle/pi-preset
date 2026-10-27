@@ -1,0 +1,36 @@
+[
+  {
+    "id": "pi-web-access",
+    "source": "npm:pi-web-access@0.37.0"
+  },
+  {
+    "id": "pi-codex-image-gen",
+    "source": "npm:pi-codex-image-gen@0.1.15"
+  },
+  {
+    "id": "pi-subagents",
+    "source": "npm:pi-subagents@0.78.0"
+  },
+  {
+    "id": "pi-codex-fast",
+    "source": "npm:@calesennett/pi-codex-fast@0.1.11"
+  },
+  {
+    "id": "pi-compact-transcript",
+    "source": "npm:pi-compact-transcript@0.11.1"
+  },
+  {
+    "id": "pi-goal",
+    "source": "npm:pi-goal@0.1.7"
+  },
+  {
+    "id": "pi-web",
+    "source": "git:github.com/stoneedle/pi-web@e23b3408039dfb7745c155a1bccfb8b0993a091b",
+    "packageName": "@stoneedle/pi-web"
+  },
+  {
+    "id": "inline-skill-completion",
+    "directory": "packages/inline-skill-completion",
+    "packageName": "@cnife/pi-inline-skill-completion"
+  }
+]

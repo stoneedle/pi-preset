@@ -1,0 +1,46 @@
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-6.1-sol",
+  "defaultThinkingLevel": "xhigh",
+  "transport": "auto",
+  "defaultTools": [
+    "+codemode"
+  ],
+  "codemode": {
+    "mode": "on"
+  },
+  "subagents": {
+    "disableBuiltins": true,
+    "defaultExtensions": []
+  },
+  "compaction": {
+    "modelOverrides": {
+      "openai-codex/gpt-6-luna": {
+        "reserveTokens": 100000
+      },
+      "openai-codex/gpt-5.6-luna": {
+        "reserveTokens": 100000
+      },
+      "openai-codex/gpt-6.1-sol": {
+        "reserveTokens": 20000
+      },
+      "openai-codex/gpt-6-astra": {
+        "reserveTokens": 20000
+      }
+    }
+  },
+  "enabledModels": [
+    "openai-codex/gpt-6-luna",
+    "openai-codex/gpt-6.1-sol",
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-5.6-luna",
+    "openai-codex/gpt-6.1-terra"
+  ],
+  "pi-codex-fast": {
+    "enabled": true,
+    "mode": "fast"
+  },
+  "hideThinkingBlock": true,
+  "outputPad": 0
+}
