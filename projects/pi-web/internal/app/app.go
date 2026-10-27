@@ -1,0 +1,206 @@
+package app
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"pi-web/internal/agentdir"
+	"pi-web/internal/auth"
+	"pi-web/internal/frontend"
+	"pi-web/internal/rpc"
+	"pi-web/internal/server"
+	"pi-web/internal/sessions"
+	"pi-web/internal/ui"
+	"pi-web/internal/workers"
+	"pi-web/web"
+)
+
+const defaultPort = "31415"
+const tokenEnvVar = "PI_WEB_TOKEN"
+const developmentEnvVar = "PI_WEB_DEV"
+
+// Main runs the pi-web application. version is supplied by cmd/pi-web so
+// release builds can set it with -ldflags "-X main.version=...".
+func Main(version string) {
+	port := flag.String("p", defaultPort, "port to listen on")
+	hostOverride := flag.String("host", "", "host/IP to bind; defaults to 127.0.0.1")
+	open := flag.Bool("o", false, "auto-open browser")
+	insecure := flag.Bool("insecure", false, "allow non-loopback bind without "+tokenEnvVar+" (DANGEROUS)")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
+	developmentMode := os.Getenv(developmentEnvVar) == "1"
+
+	agentDir := agentdir.Path()
+	sessionsDir := filepath.Join(agentDir, "sessions")
+	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "sessions directory not found: %s\n", sessionsDir)
+		os.Exit(1)
+	}
+
+	bindHost := chooseBindHost(*hostOverride)
+	token := os.Getenv(tokenEnvVar)
+	tokenRequired := token == "" && !isLoopbackHost(bindHost) && !*insecure
+	if tokenRequired {
+		fmt.Fprintf(os.Stderr,
+			"refusing to bind %s without %s set: anyone reachable on this address could view sessions and drive pi.\n"+
+				"  set %s=$(openssl rand -hex 16) to require a token, or pass --insecure to override.\n",
+			bindHost, tokenEnvVar, tokenEnvVar)
+		os.Exit(1)
+	}
+	authMiddleware := auth.New(token)
+	authMiddleware.AllowHost(bindHost)
+	if *insecure {
+		authMiddleware.AllowAnyHost()
+	}
+
+	srv, srvErr := server.New(server.Deps{
+		AgentDir:       agentDir,
+		SessionsDir:    sessionsDir,
+		Auth:           authMiddleware,
+		WorkerFactory:  func(_ string, sessionPath string) (workers.ChatWorker, error) { return rpc.NewPiWorker(sessionPath) },
+		Cache:          sessions.NewCache(),
+		RenderAppShell: ui.RenderAppShell,
+	})
+	if srvErr != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize server: %v\n", srvErr)
+		os.Exit(1)
+	}
+
+	ui.SetFontProvider(srv.FontStyles)
+
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	dfs := web.DistFS()
+	ui.RegisterPWAHandlers(mux, dfs, srv.AppName)
+	if scripts, err := frontend.LoadScripts(dfs, frontend.AppEntry); err == nil {
+		for _, script := range scripts {
+			if script.Entry == frontend.AppEntry {
+				ui.SetAppAssets(script.Path, script.CSS)
+			}
+			mux.HandleFunc(script.Path, frontend.ServeJS(script.JS, true))
+		}
+		// Serve all other hashed assets (lazy chunks, runtime) from the embed FS.
+		mux.HandleFunc("/static/assets/", frontend.ServeStaticAssets(dfs))
+	} else {
+		fmt.Fprintf(os.Stderr, "WARNING: failed to load Vite frontend scripts: %v (frontend JS will be unavailable)\n", err)
+	}
+
+	addr := net.JoinHostPort(bindHost, *port)
+	url := fmt.Sprintf("http://%s", net.JoinHostPort(bindHost, *port))
+	var tailscaleURL string
+	var tailscaleServe bool
+	if *hostOverride == "" && !authMiddleware.Enabled() {
+		// Tailscale Serve proxies the tailnet to this loopback server, and its
+		// hostname would be allowlisted for tokenless access below. Without a
+		// token that turns a loopback-only deployment into unauthenticated
+		// tailnet-wide access to the agent, so stay loopback-only instead.
+		fmt.Fprintf(os.Stderr,
+			"Tailscale Serve not configured: set %s to publish an HTTPS tailnet endpoint.\n"+
+				"  Without a token, pi-web stays loopback-only so tailnet peers cannot reach the agent unauthenticated.\n",
+			tokenEnvVar)
+	} else if *hostOverride == "" {
+		tsCtx, tsCancel := context.WithTimeout(context.Background(), tailscaleConfigureTimeout)
+		tsURL, tsOk, tsErr := configureTailscaleServe(tsCtx, *port)
+		tsCancel()
+		if tsErr == nil && tsOk {
+			tailscaleURL = tsURL
+			tailscaleServe = true
+			authMiddleware.AllowHost(tsURL)
+		} else if tsErr != nil {
+			if tsCtx.Err() == context.DeadlineExceeded {
+				fmt.Fprintf(os.Stderr, "Tailscale Serve timed out after %s; continuing without it\n", tailscaleConfigureTimeout)
+			} else {
+				fmt.Fprintf(os.Stderr, "Tailscale Serve unavailable: %v\n", tsErr)
+			}
+		}
+	}
+	fmt.Printf("Pi Sessions Viewer -> %s\n", url)
+	if tailscaleURL != "" {
+		fmt.Printf("Tailscale HTTPS -> %s\n", tailscaleURL)
+	}
+	fmt.Printf("Serving from: %s\n", sessionsDir)
+	if developmentMode {
+		fmt.Println("Development state file enabled")
+	}
+	if authMiddleware.Enabled() {
+		fmt.Println("Auth: enabled (set PI_WEB_TOKEN to require token)")
+	} else {
+		fmt.Printf("Auth: disabled — set %s to require a token for access.\n", tokenEnvVar)
+	}
+
+	stateFilePath, stateFile, err := writeStateFile(agentDir, developmentMode, bindHost, *port, tailscaleServe, tailscaleURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	// Shared with the signal path below, which exits via os.Exit and so does not
+	// run deferred functions.
+	releaseStateFile := func() {
+		// Unlink while this process still owns the lock so an exiting instance
+		// cannot remove a successor's newly written state file.
+		_ = os.Remove(stateFilePath)
+		_ = stateFile.Close()
+	}
+	defer releaseStateFile()
+
+	if *open {
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			openBrowser(url)
+		}()
+	}
+
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           server.Compress(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout intentionally 0 — SSE streams are long-lived.
+	}
+
+	// signal.NotifyContext would hide which signal arrived, and returning
+	// normally afterwards made a SIGTERM kill indistinguishable from a clean
+	// quit in launchd's "last exit code = 0" (#119). Name the signal and exit
+	// 128+signum so a supervisor can tell the two apart.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	shutdownCode := make(chan int, 1)
+	go func() {
+		sig := <-signals
+		fmt.Fprintf(os.Stderr, "shutting down: received %s\n", sig)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+		srv.Shutdown()
+		releaseStateFile()
+		code := 0
+		if num, ok := sig.(syscall.Signal); ok {
+			code = 128 + int(num)
+		}
+		shutdownCode <- code
+	}()
+
+	serveErr := httpServer.ListenAndServe()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", serveErr)
+		os.Exit(1)
+	}
+	// ErrServerClosed only reaches here via the signal handler above, which is
+	// the sole Shutdown caller; wait so cleanup is not cut short by exiting.
+	os.Exit(<-shutdownCode)
+}

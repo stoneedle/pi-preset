@@ -1,0 +1,11 @@
+{
+  "name": "pi-web-extension",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "scripts": {
+    "test": "cd ../.. && npm run test:extensions"
+  }
+}
