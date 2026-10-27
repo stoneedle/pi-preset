@@ -1,0 +1,64 @@
+# personal/
+
+个人扩展树：随 monorepo 根 pi 包（git 安装）分发，**不进** npm workspaces、**不**发布。根 [`package.json`](../package.json) 的 `pi` manifest 只暴露 `personal/` 下资源（文件型 `*.ts`、包型 `*/extensions`、包内技能 `*/skills`、技能组 `skills/*`），`packages/` 里的产品包不会被根包重复加载。
+
+产品包放 `packages/`；停用的插件（曾为产品的包、不再需要的个人扩展）放 `archive/`。本目录只收「可公开参考 / 多机自用、但不值得付发布税」的扩展。
+
+## 分发
+
+整个 monorepo 根本身就是一个 pi 包（`package.json` 带 `pi` manifest）。所有机器（含主力开发机）用 pi 原生 git 包机制安装：
+
+```bash
+pi install git:github.com/CNife/pi-extensions   # 不 pin ref，跟踪 main
+pi update --extensions                          # 各机拉新
+```
+
+git 包不 pin ref 时，`pi update --extensions` 会拉取 main 最新。这是机制上限：push + update 才生效，接受这个延迟。与 `settings.json` 中已有的 `npm:` 产品包共存（npm 包装到 `~/.pi/agent/npm/`，git 包装到 `~/.pi/agent/git/<host>/<path>`，各自独立 module root，不互相污染）。
+
+### 依赖
+
+pi 安装 git 包时只在克隆根跑一次 `npm install`，npm 只认根依赖与 workspaces。根 `package.json` 当前没有 personal 运行时依赖；`@earendil-works/*` 全部走 peerDependencies（pi 运行时提供）。
+
+`personal/*/package.json` 保留各自的 `pi` manifest，仅供本地 `pi -e personal/<pkg>` 隔离开发用；git 包模式下只有根 manifest 生效，无嵌套发现。`personal/*/node_modules` 由本地 `npm install` 维护（已 gitignore）；`personal/*/package-lock.json` 进仓以固定传递依赖。
+
+### 本地开发
+
+```bash
+# 临时加载整个仓库（不写入 settings，不影响已装扩展）
+pi --no-extensions -e .
+# 隔离加载单个 personal 条目
+pi --no-extensions -e personal/<pkg>
+```
+
+## 本机迁移（从旧软链方案）
+
+> 2026-08-02：`~/.pi/skills/` 手工软链桥（pi 会话读 `~/.agents/skills` 的旧通道）已整体退役；pi 技能改由根包 `personal/skills/` 分发，`pi update --extensions` 自动同步。
+
+旧方案用 `scripts/sync-personal.mjs` 把 personal 条目软链到 `~/.pi/agent/extensions/`。迁移到 git 包前**必须**先清掉软链残留，否则双加载：
+
+1. 删除 `~/.pi/agent/extensions/` 下所有指向 `personal/` 的软链（文件型 `exit.ts` / `stash-input.ts` / `debug-request-body.ts`，包型 `advisor-adapter` / `nmem-lite` / `thinking-fold`）与 `~/.pi/agent/skills/` 下 nmem 技能软链（`save-thread` / `search-memory` / `distill-memory` / `read-working-memory` / `status`）；
+2. **先于 install** 删除 `~/.pi/agent/git/github.com/CNife/pi-extensions` 处的旧软链（旧的全量加载技巧）--pi 更新 git 包时会 `reset --hard` + clean 克隆，若顺软链操作会毁掉开发克隆未提交的工作；
+3. `pi install git:github.com/CNife/pi-extensions`。
+
+其他机器没有旧软链，直接 `pi install` 即可。
+
+## 当前内容
+
+| 条目 | 类型 | 说明 |
+| --- | --- | --- |
+| `exit.ts` | 文件 | 输入 `exit` 退出会话（自 miscs） |
+| `debug-request-body.ts` | 文件 | `PI_DEBUG_REQUEST_BODY` 门闩下写请求体（自 miscs） |
+| `stash-input.ts` | 文件 | alt+s 暂存/恢复输入框文本：有内容时暂存并清空（已有暂存时需双击确认覆盖），空时恢复 |
+| `nmem-lite/` | 包 | nmem 会话自动同步 + 精简引导；召回/保存走官方 `nmem` CLI + 技能（替代 `npm:@cnife/pi-nmem`） |
+| `thinking-fold/` | 包 | 推理块尾部预览 + 完成折叠 + Ctrl+T 展开（trace-only，基于 `@99percentpeople/pi-thinking-fold` 简化重写，替代 `npm:@99percentpeople/pi-thinking-fold`） |
+| `skills/` | 技能组 | 5 个 pi-agent 技能（2026-08-02 自 CNife/skills 迁入，随包多机分发）：`pi-trending` / `search-pi-extensions` / `add-provider-models-to-pi` / `pi-session-query` / `herdr-subagent`。**结构约束**：`personal/skills/` 下只允许一层技能目录（每目录含 `SKILL.md`），禁止放松散文件——根 manifest glob `personal/skills/*` 会把任何直接子项当技能加载 |
+| `plannotator-cli/` | 包 | Plannotator 浏览器审阅/标注（CLI shell-out，OMP 同名插件移植），注入 `/pnr` `/pna` `/pnl` 三命令 |
+
+## 不进仓（local-only 边界）
+
+以下留在本机扩展目录，**不要**迁入本树：
+
+- `dcg-guard.ts`（由 DCG 侧维护）
+- `herdr-agent-state.ts` / herdr 生成物
+- `subagent/` 残留配置（无入口）
+- 密钥、会话数据

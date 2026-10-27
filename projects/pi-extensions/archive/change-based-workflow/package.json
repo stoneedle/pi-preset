@@ -1,0 +1,28 @@
+{
+  "name": "@cnife/pi-change-based-workflow",
+  "version": "0.2.1",
+  "private": false,
+  "keywords": [
+    "pi-package"
+  ],
+  "description": "[Deprecated] Change-based development workflow skills for pi (grill, plan, write-code, check-work)",
+  "homepage": "https://github.com/CNife/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/CNife/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "CNife <CNife@vip.qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CNife/pi-extensions.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
