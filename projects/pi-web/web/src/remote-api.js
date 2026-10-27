@@ -136,38 +136,3 @@ export function createRefreshCoordinator(refresh, onError = () => {}, { minInter
   };
   return coordinator;
 }
-
-export function createRuntimeStateStore() {
-  const states = new Map();
-  let epoch = 0;
-  let connectionEpoch = 0;
-  const unavailable = (value) => ({
-    ...value,
-    state: 'unknown',
-    availability: 'disconnected',
-    canControl: false,
-  });
-  return {
-    mark: () => epoch,
-    get: (id) => states.get(id)?.value,
-    disconnect() {
-      connectionEpoch = ++epoch;
-      for (const [id, entry] of states) {
-        states.set(id, { value: unavailable(entry.value), epoch });
-      }
-    },
-    merge(incoming, readEpoch = epoch) {
-      const previous = states.get(incoming.id);
-      if (
-        previous &&
-        (previous.epoch > readEpoch ||
-          (previous.value.instanceId === incoming.instanceId &&
-            incoming.revision < previous.value.revision))
-      )
-        return previous.value;
-      const value = readEpoch < connectionEpoch ? unavailable(incoming) : incoming;
-      states.set(incoming.id, { value, epoch: ++epoch });
-      return value;
-    },
-  };
-}

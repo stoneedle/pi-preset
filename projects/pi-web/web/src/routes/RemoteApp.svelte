@@ -10,6 +10,7 @@
     Ellipsis,
     Bell,
     RefreshCw,
+    Share2,
     X,
   } from '../shared/icons.js';
   import Markdown from '../components/Markdown.svelte';
@@ -18,9 +19,9 @@
   import CopyAction from '../components/CopyAction.svelte';
   import ForkAction from '../components/ForkAction.svelte';
   import { contextMenu } from '../shared/context-menu.js';
-  import SelectionShare from '../components/SelectionShare.svelte';
+  import ContextShare from '../components/ContextShare.svelte';
+  import { createReadingPosition } from '../remote-reading.svelte.js';
   import SessionList from '../components/SessionList.svelte';
-  import SessionDrawer from '../components/SessionDrawer.svelte';
   import SessionStatus from '../components/SessionStatus.svelte';
   import { withoutImageCoordinates } from '../../../shared/user-text.js';
   import SessionInfo from '../components/SessionInfo.svelte';
@@ -30,6 +31,7 @@
   import NewTask from '../components/NewTask.svelte';
   import RefreshError from '../components/RefreshError.svelte';
   import RemoteComposer from '../components/RemoteComposer.svelte';
+  import SkillSuggestions from '../components/SkillSuggestions.svelte';
   import { fileDownloadURL, fileName, isWebFile } from '../remote-files.js';
   import { subscribeEvents } from '../remote-events.js';
   import { diagnosticId, trace } from '../remote-diagnostics.js';
@@ -38,16 +40,16 @@
   import { activateHistory } from '../remote-history.js';
   import {
     sessionComposer,
-    editDraft,
     captureDraft,
     completeDraft,
     rememberSubmittedProject,
     submitSessionMessage,
   } from '../remote-drafts.svelte.js';
-  import { request, createRefreshCoordinator, createRuntimeStateStore } from '../remote-api.js';
+  import { request, createRefreshCoordinator } from '../remote-api.js';
+  import { runtime } from '../remote-runtime.svelte.js';
   import { createMessageWindow } from '../remote-messages.svelte.js';
 
-  let { sessionId } = $props();
+  let { sessionId, drawer, drawerOpen = false, drawerSurface = $bindable(null) } = $props();
   const cached = untrack(() => readView(`session:${sessionId}`));
   const composer = untrack(() => sessionComposer(sessionId));
   const blockViews = {};
@@ -64,9 +66,8 @@
   const visibleMessages = $derived(messages.slice(visibleIndex));
   const hasEarlier = $derived(visibleIndex > 0 || Boolean(messageWindow.state.before));
   let revealingHistory = false;
-  const runtimeStates = createRuntimeStateStore();
-  let status = $state({ state: 'unknown', canControl: false });
-  let connected = $state(false);
+  let status = $state(untrack(() => runtime.get(sessionId)));
+  const connected = $derived(runtime.connected);
   let loading = $state(!cached);
   let historyLoading = $state(false);
   let historyError = $state('');
@@ -79,13 +80,21 @@
   let chatAvailable = $state(false);
   let chatDisabledReason = $state('');
   let viewport = $state(null);
-  let awayFromBottom = $state(cached?.awayFromBottom || false);
-  let observedViewportHeight = 0;
+  const reading = untrack(() =>
+    createReadingPosition(
+      sessionId,
+      () => viewport,
+      () => !messageWindow.state.next,
+      cached?.anchor,
+    ),
+  );
+  const awayFromBottom = $derived(!reading.state.following || Boolean(messageWindow.state.next));
+  let contextShare = $state(null);
+  let latestRequested = false;
+  let laterLoading = $state(false);
+  let laterController;
   let textarea = $state(null);
-  let drawerSurface = $state(null);
   let drawerTrigger = $state(null);
-  let drawer = $state(null);
-  let drawerOpen = $state(false);
   let newTask = $state(null);
   let pushSettings = $state(null);
   let nameSettings = $state(null);
@@ -99,8 +108,6 @@
   let previewLoading = $state(false);
   let previewEpoch = 0;
   let models = $state([]);
-  let skills = $state([]);
-  let skillsLoaded = false;
   let refreshSession;
   let refreshStatus;
   let refreshAcknowledgement;
@@ -114,17 +121,12 @@
 
   const activeState = $derived(connected ? status.state : 'unknown');
   const runtimeKnown = $derived(connected && status.availability === 'connected');
-  const skillQuery = $derived(composer.text.match(/^\/(\S*)$/)?.[1]?.toLowerCase());
-  const matchingSkills = $derived(
-    skillQuery === undefined
-      ? []
-      : skills.filter((skill) => skill.name.toLowerCase().includes(skillQuery)),
-  );
   const canSend = $derived(chatAvailable && !composer.sending);
   const canQueue = $derived(
     canSend &&
       runtimeKnown &&
       status.canQueue === true &&
+      typeof status.queueRevision === 'number' &&
       status.mainRunning === true &&
       !Object.keys(composer.settings).length,
   );
@@ -150,7 +152,6 @@
   const atBottom = () =>
     !viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
   const bottom = (keepReplyVisible = false) => {
-    awayFromBottom = false;
     historyDemand = false;
     if (!viewport) return;
     let top = viewport.scrollHeight;
@@ -169,6 +170,7 @@
     }
     viewport.scrollTo({ top });
     previousScrollTop = viewport.scrollTop;
+    reading.positioned();
   };
   const endpoint = (path) => `${path}?id=${encodeURIComponent(sessionId)}`;
   const post = (url, body) =>
@@ -178,24 +180,47 @@
       body: JSON.stringify(body),
     });
 
-  function readingAnchor() {
-    if (!viewport) return null;
-    const top = viewport.getBoundingClientRect().top;
-    const node = [...viewport.querySelectorAll('[data-message-id]')].find(
-      (node) => node.getBoundingClientRect().bottom > top,
-    );
-    return node
-      ? { id: node.dataset.messageId, offset: node.getBoundingClientRect().top - top }
-      : null;
+  const readingAnchor = () => reading.capture();
+  const restoreAnchor = (anchor) => {
+    if (Number.isInteger(anchor?.block)) blockViews[`${anchor.id}:${anchor.block}`]?.reveal();
+    const restored = reading.restore(anchor);
+    if (restored) previousScrollTop = viewport.scrollTop;
+    return restored;
+  };
+
+  function showLatest() {
+    reading.follow();
+    if (messageWindow.state.next) {
+      latestRequested = true;
+      refreshSession.run();
+    } else bottom(true);
   }
 
-  function restoreAnchor(anchor) {
-    const node = anchor && viewport?.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
-    if (!node) return false;
-    viewport.scrollTop +=
-      node.getBoundingClientRect().top - viewport.getBoundingClientRect().top - anchor.offset;
-    previousScrollTop = viewport.scrollTop;
-    return true;
+  async function loadLater() {
+    if (disposed || loading || laterLoading || !messageWindow.state.next) return;
+    laterLoading = true;
+    laterController = new AbortController();
+    const read = messageWindow.read(false, { forward: true });
+    try {
+      const data = await request(endpoint('/api/session') + read.query, {
+        signal: laterController.signal,
+      });
+      const anchor = readingAnchor();
+      if (disposed || read.commit(data.window) === 'stale') return;
+      if (data.window.reset) {
+        visibleStart = messages[0]?.id || '';
+        reading.relocated(data.window.anchor || '');
+      }
+      await tick();
+      if (!disposed) {
+        restoreAnchor(data.window.reset ? reading.anchor : anchor);
+        rememberSession();
+      }
+    } catch (err) {
+      if (!disposed && !laterController.signal.aborted) contentError = err.message;
+    } finally {
+      laterLoading = false;
+    }
   }
 
   export function rememberSession(prefetch = false) {
@@ -208,9 +233,7 @@
         branch,
         ...$state.snapshot(messageWindow.state),
         visibleStart,
-        scrollTop: viewport?.scrollTop || 0,
-        anchor: readingAnchor(),
-        awayFromBottom: !atBottom(),
+        anchor: reading.checkpoint(),
       },
       { prefetch },
     );
@@ -222,9 +245,10 @@
   function scrollConversation() {
     const top = viewport.scrollTop;
     const upward = top < previousScrollTop;
+    const downward = top > previousScrollTop + 1;
     previousScrollTop = top;
-    if (viewport.clientHeight !== observedViewportHeight) return;
-    awayFromBottom = !atBottom();
+    if (!reading.scrolled()) return;
+    if (downward && atBottom() && messageWindow.state.next) loadLater();
     if (!nearHistory() || !awayFromBottom) historyDemand = false;
     else if (upward) {
       historyDemand = true;
@@ -233,10 +257,23 @@
   }
 
   async function loadSession(signal) {
-    const read = messageWindow.read();
+    reading.reconcile();
+    const latest = latestRequested;
+    latestRequested = false;
+    let anchor = reading.state.following ? null : readingAnchor();
+    let read = messageWindow.read(false, {
+      latest,
+      previous: anchor?.previous,
+      around:
+        !latest && (!messageWindow.state.ready || messageWindow.state.next) ? anchor?.id || '' : '',
+    });
     let data;
     try {
       data = await request(endpoint('/api/session') + read.query, { signal });
+      if (!latest && data.window.reset && anchor && !data.window.anchor && read.current()) {
+        read = messageWindow.read(false, { around: anchor.id, previous: anchor.previous });
+        data = await request(endpoint('/api/session') + read.query, { signal });
+      }
     } catch (error) {
       trace('session.read-error', {
         session: diagnosticId(sessionId),
@@ -247,10 +284,16 @@
       if (read.current()) throw error;
       return;
     }
+    const seeking = !messageWindow.state.ready || data.window.reset;
+    if (!seeking && !latest) {
+      reading.reconcile();
+      anchor = reading.state.following ? null : readingAnchor();
+    }
     if (disposed || read.commit(data.window) === 'stale') return;
     if (!messages.some((message) => message.id === visibleStart))
       visibleStart = messages[Math.max(0, messages.length - 30)]?.id || '';
-    const follow = loading || atBottom();
+    if (seeking && anchor && data.window.anchor !== anchor.id)
+      reading.relocated(data.window.anchor || '');
     title = data.name;
     document.title = title;
     cwd = data.cwd;
@@ -259,14 +302,18 @@
     loading = false;
     contentError = '';
     await tick();
-    if (follow) bottom(true);
+    if (disposed) return;
+    if (reading.state.following && !messageWindow.state.next) bottom(true);
+    else restoreAnchor(seeking && data.window.anchor !== anchor?.id ? reading.anchor : anchor);
     rememberSession();
   }
 
-  function applyStatus(incoming, readEpoch) {
+  function applyStatus(data) {
     if (disposed) return;
-    const data = runtimeStates.merge(incoming, readEpoch);
-    const changed = status.replyId !== data.replyId || status.leafId !== data.leafId;
+    // The first native leaf establishes a baseline; it is not a branch change.
+    const changed =
+      Object.hasOwn(status, 'leafId') &&
+      (status.replyId !== data.replyId || status.leafId !== data.leafId);
     status = data;
     if (data.replyId && data.unread === false) {
       try {
@@ -294,24 +341,19 @@
       refreshAcknowledgement.run();
   }
 
-  function disconnectRuntime() {
-    messageWindow.invalidate('stream-disconnected');
-    runtimeStates.disconnect();
-    status = runtimeStates.get(sessionId) || status;
-  }
-
   async function loadStatus(signal) {
-    const readEpoch = runtimeStates.mark();
+    const readEpoch = runtime.mark();
     const data = await request(endpoint('/api/status'), { signal });
-    applyStatus(data, readEpoch);
+    runtime.merge(data, readEpoch);
   }
 
   async function acknowledgeCurrent() {
     if (drawerOpen || document.hidden || !document.hasFocus() || !status.replyId || !status.unread)
       return;
     const replyId = status.replyId;
-    await post(endpoint('/api/session/acknowledge'), { replyId });
-    if (!disposed && status.replyId === replyId) applyStatus({ ...status, unread: false });
+    const readEpoch = runtime.mark();
+    const data = await post(endpoint('/api/session/acknowledge'), { replyId });
+    runtime.merge(data, readEpoch);
   }
 
   function continueHistory() {
@@ -414,6 +456,7 @@
       if (!(await submitSessionMessage(sessionId, submitted, composer, delivery))) return;
       rememberSubmittedProject(cwd);
       completeDraft(composer, submitted);
+      if (!disposed && delivery !== 'followUp') showLatest();
       refreshSession.run();
       refreshStatus.run();
     } finally {
@@ -469,20 +512,6 @@
     }
     return selectSettings({ speed: mode }, '/api/set-speed', { mode });
   }
-
-  async function searchSkills() {
-    if (!composer.text.startsWith('/') || skillsLoaded || !status.canControl) return;
-    skillsLoaded = true;
-    try {
-      skills = (await request(endpoint('/api/commands'))).commands || [];
-    } catch {
-      skillsLoaded = false;
-    }
-  }
-
-  $effect(() => {
-    if (status.canControl && composer.text.startsWith('/')) searchSkills();
-  });
 
   function messageText(message, block) {
     const text = typeof block.text === 'string' ? block.text : '';
@@ -552,8 +581,17 @@
     }
   }
 
-  function openNew(path) {
+  export function openNew(path) {
     newTask.open(typeof path === 'string' ? path : undefined);
+  }
+
+  export function canSwipeDrawer() {
+    return !info?.open;
+  }
+
+  export function drawerClosed() {
+    if (!newTask?.isOpen()) drawerTrigger?.focus({ preventScroll: true });
+    refreshAcknowledgement?.run();
   }
 
   function openDrawer() {
@@ -578,11 +616,7 @@
     document.title = sessionId ? title : appName.name;
     if (cached)
       tick().then(() => {
-        if (disposed || !viewport) return;
-        if (cached.awayFromBottom) {
-          if (!restoreAnchor(cached.anchor)) viewport.scrollTop = cached.scrollTop;
-          previousScrollTop = viewport.scrollTop;
-        } else bottom(true);
+        if (!disposed && viewport) restoreAnchor(reading.anchor);
       });
     refreshSession = createRefreshCoordinator(loadSession, fail, { minInterval: 200 });
     refreshStatus = createRefreshCoordinator(loadStatus);
@@ -593,9 +627,21 @@
           return loadEarlier({ background: true, signal, source: 'prefetch' });
         })
       : () => {};
+    const unsubscribeRuntime = runtime.subscribe((event) => {
+      if (!sessionId) return;
+      if (event.type === 'status' && event.snapshot.id === sessionId) applyStatus(event.snapshot);
+      else if (event.type === 'disconnect') {
+        messageWindow.invalidate('stream-disconnected');
+        applyStatus(runtime.get(sessionId));
+      } else if (event.type === 'reconnect') {
+        refreshSession.run();
+        if (!runtime.has(sessionId)) refreshStatus.run();
+      }
+    });
     if (sessionId) {
+      applyStatus(runtime.get(sessionId));
       refreshSession.run();
-      refreshStatus.run();
+      if (!runtime.has(sessionId)) refreshStatus.run();
       request(endpoint('/api/git/info'))
         .then((data) => {
           if (!disposed) branch = data.branch || '';
@@ -605,25 +651,13 @@
     const unsubscribe = sessionId
       ? subscribeEvents(`/events?id=${encodeURIComponent(sessionId)}`, {
           open() {
-            disconnectRuntime();
-            connected = true;
             refreshSession.run();
-            refreshStatus.run();
           },
           error() {
-            connected = false;
-            disconnectRuntime();
+            messageWindow.invalidate('content-stream-disconnected');
           },
           message(event) {
             if (event.data === 'reload' || event.data === 'new-session') refreshSession.run();
-          },
-          'status-snapshot'(event) {
-            const states = JSON.parse(event.data);
-            if (states[sessionId]) applyStatus(states[sessionId]);
-          },
-          'status-delta'(event) {
-            const data = JSON.parse(event.data);
-            if (sessionId === data.id) applyStatus(data);
           },
         })
       : null;
@@ -664,18 +698,7 @@
       );
     window.visualViewport?.addEventListener('resize', onViewport);
     onViewport();
-    const resizeObserver = new ResizeObserver(() => {
-      observedViewportHeight = viewport.clientHeight;
-      if (!awayFromBottom) bottom(true);
-    });
-    if (viewport) {
-      resizeObserver.observe(viewport);
-      // Auxiliary content can replace composer height without resizing the message viewport.
-      for (const selector of ['.remote-compose-context', '.remote-composer']) {
-        const node = drawerSurface.querySelector(selector);
-        if (node) resizeObserver.observe(node);
-      }
-    }
+    const stopReading = reading.start(() => bottom(true));
     return () => {
       rememberSession();
       disposed = true;
@@ -683,9 +706,12 @@
       messageWindow.invalidate('dispose');
       releaseHistory();
       historyController?.abort();
+      laterController?.abort();
+      stopReading();
       clearTimeout(historyTimer);
       clearPreview();
       unsubscribe?.();
+      unsubscribeRuntime();
       refreshSession.dispose();
       refreshStatus.dispose();
       refreshAcknowledgement.dispose();
@@ -694,7 +720,7 @@
       window.removeEventListener('focus', onVisible);
       window.removeEventListener('click', onFilePreview);
       window.visualViewport?.removeEventListener('resize', onViewport);
-      resizeObserver.disconnect();
+
       document.documentElement.style.removeProperty('--remote-height');
     };
   });
@@ -735,6 +761,22 @@
           }}>{@html icon(SquarePen)}<span>应用名称</span></button
         >
         {#if sessionId}
+          <button
+            type="button"
+            class="remote-info-notifications"
+            onclick={() => {
+              info.open = false;
+              contextShare.shareLoaded();
+            }}>{@html icon(Share2)}<span>分享已加载上下文</span></button
+          >
+          <button
+            type="button"
+            class="remote-info-notifications"
+            onclick={() => {
+              info.open = false;
+              contextShare.prepareFull();
+            }}>{@html icon(Share2)}<span>分享完整会话</span></button
+          >
           <button
             type="button"
             class="remote-info-notifications"
@@ -882,26 +924,27 @@
           </article>
         {/if}
       {/each}
+      {#if messageWindow.state.next}<div class="remote-history">
+          <button type="button" disabled={laterLoading} onclick={loadLater}
+            >{laterLoading ? '加载中…' : '加载后续消息'}</button
+          >
+        </div>{/if}
       {#if awayFromBottom}<button
           type="button"
           class="remote-bottom"
           aria-label="最新消息"
-          onclick={() => bottom()}>{@html icon(ArrowDown, { size: 16 })}</button
+          onclick={showLatest}>{@html icon(ArrowDown, { size: 16 })}</button
         >{/if}
     </main>
 
     <div class="remote-compose-context">
       {#if !chatAvailable && !loading}<p>{chatDisabledReason}</p>{/if}
-      {#if matchingSkills.length}<div class="remote-skills">
-          {#each matchingSkills as skill (skill.name)}<button
-              type="button"
-              title={skill.name}
-              onclick={() => {
-                editDraft(composer, `/${skill.name} `);
-                textarea?.focus();
-              }}>{skill.name}</button
-            >{/each}
-        </div>{/if}
+      <SkillSuggestions
+        {composer}
+        url={endpoint('/api/commands')}
+        catalogKey={runtimeKnown ? status.instanceId || 'connected' : ''}
+        onselect={() => textarea?.focus()}
+      />
     </div>
     <footer class="remote-composer">
       <RemoteComposer
@@ -910,6 +953,9 @@
         running={status.mainRunning || activeState === 'running'}
         onsend={sendMessage}
         {canQueue}
+        {sessionId}
+        queueStatus={status}
+        queueAvailable={runtimeKnown}
         onqueue={() => sendMessage(null, 'followUp')}
         onstop={() => control('/api/chat/cancel', {})}
         oninput={() => {
@@ -944,19 +990,7 @@
     bind:busy={forkBusy}
     onfork={navigateFork}
   />
-  <SelectionShare surface={viewport} {sessionId} {messages} {blockViews} {title} {cwd} />
-  <SessionDrawer
-    surface={drawerSurface}
-    currentSessionId={sessionId}
-    canSwipe={() => !info?.open}
-    bind:this={drawer}
-    bind:isOpen={drawerOpen}
-    onnew={openNew}
-    onclose={() => {
-      if (!newTask?.isOpen()) drawerTrigger?.focus({ preventScroll: true });
-      refreshAcknowledgement.run();
-    }}
-  />
+  <ContextShare bind:this={contextShare} {sessionId} {messages} {blockViews} {title} {cwd} />
 {/if}
 
 <dialog
@@ -1158,6 +1192,7 @@
   }
   .remote-main {
     overflow: auto;
+    overflow-anchor: none;
     overscroll-behavior: contain;
     flex: 1;
     min-height: min(80px, calc(var(--remote-height, 100dvh) * 0.18));
@@ -1348,19 +1383,6 @@
   }
   .remote-error {
     color: var(--danger);
-  }
-  .remote-skills {
-    background: var(--surface);
-    border: 1px solid var(--dim);
-    border-radius: 8px;
-  }
-  .remote-skills button {
-    display: block;
-    width: 100%;
-    text-align: left;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
   :global(.remote-file) {
     display: inline-flex;

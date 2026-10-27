@@ -139,6 +139,10 @@ export default function (pi: ExtensionAPI) {
     if (promptSession) SessionState.promptEnded(promptSession.manager, promptSession.id);
     promptSession = undefined;
   });
+  pi.on('agent_before_settle', async (event, ctx) => {
+    if (state?.sessionId !== ctx.sessionManager.getSessionId() || remote?.local !== true) return;
+    if (event.outcome === 'completed') await state.queue.deliverNext(pi);
+  });
   pi.on('agent_settled', async (event, ctx) => {
     if (state?.sessionId !== ctx.sessionManager.getSessionId()) return;
     ctxRef = ctx; remote?.updateContext(ctx); await state?.agentSettled(ctx, event.aborted);

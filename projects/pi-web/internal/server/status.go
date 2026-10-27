@@ -36,6 +36,8 @@ type runtimeSnapshot struct {
 	AttentionKind string          `json:"attentionKind,omitempty"`
 	CanControl    bool            `json:"canControl"`
 	CanQueue      bool            `json:"canQueue"`
+	QueueRevision int64           `json:"queueRevision"`
+	QueueCount    int             `json:"queueCount"`
 	CWD           string          `json:"cwd,omitempty"`
 	ChatAvailable bool            `json:"chatAvailable"`
 	Model         string          `json:"model,omitempty"`

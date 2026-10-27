@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { Receipts } from './receipts.ts';
 import { readFastState } from './fast-state.ts';
+import { remoteQueue } from './remote-queue.ts';
 
 export type ActivityState = 'running' | 'needs-you' | 'background' | 'idle' | 'unknown';
 type ChildReply = { success: boolean; data?: { fleet?: { totalActive?: number }; asyncSnapshot?: {
@@ -26,6 +27,7 @@ export class SessionState {
   readonly instanceId = randomUUID();
   readonly sessionId: string;
   readonly id: string;
+  readonly queue: ReturnType<typeof remoteQueue>;
   private ctx: ExtensionContext;
   private running: boolean;
   private children: number | null = null;
@@ -53,6 +55,8 @@ export class SessionState {
     this.running = !ctx.isIdle();
     this.sessionId = ctx.sessionManager.getSessionId();
     this.id = basename(ctx.sessionManager.getSessionFile() || this.sessionId);
+    this.queue = remoteQueue(ctx);
+    this.unsubscribes.push(this.queue.subscribe(() => this.publish()));
     if (this.running) this.runBaseline = this.result().id;
     try { this.receipts = new Receipts(agentDir); }
     catch (error) { this.report(error); }
@@ -209,6 +213,7 @@ export class SessionState {
       unread: result.id ? (receiptKnown ? !record?.acknowledged : null) : false,
       completed: Boolean(record?.completed), outcome: childFailure ? 'error' : result.outcome,
       attentionId: prompt?.id ?? null, attentionKind: prompt?.kind ?? null, availability: 'connected', canControl: true, canQueue: true,
+      queueRevision: this.queue.revision, queueCount: this.queue.count,
       model: this.ctx.model?.id, modelName: this.ctx.model?.name, provider: this.ctx.model?.provider,
       thinking: this.pi.getThinkingLevel(), context: this.ctx.getContextUsage() ?? null,
       cwd: this.ctx.cwd, chatAvailable: this.ctx.mode === 'tui' || this.ctx.mode === 'rpc',

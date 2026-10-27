@@ -93,8 +93,13 @@ func (owner Registration) Call(ctx context.Context, payload any) (map[string]any
 		return nil, fmt.Errorf("无法连接到现有 Pi 实例：%w", err)
 	}
 	defer response.Body.Close()
+	limit := int64(2 << 20)
+	if command, ok := payload.(map[string]any); ok && (command["action"] == "queue" || command["action"] == "queue-remove") {
+		// Queue detail may contain the original image bytes; ordinary controls remain small.
+		limit = 66 << 20
+	}
 	var reply map[string]any
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&reply); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, limit)).Decode(&reply); err != nil {
 		return nil, err
 	}
 	if response.StatusCode != http.StatusOK {

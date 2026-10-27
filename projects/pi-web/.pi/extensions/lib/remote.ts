@@ -191,6 +191,7 @@ export async function openRemote(
         }
         const mutation = [
           "send",
+          "queue-remove",
           "abort",
           "model",
           "thinking",
@@ -210,7 +211,8 @@ export async function openRemote(
                 snapshot.children !== 0 ||
                 pendingControls > 0 ||
                 !current.isIdle() ||
-                current.hasPendingMessages()
+                current.hasPendingMessages() ||
+                state.queue.count > 0
               ) {
                 reply(409, { error: "Pi is not eligible for idle retirement" });
                 return;
@@ -233,6 +235,14 @@ export async function openRemote(
               return;
             case "rename-title":
               reply(200, { name: title.rename(input.name) });
+              return;
+            case "queue":
+              reply(200, input.itemId ? { item: state.queue.read(input.itemId) } : state.queue.list());
+              return;
+            case "queue-remove":
+              if (typeof input.itemId !== "string")
+                throw new Error("invalid queue operation");
+              reply(200, state.queue.remove(input.itemId));
               return;
             case "send": {
               const chat = input.chat;
@@ -263,11 +273,15 @@ export async function openRemote(
               if (queued && chat.message.startsWith("/") && pi.getCommands().some(
                 (command) => command.source === "extension" && command.name === chat.message.slice(1).split(/\s/)[0],
               )) throw new Error("扩展命令不能排队，请直接执行命令");
+              if (queued) {
+                reply(200, state.queue.add(chat.message, images));
+                return;
+              }
               const content = images.length
                 ? [{ type: "text" as const, text: chat.message }, ...images]
                 : chat.message;
               pi.sendUserMessage(content, {
-                deliverAs: queued ? "followUp" : "steer",
+                deliverAs: "steer",
                 expandPromptTemplates: true,
               });
               reply(200, { status: "accepted" });

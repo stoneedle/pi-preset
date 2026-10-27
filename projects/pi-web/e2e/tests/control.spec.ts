@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../lib/test";
 import { openFixtureOwner } from "../lib/runtime-owner.mjs";
@@ -8,6 +8,9 @@ import {
   writeSession,
   assistantTextEntry,
 } from "../lib/sessions";
+
+// Keep network gates deterministic; service worker behavior has its own suite.
+test.use({ serviceWorkers: 'block' });
 
 const pixel = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z1ZsAAAAASUVORK5CYII=",
@@ -128,7 +131,7 @@ test("all matching skills remain scrollable and selectable with the mobile keybo
       await candidates.last().scrollIntoViewIfNeeded();
       await expect(candidates.last()).toBeInViewport();
       const layout = await page.evaluate(() => {
-        const auxiliary = document.querySelector(".remote-compose-context")!;
+        const auxiliary = document.querySelector(".remote-skills")!;
         const controls = [...document.querySelectorAll(".remote-composer textarea, .remote-composer .remote-actions")];
         return {
           scrollable: auxiliary.scrollHeight > auxiliary.clientHeight,
@@ -149,6 +152,127 @@ test("all matching skills remain scrollable and selectable with the mobile keybo
     expect(controls).not.toContain("send");
     expect(readFileSync(file, "utf8")).not.toContain("skill:workflow-");
   } finally { await owner.close(); }
+});
+
+test('new task and dormant session load skills before the first send without starting a worker', async ({
+  page, sessionsDir, workingDir, agentDir,
+}, info) => {
+  const { entries } = buildSession({ cwd: workingDir });
+  const id = writeSession(sessionsDir, uniqueSessionName(info, 'draft-skills'), entries);
+  const commandNames = Array.from({ length: 37 }, (_, i) => `skill:draft-workflow-${i}`);
+  const owners = join(agentDir, 'pi-web', 'owners');
+  const registrations = () => existsSync(owners) ? readdirSync(owners).sort() : [];
+  const before = registrations();
+  const reads: URL[] = [];
+  let creations = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/new-session') creations++;
+  });
+  await page.route(/\/api\/commands\?/, (route) => {
+    reads.push(new URL(route.request().url()));
+    return route.fulfill({ json: { commands: commandNames.map((name) => ({ name })) } });
+  });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '开始新任务', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '新对话', exact: true });
+  await editor.getByRole('button', { name: '选择项目', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: '选择项目', exact: true });
+  await picker.locator('summary').filter({ hasText: '系统路径' }).click();
+  await picker.getByRole('textbox', { name: '文件夹路径', exact: true }).fill(workingDir);
+  await picker.getByRole('button', { name: '前往', exact: true }).click();
+  await picker.getByRole('button', { name: '使用此文件夹', exact: true }).click();
+  const textbox = editor.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
+  await page.evaluate(() => {
+    Object.defineProperty(window.visualViewport, 'height', { configurable: true, value: 360 });
+    window.visualViewport!.dispatchEvent(new Event('resize'));
+  });
+  await textbox.fill('/');
+  const candidates = editor.locator('.remote-skills button');
+  await expect(candidates).toHaveText(commandNames);
+  expect(reads.at(-1)!.searchParams.get('path')).toBe(workingDir);
+  await candidates.last().scrollIntoViewIfNeeded();
+  await expect(candidates.last()).toBeInViewport();
+  const layout = await editor.evaluate((element) => ({
+    scrollable: element.querySelector('.remote-skills')!.scrollHeight > element.querySelector('.remote-skills')!.clientHeight,
+    controlsReachable: [...element.querySelectorAll('textarea, .remote-actions')].every((node) => {
+      const box = node.getBoundingClientRect();
+      return box.top >= 0 && box.bottom <= 361 && box.height > 0;
+    }),
+    noOverflow: element.scrollWidth <= 320,
+  }));
+  expect(layout).toEqual({ scrollable: true, controlsReachable: true, noOverflow: true });
+  await page.screenshot({ path: info.outputPath('new-task-skills-320.png'), animations: 'disabled' });
+  await candidates.last().click();
+  await expect(textbox).toHaveValue(`/${commandNames.at(-1)} `);
+  await expect(candidates).toHaveCount(0);
+  await expect(editor.getByRole('button', { name: '发送', exact: true })).toBeInViewport();
+  expect(await editor.evaluate((element) => element.scrollWidth <= 320)).toBe(true);
+  expect(registrations()).toEqual(before);
+  expect(creations).toBe(0);
+  await editor.getByRole('button', { name: '关闭新对话', exact: true }).click();
+  await page.goto(`/session?id=${encodeURIComponent(id)}`);
+  await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).fill('/draft-workflow-3');
+  await expect(page.locator('.remote-skills button')).toHaveText(commandNames.filter((name) => name.includes('workflow-3')));
+  expect(reads.at(-1)!.searchParams.get('id')).toBe(id);
+  expect(registrations()).toEqual(before);
+  expect(creations).toBe(0);
+});
+
+test('skill completion retries failed discovery and ignores the previous project response', async ({ page, workingDir }) => {
+  const second = join(workingDir, 'second-project');
+  mkdirSync(second);
+  let firstReads = 0;
+  await page.route(/\/api\/commands\?/, (route) => {
+    const path = new URL(route.request().url()).searchParams.get('path');
+    if (path === workingDir && ++firstReads === 1) return route.fulfill({ status: 409, json: { error: 'Fixture read failure' } });
+    return route.fulfill({ json: { commands: [{ name: path === second ? 'skill:second-project' : 'skill:first-project' }] } });
+  });
+  await page.addInitScript(({ first }) => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await fetch(...args);
+      const url = new URL(String(args[0]), location.href);
+      if (url.pathname === '/api/commands' && url.searchParams.get('path') === first && response.ok) {
+        (window as any).__skillReadHeld = true;
+        await new Promise<void>((resolve) => { (window as any).__releaseSkillRead = resolve; });
+        (window as any).__skillReadReleased = true;
+      }
+      return response;
+    };
+  }, { first: workingDir });
+  await page.goto('/');
+  await page.getByRole('button', { name: '开始新任务', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '新对话', exact: true });
+  const choose = async (path: string) => {
+    await editor.getByRole('button', { name: '选择项目', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: '选择项目', exact: true });
+    await picker.locator('summary').filter({ hasText: '系统路径' }).click();
+    await picker.getByRole('textbox', { name: '文件夹路径', exact: true }).fill(path);
+    await picker.getByRole('button', { name: '前往', exact: true }).click();
+    await picker.getByRole('button', { name: '使用此文件夹', exact: true }).click();
+  };
+  await choose(workingDir);
+  const textbox = editor.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
+  const failed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/commands');
+  await textbox.fill('/');
+  expect((await failed).status()).toBe(409);
+  await textbox.fill('/first');
+  await page.waitForFunction(() => (window as any).__skillReadHeld);
+  try {
+    await choose(second);
+    await textbox.fill('/');
+    const candidates = editor.locator('.remote-skills button');
+    await expect(candidates).toHaveText(['skill:second-project']);
+    await page.evaluate(() => (window as any).__releaseSkillRead());
+    await page.waitForFunction(() => (window as any).__skillReadReleased);
+    await expect(candidates).toHaveText(['skill:second-project']);
+    await candidates.first().click();
+    await expect(textbox).toHaveValue('/skill:second-project ');
+    expect(firstReads).toBe(2);
+  } finally {
+    await page.evaluate(() => (window as any).__releaseSkillRead?.());
+  }
 });
 
 test("quiet runs stay active without activity files and stopping is explicit", async ({
@@ -237,6 +361,7 @@ test("new sessions use an existing directory and unread clears on click", async 
   const editor = page.getByRole("dialog", { name: "新对话", exact: true });
   await editor.getByRole("button", { name: "选择项目", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "选择项目", exact: true });
+  await picker.locator("summary").filter({ hasText: "系统路径" }).click();
   await picker.getByRole("textbox", { name: "文件夹路径", exact: true }).fill(workingDir);
   await picker.getByRole("button", { name: "前往", exact: true }).click();
   await picker.getByRole("button", { name: "使用此文件夹", exact: true }).click();

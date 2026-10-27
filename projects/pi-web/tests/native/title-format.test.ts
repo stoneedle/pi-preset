@@ -6,18 +6,23 @@ import * as path from "node:path";
 import { externalBadge, renderTitle, graphemes, ellipsize, TITLE_BUDGET } from "../../.pi/extensions/lib/title/format.ts";
 
 const states = [
-  { state: "running", unread: false, glyph: "⟳" },
-  { state: "running", unread: true, glyph: "⟳ ●" },
-  { state: "needs-you", unread: false, glyph: "!" },
-  { state: "background", unread: false, glyph: "▱" },
-  { state: "background", unread: true, glyph: "▱ ●" },
-  { state: "idle", unread: false, glyph: "○" },
-  { state: "idle", unread: true, glyph: "○ ●" },
-  { state: "idle", unread: false, completed: true, glyph: "✓" },
-  { state: "idle", unread: true, completed: true, glyph: "✓ ●" },
-  { state: "idle", unread: false, outcome: "error", glyph: "×" },
-  { state: "idle", unread: true, outcome: "aborted", glyph: "■ ●" },
-  { state: "unknown", unread: false, glyph: "?" },
+  { state: "running", unread: false, glyph: "⏳" },
+  { state: "running", unread: true, glyph: "⏳ 🔵" },
+  { state: "needs-you", unread: false, glyph: "❗" },
+  { state: "needs-you", unread: true, glyph: "❗ 🔵" },
+  { state: "background", unread: false, glyph: "🧩" },
+  { state: "background", unread: true, glyph: "🧩 🔵" },
+  { state: "idle", unread: false, glyph: "⚪" },
+  { state: "idle", unread: true, glyph: "⚪ 🔵" },
+  { state: "idle", unread: null, glyph: "⚪" },
+  { state: "idle", unread: false, completed: true, glyph: "✅" },
+  { state: "idle", unread: true, completed: true, glyph: "✅ 🔵" },
+  { state: "idle", unread: false, completed: true, outcome: "error", glyph: "❌" },
+  { state: "idle", unread: true, completed: true, outcome: "error", glyph: "❌ 🔵" },
+  { state: "idle", unread: false, completed: true, outcome: "aborted", glyph: "⏹️" },
+  { state: "idle", unread: true, completed: true, outcome: "aborted", glyph: "⏹️ 🔵" },
+  { state: "unknown", unread: false, glyph: "❓" },
+  { state: "unknown", unread: true, glyph: "❓ 🔵" },
 ] as const;
 
 test("status changes preserve the saved name, including with an external badge", () => {
@@ -45,9 +50,9 @@ test("project name is opt-in and preserves the saved name", () => {
   const previous = process.env.PI_TITLE_GLYPHS_CWD;
   try {
     delete process.env.PI_TITLE_GLYPHS_CWD;
-    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "○ · Fix import");
+    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "⚪ · Fix import");
     process.env.PI_TITLE_GLYPHS_CWD = "1";
-    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "○ myproj · Fix import");
+    assert.equal(renderTitle({ state: "idle", unread: false, cwdName: "myproj", title: "Fix import" }), "⚪ myproj · Fix import");
   } finally {
     if (previous === undefined) delete process.env.PI_TITLE_GLYPHS_CWD;
     else process.env.PI_TITLE_GLYPHS_CWD = previous;
@@ -69,7 +74,7 @@ test("badge files produce a complete glyph only when valid and unexpired", (t) =
 });
 
 test("truncation preserves composite emoji, flags, and combining characters", () => {
-  for (const unit of ["😀", "👨‍👩‍👧‍👦", "🇨🇳", "e\u0301"]) {
+  for (const unit of ["😀", "⏹️", "👨‍👩‍👧‍👦", "🇨🇳", "e\u0301"]) {
     const source = "a".repeat(65) + unit + " end".repeat(20);
     const value = renderTitle({ state: "idle", unread: false, title: source });
     assert.ok(value.isWellFormed());

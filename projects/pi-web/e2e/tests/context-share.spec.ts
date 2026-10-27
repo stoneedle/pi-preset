@@ -1,31 +1,17 @@
 import { test, expect } from '../lib/test';
 import { assistantTextEntry, buildSession, uniqueSessionName, writeSession } from '../lib/sessions';
-import type { Locator, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
-// Network gates must observe page fetches, not requests forwarded by a real SW.
-// Worker behavior is covered separately by push/updates tests.
 test.use({ serviceWorkers: 'block' });
-
 const quote = '这段实现为什么要分两步？';
-
 function isFullContentRequest(url: string) {
   const { pathname, searchParams } = new URL(url);
-  // Visible thumbnails are expected; sharing must not fetch originals or folded bodies.
   return /\/api\/session\/(context|block|image)$/.test(pathname) &&
     !(pathname === '/api/session/image' && searchParams.get('thumbnail') === '1');
 }
-
-async function selectText(locator: Locator) {
-  await locator.scrollIntoViewIfNeeded();
-  await locator.evaluate((element) => {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-  });
+async function openSharing(page: Page) {
+  await page.locator('summary[aria-label="更多"]').click();
 }
-
 async function mockSharing(page: Page, supported = true) {
   await page.addInitScript((supported) => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: ({ files }: ShareData) => supported && files?.length === 1 && files[0].type === 'text/plain' });
@@ -67,10 +53,10 @@ function contextSession(sessionsDir: string, workingDir: string, info: Parameter
   ] } });
   entries.push({ type: 'message', id: 'selected-message', parentId: 'tool-result', message: { role: 'assistant', content: [{ type: 'text', text: quote }] } });
   entries.push({ type: 'session_info', id: 'name', parentId: 'selected-message', name: '中文上下文 / 分享' });
-  return writeSession(sessionsDir, uniqueSessionName(info, 'selection-share'), entries);
+  return writeSession(sessionsDir, uniqueSessionName(info, 'context-share'), entries);
 }
 
-test('selection shares a complete active-branch TXT only after a second user click, preserving drafts', async ({ page, sessionsDir, workingDir }, info) => {
+test('top menu shares a complete active-branch TXT only after a second user click, preserving drafts', async ({ page, sessionsDir, workingDir }, info) => {
   await mockSharing(page);
   const id = contextSession(sessionsDir, workingDir, info);
   const requests: string[] = [];
@@ -80,7 +66,7 @@ test('selection shares a complete active-branch TXT only after a second user cli
   await draft.fill('unsent-draft-must-not-be-exported');
   await expect(page.locator('.remote-main')).not.toContainText('Initial prompt.');
   await expect(page.locator('.remote-main')).not.toContainText('complete-unloaded-tool-output');
-  await selectText(page.locator('[data-message-id="selected-message"] .remote-markdown'));
+  await openSharing(page);
   const trigger = page.getByRole('button', { name: '分享完整会话', exact: true });
   await expect(trigger).toBeVisible();
   await expect(page.getByRole('button', { name: '分享已加载上下文', exact: true })).toBeVisible();
@@ -101,10 +87,10 @@ test('selection shares a complete active-branch TXT only after a second user cli
   const payload = await sharedPayload(page);
   expect(payload.type).toBe('text/plain');
   expect(payload.name).toBe('Pi-中文上下文 _ 分享-上下文.txt');
-  expect(payload.body).toContain(`# 选中片段\n\n${quote}`);
+  expect(payload.body).not.toContain('# 选中片段');
   for (const text of ['Initial prompt.', '历史消息 0', '必须保留的压缩摘要。', 'complete-unloaded-input', 'complete-unloaded-tool-output', '[图片未包含]']) expect(payload.body).toContain(text);
   for (const text of ['inactive-branch-must-not-be-exported', 'private-thinking-not-exported', 'private-image-base64-not-exported', 'unsent-draft-must-not-be-exported']) expect(payload.body).not.toContain(text);
-  expect(payload.text).toContain('详细解释');
+  expect(payload.text).toContain('理解上下文');
   if (payload.activated !== undefined) expect(payload.activated).toBe(true);
   expect(requests.filter((url) => isFullContentRequest(url) && new URL(url).pathname !== '/api/session/context')).toEqual([]);
   await dialog.getByRole('button', { name: '关闭分享' }).click();
@@ -116,10 +102,10 @@ test('unsupported file sharing downloads a real UTF-8 TXT and stays usable at 32
   const id = contextSession(sessionsDir, workingDir, info);
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   await page.setViewportSize({ width: 320, height: 380 });
-  await selectText(page.locator('[data-message-id="selected-message"] .remote-markdown'));
+  await openSharing(page);
   const trigger = page.getByRole('button', { name: '分享完整会话', exact: true });
   await expect(page.getByRole('button', { name: '分享已加载上下文', exact: true })).toBeVisible();
-  const box = await page.getByRole('group', { name: '选区操作' }).boundingBox();
+  const box = await page.locator('.remote-info-panel').boundingBox();
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(320);
   await trigger.click();
@@ -141,7 +127,7 @@ test('unsupported file sharing downloads a real UTF-8 TXT and stays usable at 32
   expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
   expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(380);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: info.outputPath('selection-share-320.png') });
+  await page.screenshot({ path: info.outputPath('context-share-320.png'), animations: 'disabled' });
   await dialog.getByRole('button', { name: '关闭分享' }).click();
 });
 
@@ -151,7 +137,7 @@ test('cancel and failed native shares never trigger a download and can be retrie
   const downloads: string[] = [];
   page.on('download', (download) => downloads.push(download.suggestedFilename()));
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
-  await selectText(page.locator('[data-message-id="selected-message"] .remote-markdown'));
+  await openSharing(page);
   await page.getByRole('button', { name: '分享完整会话', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '分享完整会话' });
   const share = dialog.getByRole('button', { name: '分享 TXT', exact: true });
@@ -171,33 +157,30 @@ test('cancel and failed native shares never trigger a download and can be retrie
   expect(await page.evaluate(() => (window as any).__shares.length)).toBe(3);
 });
 
-test('real mouse text selection opens sharing without hijacking composer selection or drawer gestures', async ({ page, sessionsDir, workingDir }, info) => {
+test('选中文字不再弹网页菜单，正文与输入框保持原生选区；分享只从更多进入', async ({ page, sessionsDir, workingDir }, info) => {
   await mockSharing(page);
   const id = contextSession(sessionsDir, workingDir, info);
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   const paragraph = page.locator('[data-message-id="selected-message"] p');
-  await paragraph.scrollIntoViewIfNeeded();
-  const box = await paragraph.evaluate((element) => {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    const rect = range.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  await paragraph.evaluate(node => {
+    const range = document.createRange(); range.selectNodeContents(node);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
   });
-  await page.mouse.move(box.x + 1, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 12 });
   await expect(page.getByRole('group', { name: '选区操作' })).toHaveCount(0);
-  await page.mouse.up();
-  const trigger = page.getByRole('button', { name: '分享完整会话', exact: true });
-  await expect(trigger).toBeVisible();
-  await expect(page.getByRole('dialog', { name: '会话', exact: true })).not.toBeVisible();
-  await trigger.click();
-  await expect(page.getByRole('dialog', { name: '分享完整会话' }).locator('blockquote')).toHaveText(quote);
-  await page.getByRole('button', { name: '关闭分享' }).click();
+  await expect(page.getByRole('button', { name: '分享完整会话', exact: true })).not.toBeVisible();
+  expect(await page.evaluate(() => window.getSelection()!.toString())).toBe(quote);
+  await openSharing(page);
+  await page.getByRole('button', { name: '分享完整会话', exact: true }).click();
+  await expect(page.locator('.remote-info')).not.toHaveAttribute('open', '');
+  const dialog = page.getByRole('dialog', { name: '分享完整会话' });
+  await expect(dialog.getByRole('button', { name: '分享 TXT', exact: true })).toBeVisible();
+  await expect(dialog.locator('blockquote')).toHaveCount(0);
+  await dialog.getByRole('button', { name: '关闭分享' }).click();
   const draft = page.getByRole('textbox', { name: '给 Pi 发消息…' });
   await draft.fill('保留编辑器的原生复制菜单');
-  await draft.evaluate((element: HTMLTextAreaElement) => element.select());
-  await expect(trigger).toHaveCount(0);
+  await draft.evaluate((node: HTMLTextAreaElement) => node.select());
+  await expect(page.getByRole('group', { name: '选区操作' })).toHaveCount(0);
   await expect(draft).toHaveValue('保留编辑器的原生复制菜单');
 });
 
@@ -211,7 +194,7 @@ test('loaded context shares immediately while offline without fetching full hist
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   await expect(page.locator('[data-message-id="selected-message"]')).toBeVisible();
   await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('unsent-draft-must-not-be-exported');
-  await selectText(page.locator('[data-message-id="selected-message"] .remote-markdown'));
+  await openSharing(page);
   await context.setOffline(true);
   try {
     await page.getByRole('button', { name: '分享已加载上下文', exact: true }).click();
@@ -231,7 +214,7 @@ test('loaded context shares immediately while offline without fetching full hist
   // after restoring transport; the share call and no-network assertions stay offline.
   const payload = await sharedPayload(page);
   expect(payload.name).toBe('Pi-中文上下文 _ 分享-已加载上下文.txt');
-  expect(payload.body).toContain(`# 选中片段\n\n${quote}`);
+  expect(payload.body).not.toContain('# 选中片段');
   for (const text of ['当前页面已加载', '历史消息 34', '工具：read', '摘要：example.txt']) expect(payload.body).toContain(text);
   for (const text of ['Initial prompt.', '历史消息 0', '必须保留的压缩摘要。', 'complete-unloaded-input', 'complete-unloaded-tool-output', 'private-thinking-not-exported', 'private-image-base64-not-exported', 'unsent-draft-must-not-be-exported']) expect(payload.body).not.toContain(text);
 });
@@ -250,7 +233,7 @@ test('loaded context retains previously fetched tool bodies after collapse witho
   await tool.click();
   await expect(page.locator('.remote-block-body')).toHaveCount(0);
   expect(reads).toHaveLength(1);
-  await selectText(page.locator('[data-message-id="selected-message"] .remote-markdown'));
+  await openSharing(page);
   await context.setOffline(true);
   try {
     await page.getByRole('button', { name: '分享已加载上下文', exact: true }).click();
@@ -273,20 +256,19 @@ test('loaded fallback downloads only local context and never reuses an earlier f
     if (request.url().includes('/api/session/context')) reads.push(request.url());
   });
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
-  const selected = page.locator('[data-message-id="selected-message"] .remote-markdown');
-  await selectText(selected);
+  await openSharing(page);
   await page.getByRole('button', { name: '分享完整会话', exact: true }).click();
   const full = page.getByRole('dialog', { name: '分享完整会话' });
   await expect(full.getByRole('button', { name: '下载 TXT' })).toBeVisible();
   await full.getByRole('button', { name: '关闭分享' }).click();
   expect(reads).toHaveLength(1);
   await page.setViewportSize({ width: 320, height: 380 });
-  await selectText(selected);
-  const menu = page.getByRole('group', { name: '选区操作' });
+  await openSharing(page);
+  const menu = page.locator('.remote-info-panel');
   const box = await menu.boundingBox();
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(320);
-  await page.screenshot({ path: info.outputPath('selection-actions-320.png') });
+  await page.screenshot({ path: info.outputPath('context-menu-320.png'), animations: 'disabled' });
   await page.getByRole('button', { name: '分享已加载上下文', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '分享已加载上下文' });
   await expect(dialog).toContainText('当前浏览器无法分享此文件');
@@ -304,7 +286,7 @@ test('loaded fallback downloads only local context and never reuses an earlier f
   expect(reads).toHaveLength(1);
 });
 
-test('preparation failures preserve the quote, allow retry and do not expose an empty TXT', async ({ page, sessionsDir, workingDir, request }, info) => {
+test('preparation failures allow retry and do not expose an empty TXT', async ({ page, sessionsDir, workingDir, request }, info) => {
   await mockSharing(page);
   const id = contextSession(sessionsDir, workingDir, info);
   const response = await request.get(`/api/session/context?id=${encodeURIComponent(id)}`);
@@ -314,11 +296,11 @@ test('preparation failures preserve the quote, allow retry and do not expose an 
   expect((await request.get('/api/session/context?id=missing.jsonl')).status()).toBe(404);
   await page.route('**/api/session/context?*', (route) => route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: '测试准备失败' }) }));
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
-  await selectText(page.locator('[data-message-id="selected-message"] .remote-markdown'));
+  await openSharing(page);
   await page.getByRole('button', { name: '分享完整会话', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '分享完整会话' });
   await expect(dialog.getByRole('alert')).toContainText('测试准备失败');
-  await expect(dialog.locator('blockquote')).toHaveText(quote);
+  await expect(dialog.locator('blockquote')).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: '分享 TXT', exact: true })).toHaveCount(0);
   await page.unroute('**/api/session/context?*');
   await dialog.getByRole('button', { name: '重新准备' }).click();

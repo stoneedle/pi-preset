@@ -6,7 +6,10 @@
 
 | 范围 | 来源及版权 | 许可与声明 |
 |---|---|---|
-| `extensions/inline-skill-completion` | [CNife/pi-extensions](https://github.com/CNife/pi-extensions)，Copyright 2025 CNife；本地改造来自 [stoneedle fork](https://github.com/stoneedle/pi-extensions) 的 `packages/inline-skill-completion` | 目录内 MIT `LICENSE` |
+| `projects/pi-extensions`（含行内技能补全） | [CNife/pi-extensions](https://github.com/CNife/pi-extensions)，Copyright 2025 CNife；本地改造来自 [stoneedle fork](https://github.com/stoneedle/pi-extensions) | 项目内 MIT `LICENSE` 及各模块自带声明 |
+| `projects/pi-web` | [ygncode/pi-web](https://github.com/ygncode/pi-web)，Copyright 2026 Set Kyar Wa Lar (YGNCode)；本地改造来自 stoneedle fork | 项目内 MIT `LICENSE` |
+| `projects/pi-web/.pi/extensions/lib/title` | [t0mj/pi-title-glyphs](https://github.com/t0mj/pi-title-glyphs)，Copyright 2026 t0mj；标题与命名实现作为 Pi Web 的内部模块维护 | 模块内 MIT `LICENSE` |
+| `projects/pi-subagents` | [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents)，Copyright 2026 Nico Bailon；本地改造来自 stoneedle fork | 项目内 MIT `LICENSE` |
 | README「工程与协作」中的技能 | [mattpocock/skills](https://github.com/mattpocock/skills)，Copyright 2026 Matt Pocock | 各技能内 MIT `LICENSE` |
 | `skills/find-skills` | [vercel-labs/skills](https://github.com/vercel-labs/skills)，Copyright 2026 Vercel, Inc. | 目录内 MIT `LICENSE` |
 | `skills/impeccable` | [pbakaus/impeccable](https://github.com/pbakaus/impeccable)，技能标注版本 4.7.0 | 目录内 Apache-2.0 `LICENSE` |
@@ -19,9 +22,8 @@ Archify 内含字体和第三方品牌标记，已保留原有声明及来源信
 
 ## 仅分享链接的项目
 
-- `pi-web-access`、`pi-subagents`、`pi-compact-transcript`、`pi-goal`：MIT。
+- `pi-web-access`、`pi-compact-transcript`、`pi-goal`：MIT。
 - `pi-codex-image-gen`：Apache-2.0，原包另有 `NOTICE` 和 OpenAI Codex 衍生文件声明。
-- `pi-web`：MIT，原版权声明为 Copyright 2026 Set Kyar Wa Lar (YGNCode)，通过独立仓库分享。
 - `@calesennett/pi-codex-fast`：目前未发现上游许可证。这里只分享项目链接，不收录原版源码、本机改造或补丁，也不据此推定获得再分发授权。
 
-这些项目的源码及依赖不复制到本仓库。使用或再次分发时遵循其各自许可。
+此节列出的项目不复制源码或依赖。使用或再次分发时遵循其各自许可。

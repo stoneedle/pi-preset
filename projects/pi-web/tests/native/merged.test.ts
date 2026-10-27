@@ -145,7 +145,7 @@ test('one real merged extension owns native controls, snapshots, branch results 
     onError: (error: any) => errors.push(String(error.error)) });
   owner = JSON.parse(readFileSync(ownerFile, 'utf8'));
   assert.equal((await snapshot()).unread, false);
-  assert.match(titles.at(-1)!, /✓ · 修复字幕导入/);
+  assert.match(titles.at(-1)!, /✅ · 修复字幕导入/);
   session.setSessionName('人工名称');
   await session.extensionRunner!.emitInput('不同任务', undefined, 'interactive');
   assert.match(titles.at(-1)!, /人工名称/);
@@ -162,7 +162,15 @@ test('one real merged extension owns native controls, snapshots, branch results 
   assert.equal((await snapshot()).state, 'idle', 'optional naming config cannot disable runtime state');
   await session.extensionRunner!.emit({ type: 'agent_start' });
   assert.equal((await snapshot()).state, 'running');
+  assert.match(titles.at(-1)!, /⏳ · 人工名称/);
+  await session.extensionRunner!.emit({ type: 'ui_prompt_start', kind: 'confirm', title: 'Confirm' } as any);
+  assert.match(titles.at(-1)!, /❗ · 人工名称/);
+  await session.extensionRunner!.emit({ type: 'ui_prompt_end', kind: 'confirm' } as any);
+  assert.match(titles.at(-1)!, /⏳ · 人工名称/);
+  manager.appendMessage({ role: 'assistant', content: [], api: 'test', model: 'test', provider: 'test',
+    stopReason: 'aborted', timestamp: Date.now() } as any);
   await session.extensionRunner!.emit({ type: 'agent_settled', aborted: true });
+  assert.match(titles.at(-1)!, /⏹️ · 人工名称/);
   assert.equal(errors.length, 1, JSON.stringify(errors));
   assert.match(errors[0], /自动命名配置不可用/);
   errors.length = 0;

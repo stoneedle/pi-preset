@@ -13,6 +13,7 @@
     submitSessionMessage,
   } from '../remote-drafts.svelte.js';
   import RemoteComposer from './RemoteComposer.svelte';
+  import SkillSuggestions from './SkillSuggestions.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
   import RefreshError from './RefreshError.svelte';
   let dialog = $state(null);
@@ -182,6 +183,15 @@
       {#if draft.createdId && (draft.error || draft.recoveries.length)}<p class="new-task-recovery">
           会话已创建，内容仍保留。<button type="button" onclick={recover}>打开会话继续</button>
         </p>{/if}
+      <SkillSuggestions
+        composer={draft}
+        url={draft.createdId
+          ? '/api/commands?id=' + encodeURIComponent(draft.createdId)
+          : draft.path
+            ? '/api/commands?path=' + encodeURIComponent(draft.path)
+            : ''}
+        onselect={() => textarea?.focus({ preventScroll: true })}
+      />
       <RemoteComposer
         composer={draft}
         canSend={Boolean(draft.path)}

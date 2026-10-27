@@ -153,6 +153,27 @@ export function restoreSubmission(composer, id) {
   return true;
 }
 
+export function recoverQueuedMessage(composer, item, error = '') {
+  const images = item.images.map((image, index) => {
+    const bytes = Uint8Array.from(atob(image.data), (character) => character.charCodeAt(0));
+    const extension = image.mimeType.split('/')[1];
+    return new File([bytes], `排队图片-${index + 1}.${extension}`, { type: image.mimeType });
+  });
+  const id = ++nextIdentity;
+  composer.recoveries.push({
+    id,
+    draftId: ++nextIdentity,
+    revision: 0,
+    text: item.message,
+    images,
+    settings: {},
+    state: error ? 'uncertain' : 'draft',
+    operation: error ? 'withdraw' : undefined,
+    error,
+  });
+  return !error && restoreSubmission(composer, id);
+}
+
 export function discardRecovery(composer, id) {
   const item = composer.recoveries.find((item) => item.id === id);
   if (!item) return;

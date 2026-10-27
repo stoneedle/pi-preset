@@ -2,7 +2,7 @@
 
 我日常使用的 [Pi](https://pi.dev/) 提示词、扩展、技能和代理配置合集。
 
-这里分享的是一套个人使用习惯：怎样约束 agent 的工作方式、怎样与 Gemini 协作、用哪些工具补充 Pi，以及哪些技能值得放在手边。自己的内容直接收录，第三方内容保留来源和许可证；独立维护的项目提供仓库链接。
+这里分享的是一套个人使用习惯：怎样约束 agent 的工作方式、怎样与 Gemini 协作、用哪些工具补充 Pi，以及哪些技能值得放在手边。自己的内容和维护中的 fork 直接收录，第三方内容保留来源和许可证。
 
 ## 提示词与代理
 
@@ -26,18 +26,26 @@
 
 目录中包含扩展代码、[Gemini 协作身份](extensions/agy-gemini/collaboration.md)、[角色提示词](extensions/agy-gemini/role.md)和执行协议。依赖 `pi-subagents`，使用者需要自行安装并登录 agy CLI。
 
-### [行内技能补全](extensions/inline-skill-completion/)
+### [行内技能补全](projects/pi-extensions/packages/inline-skill-completion/)
 
-基于 [CNife/pi-extensions](https://github.com/CNife/pi-extensions) 改造。在输入正文和后续行中使用 `/skill:` 补全，支持多个技能的折叠展示。保留上游 MIT 许可。
+基于 [CNife/pi-extensions](https://github.com/CNife/pi-extensions) 改造。在输入正文和后续行中使用 `/skill:` 补全，支持多个技能的折叠展示。源码位于下方收录的完整 `pi-extensions` 项目中，保留上游 MIT 许可。
 
 ### 两个小扩展
 
 - [bash-timeout-guard.ts](extensions/bash-timeout-guard.ts)：拦截超过一小时的 bash 超时参数，提醒 agent 参数单位是秒，减少把毫秒误填成秒的问题。
 - [codex-fast-shortcut.ts](extensions/codex-fast-shortcut.ts)：通过 `Alt+Shift+F` 切换 Codex Fast 模式，并处理 Windows Tabby 的按键编码。需要另装 `pi-codex-fast`。
 
-### [Pi Web](https://github.com/stoneedle/pi-web)
+## 收录的 fork 项目
 
-我单独维护的 Pi 手机遥控界面，侧重弱网下查看真实状态、完整阅读内容，以及继续电脑上的工作。项目继续放在自己的仓库中，这里作为合集入口，不复制整份源码。
+完整源码放在 `projects/`，每个项目保留自己的目录、说明和许可证。
+
+| 项目 | 内容 | 上游 |
+|---|---|---|
+| [pi-web](projects/pi-web/) | Pi 手机遥控界面，侧重弱网阅读与接续工作；包含终端状态标题、会话命名和后台标题摘要 | [ygncode/pi-web](https://github.com/ygncode/pi-web) |
+| [pi-extensions](projects/pi-extensions/) | 扩展集合；我目前使用和改造的是其中的行内技能补全，项目内也保留其他上游扩展 | [CNife/pi-extensions](https://github.com/CNife/pi-extensions) |
+| [pi-subagents](projects/pi-subagents/) | 子代理编排及自己的结果交付相关改造 | [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) |
+
+这些是源码项目，不意味着需要同时启用所有扩展。使用入口、依赖和具体功能见各自 README。
 
 ## 使用中的第三方插件
 
@@ -47,7 +55,6 @@
 |---|---|---|
 | [pi-web-access](https://github.com/nicobailon/pi-web-access) | 0.37.0 | 网页搜索、内容读取与来源查证 |
 | [pi-codex-image-gen](https://www.npmjs.com/package/pi-codex-image-gen) | 0.1.15 | 通过 Codex 登录调用图片生成与编辑 |
-| [pi-subagents](https://github.com/nicobailon/pi-subagents) | 0.78.0 | 子代理委派、并行任务与异步协作 |
 | [pi-compact-transcript](https://github.com/avhagedorn/pi-compact-transcript) | 0.11.1 | 紧凑的会话记录展示 |
 | [pi-goal](https://www.npmjs.com/package/pi-goal) | 0.1.7 | 持续目标模式 |
 | [pi-codex-fast](https://github.com/calesennett/pi-codex-fast) | 0.1.11 | Codex Fast 模式 |

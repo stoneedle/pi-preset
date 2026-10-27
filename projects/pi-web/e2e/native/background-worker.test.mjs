@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { SessionManager, ProjectTrustStore } from '@earendil-works/pi-coding-agent';
 import { chromium, expect } from '@playwright/test';
 import { startServer, stopServer } from '../lib/server.ts';
 import { REPO_ROOT } from '../lib/paths.ts';
@@ -13,6 +13,10 @@ test('phone sends and new-session run actual installed native Pi workers', { tim
   const root = mkdtempSync(join(tmpdir(), 'pi-web-native-workers-'));
   const firstCWD = join(root, 'first-project'), newCWD = join(root, 'new-project');
   mkdirSync(firstCWD); mkdirSync(newCWD);
+  const skillDir = join(newCWD, '.pi', 'skills', 'worker-skill-fixture');
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: worker-skill-fixture\ndescription: Native skill loading fixture\n---\nNATIVE_SKILL_INSTRUCTION_PROOF\n');
+  new ProjectTrustStore(root).set(newCWD, true);
   mkdirSync(join(root, 'extension-data', 'pi-title-glyphs'), { recursive: true });
   writeFileSync(join(root, 'extension-data', 'pi-title-glyphs', 'config.json'), JSON.stringify({ model: 'lifecycle-test/local' }));
   writeFileSync(join(root, 'settings.json'), JSON.stringify({ packages: [REPO_ROOT], extensions: [join(REPO_ROOT, 'e2e/lib/native-provider.mjs')],
@@ -94,10 +98,16 @@ test('phone sends and new-session run actual installed native Pi workers', { tim
   const editor = page.getByRole('dialog', {name:'新对话',exact:true});
   await editor.getByRole('button', {name:'选择项目',exact:true}).click();
   const picker = page.getByRole('dialog', {name:'选择项目',exact:true});
+  await picker.locator('summary').filter({hasText:'系统路径'}).click();
   await picker.getByRole('textbox', {name:'文件夹路径',exact:true}).fill(newCWD);
   await picker.getByRole('button', {name:'前往',exact:true}).click();
   await picker.getByRole('button', {name:'使用此文件夹',exact:true}).click();
-  await editor.getByRole('textbox', {name:'给 Pi 发消息…',exact:true}).fill('Actual newly created background session');
+  const newPrompt = editor.getByRole('textbox', {name:'给 Pi 发消息…',exact:true});
+  await newPrompt.fill('/worker-skill');
+  await editor.getByRole('button', { name: 'skill:worker-skill-fixture', exact: true }).click();
+  await expect(newPrompt).toHaveValue('/skill:worker-skill-fixture ');
+  assert.equal(readdirSync(join(root, 'pi-web', 'owners')).length, 1, 'skill completion must not start a new native process');
+  await newPrompt.fill('Actual newly created background session');
   await editor.getByRole('button', {name:'发送',exact:true}).click();
   await expect.poll(() => new URL(page.url()).searchParams.get('id'), { timeout: 45000 }).not.toBe(firstID);
   const nextID = new URL(page.url()).searchParams.get('id'); assert.ok(nextID);
@@ -116,6 +126,15 @@ test('phone sends and new-session run actual installed native Pi workers', { tim
   await expect.poll(() => SessionManager.open(nextPath).getSessionName()).toBe('原生命名验证');
   const titleEntries = () => SessionManager.open(nextPath).getEntries().filter(entry => entry.type === 'session_info');
   assert.equal(titleEntries().length, 2, 'owner send saves the opening excerpt and exactly one model title');
+  const skillCommands = await api('/api/commands?id=' + encodeURIComponent(nextID));
+  assert.ok(skillCommands.commands.some((command) => command.name === 'skill:worker-skill-fixture'), 'the native worker loads the trusted project skill');
+  await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).fill('/skill:worker-skill-fixture skill-request-proof');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect.poll(() => {
+    const messages = SessionManager.open(nextPath).getEntries().filter((entry) => entry.type === 'message');
+    return messages.some((entry) => entry.message.role === 'assistant' && JSON.stringify(entry.message.content).includes('NATIVE_SKILL_INSTRUCTION_PROOF') && JSON.stringify(entry.message.content).includes('skill-request-proof'));
+  }).toBe(true);
+  assert.equal(owner(nextID).pid, nextOwner.pid, 'skill invocation reuses the new session worker');
   await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).fill('Keep the first session title');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.getByText('Native lifecycle reply: Keep the first session title', { exact: true })).toBeVisible();

@@ -70,6 +70,13 @@
     return block.type === 'tool' ? body : null;
   }
 
+  export function reveal() {
+    if (!open) {
+      open = true;
+      load();
+    }
+  }
+
   function toggle() {
     open = !open;
     if (open) load();
@@ -103,7 +110,11 @@
 {#if block.type === 'image'}
   <RemoteImage {sessionId} entry={entryId} index={block.index} />
 {:else}
-  <div class="remote-block" class:remote-block-thinking={block.type === 'thinking'}>
+  <div
+    class="remote-block"
+    data-reading-block={block.index}
+    class:remote-block-thinking={block.type === 'thinking'}
+  >
     <button
       type="button"
       class="remote-block-toggle"

@@ -72,12 +72,11 @@ func NewPiWorker(sessionPath string) (workers.ChatWorker, error) {
 }
 
 func (w *piRPCWorker) Prompt(ctx context.Context, chat chat.Request) error {
+	if chat.Delivery == "followUp" {
+		return errors.New("排队需要原生控制桥接，请在电脑端 /reload")
+	}
 	w.mu.Lock()
 	streaming := w.status.State == workers.WorkerStateRunning
-	if chat.Delivery == "followUp" && !streaming {
-		w.mu.Unlock()
-		return errors.New("Pi 当前未在运行，请直接发送开始任务")
-	}
 	w.status = workers.WorkerStatus{State: workers.WorkerStateRunning}
 	w.mu.Unlock()
 	id := w.nextID()

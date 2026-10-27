@@ -1,12 +1,18 @@
 <script>
   import { onMount } from 'svelte';
   import RemoteApp from './routes/RemoteApp.svelte';
+  import SessionDrawer from './components/SessionDrawer.svelte';
   import { startHistoryPrefetch } from './remote-history.js';
+  import { startRuntime } from './remote-runtime.svelte.js';
 
   let sessionId = $state(new URLSearchParams(location.search).get('id') || '');
   let app = $state(null);
+  let drawer = $state(null);
+  let drawerOpen = $state(false);
+  let drawerSurface = $state(null);
   onMount(() => {
     const stopPrefetch = startHistoryPrefetch();
+    const stopRuntime = startRuntime();
     const sync = () => {
       app?.rememberSession();
       sessionId = new URLSearchParams(location.search).get('id') || '';
@@ -39,6 +45,7 @@
     window.addEventListener('popstate', sync);
     return () => {
       stopPrefetch();
+      stopRuntime();
       document.removeEventListener('click', navigate);
       window.removeEventListener('popstate', sync);
     };
@@ -46,5 +53,17 @@
 </script>
 
 {#key sessionId}
-  <RemoteApp {sessionId} bind:this={app} />
+  <RemoteApp {sessionId} {drawer} {drawerOpen} bind:drawerSurface bind:this={app} />
 {/key}
+
+{#if sessionId}
+  <SessionDrawer
+    surface={drawerSurface}
+    currentSessionId={sessionId}
+    canSwipe={() => app?.canSwipeDrawer()}
+    bind:this={drawer}
+    bind:isOpen={drawerOpen}
+    onnew={(path) => app?.openNew(path)}
+    onclose={() => app?.drawerClosed()}
+  />
+{/if}

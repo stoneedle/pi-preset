@@ -25,7 +25,13 @@ func (s *Server) handleApiSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	window, err := content.Window(q.Get("before"), q.Get("after"), s.activeLeaf(content.SessionSummary))
+	var window sessions.Window
+	leaf := s.activeLeaf(content.SessionSummary)
+	if q.Get("around") != "" || q.Get("forward") != "" {
+		window, err = content.Locate(q.Get("around"), q.Get("forward"), q.Get("after"), q["fallback"], leaf)
+	} else {
+		window, err = content.Window(q.Get("before"), q.Get("after"), leaf)
+	}
 	if resolveOrWriteError(w, err) {
 		return
 	}

@@ -43,10 +43,6 @@ func TestBuildPromptCommandUsesSteerWhenStreaming(t *testing.T) {
 	if cmd["id"] != "req-1" || cmd["type"] != "prompt" || cmd["streamingBehavior"] != "steer" {
 		t.Fatalf("cmd = %#v", cmd)
 	}
-	queued := BuildPromptCommand("req-2", chat.Request{Message: "later", Delivery: "followUp"}, true)
-	if queued["type"] != "follow_up" || queued["streamingBehavior"] != nil {
-		t.Fatalf("queued command must not also steer: %#v", queued)
-	}
 }
 
 func TestBuildPromptCommandOmitsSteerWhenIdle(t *testing.T) {

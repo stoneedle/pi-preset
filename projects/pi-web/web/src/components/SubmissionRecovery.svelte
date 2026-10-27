@@ -6,15 +6,17 @@
   let images = $state([]);
   let expanded = $state(false);
   const label = $derived(
-    item.state === 'draft'
-      ? '另一份草稿已暂存'
-      : item.state === 'failed'
-        ? item.delivery === 'followUp'
-          ? '排队失败'
-          : '发送失败'
-        : item.delivery === 'followUp'
-          ? '未确认是否排队成功'
-          : '未确认是否发送成功',
+    item.operation === 'withdraw'
+      ? '未确认是否撤回成功'
+      : item.state === 'draft'
+        ? '另一份草稿已暂存'
+        : item.state === 'failed'
+          ? item.delivery === 'followUp'
+            ? '排队失败'
+            : '发送失败'
+          : item.delivery === 'followUp'
+            ? '未确认是否排队成功'
+            : '未确认是否发送成功',
   );
   $effect(() => {
     const loaded = item.images.map((file) => ({ file, url: URL.createObjectURL(file) }));
@@ -59,6 +61,9 @@
         <a href={image.url} download={image.file.name}>保存图片：{image.file.name}</a>
       {/each}
       {#if item.state !== 'draft'}<p>重新编辑不会自动发送，当前草稿会另行暂存。</p>{/if}
+      {#if item.operation === 'withdraw'}<p>
+          请先确认排队列表和会话，再决定是否重发，避免重复执行。
+        </p>{/if}
       {#if item.delivery === 'followUp'}<p>需要排队时，请长按发送按钮选择“排队”。</p>{/if}
     </div>
   {/if}

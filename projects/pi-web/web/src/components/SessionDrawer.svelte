@@ -1,5 +1,5 @@
 <script>
-  import { flushSync, onMount } from 'svelte';
+  import { flushSync, onMount, untrack } from 'svelte';
   import { icon, Search, SquarePen, X, Archive, ArrowLeft, Bell } from '../shared/icons.js';
   import SessionList from './SessionList.svelte';
   import { contextMenu } from '../shared/context-menu.js';
@@ -31,6 +31,13 @@
     searchInput.focus({ preventScroll: true });
     searchInput.setSelectionRange(query.length, query.length);
   }
+
+  $effect(() => {
+    currentSessionId;
+    untrack(() => {
+      if (dialog?.open) finishClose();
+    });
+  });
 
   function stopSettling() {
     clearTimeout(finishTimer);

@@ -73,7 +73,7 @@ test('发送过程中只显示按钮进度，成功和跨导航均不插入额�
   }
 });
 
-test('长按仅排队，正常提交无额外展示，失败才出现恢复入口且不重放', async ({ page, request, sessionsDir, agentDir, workingDir }, info) => {
+test('长按保留输入焦点且仅排队，失败提供恢复入口且不重放', async ({ page, request, sessionsDir, agentDir, workingDir }, info) => {
   const { entries, lastId } = buildSession({ cwd: workingDir });
   const id = writeSession(sessionsDir, uniqueSessionName(info, 'follow-up'), entries);
   const other = writeSession(sessionsDir, uniqueSessionName(info, 'follow-up-other'), buildSession({ cwd: workingDir }).entries);
@@ -137,7 +137,9 @@ test('长按仅排队，正常提交无额外展示，失败才出现恢复入�
       name: 'queued.png', mimeType: 'image/png',
       buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=', 'base64'),
     });
+    await expect(draft).toBeFocused();
     await holdSend();
+    await expect(draft).toBeFocused();
     expect(submissions).toHaveLength(0);
     await menu.getByRole('menuitem', { name: '排队', exact: true }).click();
     await expect(menu).not.toBeVisible();

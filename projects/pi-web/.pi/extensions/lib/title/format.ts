@@ -18,6 +18,19 @@ export function showCwd(): boolean {
 
 export const TITLE_BUDGET = 72; // soft cap for the whole title (terminal truncates anyway)
 
+const titleGlyphs: Record<string, string> = {
+  running: "⏳",
+  background: "🧩",
+  "needs-you": "❗",
+  idle: "⚪",
+  completed: "✅",
+  failed: "❌",
+  stopped: "⏹️",
+  unknown: "❓",
+  disconnected: "🔌",
+  reconnecting: "📴",
+};
+
 // -------------------------------------------------- external status badge ---
 /**
  * One optional JSON file, written by any other extension. See the header for the
@@ -71,7 +84,7 @@ export function renderTitle(input: TitleInput): string {
   const { title, badge } = input;
   const visual = sessionPresentation(input);
   const mid = showCwd() && input.cwdName ? ` ${input.cwdName}` : "";
-  const glyph = `${visual.glyph}${visual.unread ? ` ${visual.unread.glyph}` : ""}`;
+  const glyph = `${titleGlyphs[visual.kind]}${visual.unread ? " 🔵" : ""}`;
   const badgePrefix = badge ? `${badge.emoji} ` : "";
   const prefix = `${badgePrefix}${glyph}${mid}`;
   if (!title) return ellipsize(prefix, TITLE_BUDGET);

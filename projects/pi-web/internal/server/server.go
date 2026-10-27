@@ -158,6 +158,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		"/": s.handleIndex, "/session": s.handleSession,
 		"/api/session": s.handleApiSession, "/api/session/block": s.handleSessionBlock,
 		"/api/session/context": s.handleSessionContext,
+		"/api/session/queue":   s.handleSessionQueue,
 		"/api/session/fork":    s.handleForkSession,
 		"/api/session/image":   s.handleSessionImage, "/api/sessions": s.handleApiSessions,
 		"/api/session/name": s.handleRenameSession, "/api/session/archive": s.handleArchiveSession,

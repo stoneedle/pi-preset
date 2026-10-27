@@ -1,5 +1,5 @@
 import { test, expect } from '../lib/test';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildSession, uniqueSessionName, writeSession, appendEntry, assistantTextEntry } from '../lib/sessions';
 import { openFixtureOwner } from '../lib/runtime-owner.mjs';
@@ -32,6 +32,10 @@ test('首页单行入口展开为全屏草稿，选择无历史项目后发送�
   expect((await (await request.get(projectSessions)).json()).total).toBe(before);
   await editor.getByRole('button', { name: '选择项目', exact: true }).click();
   const picker = page.getByRole('dialog', { name: '选择项目', exact: true });
+  await expect(picker.getByRole('region', { name: '已有项目', exact: true })).toBeVisible();
+  await expect(picker.locator('details')).not.toHaveAttribute('open');
+  await expect(picker.getByRole('textbox', { name: '文件夹路径', exact: true })).toBeHidden();
+  await picker.locator('summary').filter({ hasText: '系统路径' }).click();
   await picker.getByRole('textbox', { name: '文件夹路径', exact: true }).fill(workingDir);
   await picker.getByRole('button', { name: '前往', exact: true }).click();
   await picker.getByRole('button', { name: '使用此文件夹', exact: true }).click();
@@ -59,6 +63,80 @@ test('首页单行入口展开为全屏草稿，选择无历史项目后发送�
     return {thinking:status.thinking,mode:status.fast?.mode};
   }).toEqual({thinking:'high',mode:'fast'});
   expect((await (await request.get(projectSessions)).json()).total).toBe(before + 1);
+});
+
+test('已有项目直接选择，系统路径默认折叠且展开才读取，320px键盘缩小仍可浏览确认', async ({ page, sessionsDir, workingDir }, info) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const prefix = uniqueSessionName(info, 'project-picker').replace(/\.jsonl$/, '');
+  const longName = 'a-very-long-project-name-for-mobile-selection';
+  const locations = Array.from({length:10}, (_, index) => join(workingDir, index ? 'project-' + index : longName));
+  for (const [index, cwd] of locations.entries()) {
+    mkdirSync(cwd);
+    const directory = join(sessionsDir, prefix + '-' + index);
+    mkdirSync(directory);
+    writeFileSync(join(directory, 'history.jsonl'), buildSession({cwd}).entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  }
+  mkdirSync(join(locations[0], 'child'));
+  let directoryReads = 0, creations = 0;
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/directories') directoryReads++;
+    if (path === '/api/new-session') creations++;
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '开始新任务', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '新对话', exact: true });
+  const draft = editor.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
+  await draft.fill('项目切换不丢草稿');
+  const openPicker = () => editor.getByRole('button', { name: '选择项目', exact: true }).click();
+  await openPicker();
+  const picker = page.getByRole('dialog', { name: '选择项目', exact: true });
+  const projects = picker.getByRole('region', { name: '已有项目', exact: true });
+  await expect(projects.getByRole('button')).toHaveCount(10);
+  await expect(projects.getByRole('button', { name: longName, exact: true })).toBeVisible();
+  await expect(picker.locator('details')).not.toHaveAttribute('open');
+  await expect(picker.getByRole('textbox', { name: '文件夹路径', exact: true })).toBeHidden();
+  await expect(picker.getByRole('button', { name: '使用此文件夹', exact: true })).toHaveCount(0);
+  expect(directoryReads).toBe(0);
+  await page.screenshot({path:info.outputPath('projects-first-320.png'),animations:'disabled'});
+  await projects.getByRole('button', { name: longName, exact: true }).click();
+  await expect(picker).toBeHidden();
+  await expect(editor.getByRole('button', { name: '选择项目', exact: true })).toContainText(longName);
+  await expect(draft).toHaveValue('项目切换不丢草稿');
+  expect(directoryReads).toBe(0);
+  await openPicker();
+  const summary = picker.locator('summary').filter({ hasText: '系统路径' });
+  await summary.click();
+  const directories = picker.locator('.directory-list');
+  await expect(directories.getByRole('button', { name: 'child', exact: true })).toBeEnabled();
+  expect(directoryReads).toBe(1);
+  await summary.click();
+  await expect(picker.getByRole('button', { name: '使用此文件夹', exact: true })).toHaveCount(0);
+  await summary.click();
+  await expect(directories.getByRole('button', { name: 'child', exact: true })).toBeEnabled();
+  expect(directoryReads).toBe(1);
+  await page.setViewportSize({ width: 320, height: 360 });
+  await directories.getByRole('button', { name: 'child', exact: true }).click();
+  await expect(picker.locator('footer span')).toHaveAttribute('title', join(locations[0], 'child'));
+  await directories.getByRole('button', { name: '上一级', exact: true }).click();
+  await expect(directories.getByRole('button', { name: 'child', exact: true })).toBeEnabled();
+  const input = picker.getByRole('textbox', { name: '文件夹路径', exact: true });
+  await input.fill(workingDir);
+  await picker.getByRole('button', { name: '前往', exact: true }).click();
+  await expect(directories.getByRole('button', { name: longName, exact: true })).toBeEnabled();
+  await expect(picker.locator('.directory-shortcuts button').first()).toBeVisible();
+  const confirm = picker.getByRole('button', { name: '使用此文件夹', exact: true });
+  await expect(confirm).toBeInViewport();
+  expect(await picker.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await page.screenshot({path:info.outputPath('system-paths-keyboard-320.png'),animations:'disabled'});
+  await confirm.click();
+  await expect(picker).toBeHidden();
+  await expect(draft).toHaveValue('项目切换不丢草稿');
+  const reads = directoryReads;
+  await openPicker();
+  await expect(picker.locator('details')).not.toHaveAttribute('open');
+  expect(directoryReads).toBe(reads);
+  expect(creations).toBe(0);
 });
 
 test('配色随系统实时切换且首页与全屏编辑器在320px均不横向溢出', async ({ page }, info) => {

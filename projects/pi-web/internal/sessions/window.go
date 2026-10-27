@@ -44,6 +44,8 @@ type Window struct {
 	Cursor   string        `json:"cursor"`
 	Reset    bool          `json:"reset"`
 	ReplyID  string        `json:"replyId"`
+	Next     string        `json:"next,omitempty"`
+	Anchor   string        `json:"anchor,omitempty"`
 }
 
 func (c *Content) Window(before, after string, leaf *string) (Window, error) {
@@ -123,6 +125,128 @@ func (c *Content) Window(before, after string, leaf *string) (Window, error) {
 		window.Messages = append(window.Messages, view)
 	}
 	slices.Reverse(window.Messages)
+	return window, nil
+}
+
+// Locate reads one bounded page near a reading bookmark, or the page following it.
+// An inactive bookmark walks its native parents to the closest surviving active message.
+func (c *Content) Locate(anchor, forward, previous string, fallback []string, leaf *string) (Window, error) {
+	path, err := c.activePath(leaf)
+	if err != nil {
+		return Window{}, err
+	}
+	positions := make(map[string]int, len(path))
+	for i, entry := range path {
+		positions[entry.id] = i
+	}
+	requested := anchor
+	if forward != "" {
+		requested = forward
+		fallback = nil
+	}
+	target, index := "", 0
+	for _, candidate := range append([]string{requested}, fallback[:min(5, len(fallback))]...) {
+		target = candidate
+		for steps := 0; target != "" && steps <= len(c.entries); steps++ {
+			if _, ok := positions[target]; ok {
+				break
+			}
+			entryIndex, ok := c.byID[target]
+			if !ok {
+				target = ""
+				break
+			}
+			target = c.entries[entryIndex].parent
+		}
+		if position, ok := positions[target]; ok {
+			index = position
+			break
+		}
+	}
+	if len(path) == 0 {
+		window, err := c.Window("", "", leaf)
+		window.Reset = true
+		return window, err
+	}
+	f, err := c.open()
+	if err != nil {
+		return Window{}, err
+	}
+	defer f.Close()
+	results, points := resultEntries(path), forkPoints(path)
+	readable := func(i int) (bool, error) {
+		if path[i].role != "user" && path[i].role != "assistant" {
+			return false, nil
+		}
+		view, err := c.project(f, path[i], results)
+		return len(view.Blocks) > 0 || view.Error != "", err
+	}
+	for index >= 0 {
+		ok, err := readable(index)
+		if err != nil {
+			return Window{}, err
+		}
+		if ok {
+			break
+		}
+		index--
+	}
+	if index < 0 {
+		// With no surviving predecessor, prefer the first readable context, never skip to the tail.
+		for index = 0; index < len(path); index++ {
+			ok, err := readable(index)
+			if err != nil {
+				return Window{}, err
+			}
+			if ok {
+				break
+			}
+		}
+	}
+	window := Window{Messages: []ViewMessage{}, Cursor: path[len(path)-1].id}
+	if index == len(path) {
+		window.Reset = true
+		return window, nil
+	}
+	window.Anchor = path[index].id
+	_, sameBranch := positions[previous]
+	window.Reset = (previous != "" && !sameBranch) || target != requested || (forward == "" && window.Anchor != requested)
+	start := index
+	if forward != "" && !window.Reset {
+		start++
+	} else {
+		for count := 0; start > 0 && count < 5; {
+			start--
+			if path[start].role == "user" || path[start].role == "assistant" {
+				count++
+			}
+		}
+	}
+	bytes := 0
+	for i := start; i < len(path); i++ {
+		entry := path[i]
+		if entry.role != "user" && entry.role != "assistant" {
+			continue
+		}
+		if i > index && len(window.Messages) > 0 && (len(window.Messages) >= windowMessages || bytes >= windowBytes) {
+			window.Next = path[i-1].id
+			break
+		}
+		view, err := c.project(f, entry, results)
+		if err != nil {
+			return Window{}, err
+		}
+		if len(view.Blocks) == 0 && view.Error == "" {
+			continue
+		}
+		view.Forkable = entry.forkMessage() && points[entry.id]
+		raw, _ := json.Marshal(view)
+		bytes += len(raw)
+		window.Messages = append(window.Messages, view)
+	}
+	if start > 0 && len(window.Messages) > 0 {
+		window.Before = window.Messages[0].ID
+	}
 	return window, nil
 }
 

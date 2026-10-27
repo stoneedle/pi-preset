@@ -3,6 +3,7 @@
   import { icon, Plus, ArrowUp, Square, LoaderCircle, Layers } from '../shared/icons.js';
   import ModelPicker from './ModelPicker.svelte';
   import SubmissionRecovery from './SubmissionRecovery.svelte';
+  import QueuedMessages from './QueuedMessages.svelte';
   import DraftImage from './DraftImage.svelte';
   import { editDraft } from '../remote-drafts.svelte.js';
 
@@ -14,6 +15,9 @@
     onstop,
     canQueue = false,
     onqueue,
+    sessionId = '',
+    queueStatus = {},
+    queueAvailable = false,
     oninput,
     onfocus,
     onmodelopen,
@@ -33,6 +37,7 @@
   let pressTimer;
   let suppressSend = false;
   let menuPress = false;
+  let preserveEditor = false;
   function cancelPress() {
     clearTimeout(pressTimer);
     press = null;
@@ -51,21 +56,23 @@
     queueMenu.style.left = `${Math.max(left, Math.min(button.right - menu.width, right - menu.width))}px`;
     queueMenu.style.top = `${Math.max(top, button.top - menu.height - 8)}px`;
   }
-  function openMenu() {
+  function openMenu(keyboard = false) {
     cancelPress();
     if (!canQueue || !queueMenu) return;
     suppressSend = true;
     menuPress = false;
+    preserveEditor = !keyboard && document.activeElement === textarea;
     queueMenu.showPopover();
     positionMenu();
-    queueMenu.querySelector('button')?.focus({ preventScroll: true });
+    if (!preserveEditor) queueMenu.querySelector('button')?.focus({ preventScroll: true });
   }
   function startPress(event) {
     cancelPress();
     suppressSend = false;
+    if (document.activeElement === textarea) event.preventDefault();
     if (!canQueue || event.button !== 0 || !event.isPrimary) return;
     press = { x: event.clientX, y: event.clientY };
-    pressTimer = setTimeout(openMenu, 500);
+    pressTimer = setTimeout(() => openMenu(), 500);
   }
   $effect(() => {
     if (!canQueue) closeMenu();
@@ -80,7 +87,7 @@
         event.preventDefault();
         event.stopPropagation();
         closeMenu();
-        sendButton.focus({ preventScroll: true });
+        (preserveEditor ? textarea : sendButton)?.focus({ preventScroll: true });
       }
     };
     const scroll = (event) => {
@@ -91,6 +98,7 @@
     window.addEventListener('scroll', scroll, true);
     window.addEventListener('resize', positionMenu);
     window.visualViewport?.addEventListener('resize', positionMenu);
+    window.visualViewport?.addEventListener('scroll', positionMenu);
     return () => {
       cancelPress();
       window.removeEventListener('pointerdown', outside, true);
@@ -98,6 +106,7 @@
       window.removeEventListener('scroll', scroll, true);
       window.removeEventListener('resize', positionMenu);
       window.visualViewport?.removeEventListener('resize', positionMenu);
+      window.visualViewport?.removeEventListener('scroll', positionMenu);
     };
   });
 
@@ -136,8 +145,20 @@
 
 <!-- eslint-disable svelte/no-at-html-tags -- trusted Lucide icons -->
 <div class="composer-region" class:recovering={composer.recoveries.length > 0}>
-  {#if composer.recoveries.length}
-    <div class="composer-recoveries" aria-label="待处理的发送内容">
+  <div class="composer-recoveries" aria-label="待处理的发送内容">
+    {#if sessionId}
+      <QueuedMessages
+        {sessionId}
+        {composer}
+        status={queueStatus}
+        available={queueAvailable}
+        onedit={() => {
+          flushSync();
+          textarea?.focus({ preventScroll: true });
+        }}
+      />
+    {/if}
+    {#if composer.recoveries.length}
       {#each composer.recoveries as item (item.id)}
         <SubmissionRecovery
           {composer}
@@ -148,8 +169,8 @@
           }}
         />
       {/each}
-    </div>
-  {/if}
+    {/if}
+  </div>
   <form class="composer-shell" onsubmit={onsend}>
     {#if composer.images.length}<div class="remote-images">
         {#each composer.images as image (image)}
@@ -233,7 +254,7 @@
             (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
           ) {
             event.preventDefault();
-            openMenu();
+            openMenu(true);
           }
         }}
         oncontextmenu={(event) => {
@@ -267,7 +288,10 @@
     tabindex="-1"
     bind:this={queueMenu}
     onkeydown={(event) => event.stopPropagation()}
-    onpointerdowncapture={() => (menuPress = true)}
+    onpointerdowncapture={(event) => {
+      menuPress = true;
+      if (document.activeElement === textarea) event.preventDefault();
+    }}
     onclickcapture={(event) => {
       if (event.detail && !menuPress) {
         event.preventDefault();
@@ -302,6 +326,9 @@
     max-height: min(128px, max(40px, calc(var(--remote-height, 100dvh) * 0.5 - 140px)));
     overflow-y: auto;
     padding: 0 6px;
+  }
+  .composer-recoveries:empty {
+    display: none;
   }
   .composer-shell {
     display: flex;

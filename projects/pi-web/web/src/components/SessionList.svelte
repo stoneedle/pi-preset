@@ -4,9 +4,8 @@
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { icon, Folder, Search, SquarePen, Archive, ArrowLeft } from '../shared/icons.js';
   import { contextMenu } from '../shared/context-menu.js';
-  import { request, createRefreshCoordinator, createRuntimeStateStore } from '../remote-api.js';
-  import { subscribeEvents } from '../remote-events.js';
-  import { applyAppName } from '../remote-app-name.svelte.js';
+  import { request, createRefreshCoordinator } from '../remote-api.js';
+  import { runtime } from '../remote-runtime.svelte.js';
   import { readView, rememberView } from '../remote-cache.js';
   import {
     sessionArchives,
@@ -41,7 +40,7 @@
   let listElement = $state(null);
   let located = $state(false);
   let revealedProject = $state(null);
-  let connected = $state(false);
+  const connected = $derived(runtime.connected);
   let loading = $state(!cached);
   let projectInfos = $state(cached?.projects || []);
   let menu;
@@ -61,10 +60,7 @@
   const searchCollapsedProjects = new SvelteSet();
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
-  const runtimeStates = createRuntimeStateStore();
-  for (const session of [...(cached?.sessions || []), ...(currentSession ? [currentSession] : [])])
-    runtimeStates.merge(session.runtime);
-  runtimeStates.disconnect();
+  updateRuntime();
 
   const projectKey = (path) => mode + ':' + path;
   const projects = $derived.by(() => {
@@ -157,6 +153,15 @@
     if (query.trim() || mode === 'active') return searchCollapsedProjects.has(path);
     return lazy || archived ? !openedProjects.has(projectKey(path)) : collapsedProjects.has(path);
   }
+  $effect(() => {
+    const id = currentSessionId;
+    untrack(() => {
+      located = false;
+      revealedProject = null;
+      if (currentSession?.id !== id) currentSession = null;
+      if (id && !sessions.some((session) => session.id === id)) refreshList?.run();
+    });
+  });
   function scrollCurrent() {
     if (!active || !located || disposed || !listElement || document.querySelector(':popover-open'))
       return;
@@ -219,8 +224,9 @@
     if (expand && !project.loadedCount && project.count) loadProject(project);
   }
   function mergeItem(session, epoch, revision) {
-    const runtime = runtimeStates.merge(session.runtime, epoch);
-    return { ...session, ...runtime, name: session.name, runtime, archiveRevision: revision };
+    const { runtime: incoming, ...metadata } = session;
+    const snapshot = runtime.merge(incoming, epoch);
+    return { ...metadata, ...snapshot, name: session.name, archiveRevision: revision };
   }
   $effect(() => {
     const nextMode = mode;
@@ -276,7 +282,7 @@
     );
   }
   async function loadList(signal) {
-    const readEpoch = runtimeStates.mark();
+    const readEpoch = runtime.mark();
     const revision = sessionArchives.revision;
     const requestedQuery = query,
       requestedMode = mode;
@@ -351,9 +357,10 @@
     );
     if (requestedMode !== 'archived') observeProjects(data.projects || [], revision);
     const head = incoming.map((item) => mergeItem(item, readEpoch, revision));
-    currentSession = data.currentSession
-      ? mergeItem(data.currentSession, readEpoch, revision)
-      : null;
+    currentSession =
+      data.currentSession?.id === currentSessionId
+        ? mergeItem(data.currentSession, readEpoch, revision)
+        : null;
     const ids = new Set(head.map((item) => item.id));
     const unchanged = new Set(
       (data.projects || [])
@@ -392,7 +399,7 @@
     loadingProjects.add(key);
     const requestedQuery = query,
       requestedMode = mode;
-    const readEpoch = runtimeStates.mark(),
+    const readEpoch = runtime.mark(),
       revision = sessionArchives.revision;
     try {
       const data = await projectPage(
@@ -466,9 +473,7 @@
       },
     };
   }
-  function mergeRuntime(snapshot) {
-    const previous = runtimeStates.get(snapshot.id);
-    const current = runtimeStates.merge(snapshot);
+  function observeRuntime(current, previous) {
     if (
       mode === 'active' &&
       (current.state !== previous?.state || current.availability !== previous?.availability)
@@ -480,7 +485,7 @@
           ? {
               ...project,
               unread: project.unread || current.unread === true,
-              unreadEpoch: runtimeStates.mark(),
+              unreadEpoch: runtime.mark(),
             }
           : project,
       );
@@ -490,7 +495,7 @@
   function updateRuntime() {
     const merge = (session) => ({
       ...session,
-      ...(runtimeStates.get(session.id) || session.runtime),
+      ...runtime.get(session.id),
       name: session.name,
     });
     sessions = sessions.map(merge);
@@ -509,8 +514,8 @@
     if (archived) {
       event.preventDefault();
       if (!restoring) restore(session);
-    } else if (session.id === currentSessionId) {
-      event.preventDefault();
+    } else {
+      if (session.id === currentSessionId) event.preventDefault();
       onselect?.();
     }
   }
@@ -573,34 +578,12 @@
       /* Invalid preferences default to expanded on home. */
     }
     restartRefresh();
-    let opened = false;
-    const unsubscribe = subscribeEvents('/events?id=__all__', {
-      open() {
-        runtimeStates.disconnect();
+    const unsubscribe = runtime.subscribe((event) => {
+      if (event.type === 'reload' || event.type === 'reconnect') refreshList.run();
+      else if (event.type === 'status') {
+        observeRuntime(event.snapshot, event.previous);
         updateRuntime();
-        connected = true;
-        if (opened) refreshList.run();
-        opened = true;
-      },
-      error() {
-        connected = false;
-        runtimeStates.disconnect();
-        updateRuntime();
-      },
-      message(event) {
-        if (event.data === 'reload' || event.data === 'new-session') refreshList.run();
-      },
-      'app-name'(event) {
-        applyAppName(JSON.parse(event.data));
-      },
-      'status-snapshot'(event) {
-        for (const snapshot of Object.values(JSON.parse(event.data))) mergeRuntime(snapshot);
-        updateRuntime();
-      },
-      'status-delta'(event) {
-        mergeRuntime(JSON.parse(event.data));
-        updateRuntime();
-      },
+      } else if (event.type === 'disconnect') updateRuntime();
     });
     const onVisible = () => {
       if (!document.hidden) refreshList.run();

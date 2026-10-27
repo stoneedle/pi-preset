@@ -19,7 +19,9 @@ test('authenticated phone controls the installed merged extension in the same na
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = root;
   let session, server, browser;
+  let releaseQueue = () => {};
   t.after(async () => {
+    releaseQueue();
     await browser?.close();
     if (server) await stopServer(server.child);
     if (session) { await session.extensionRunner.emit({ type: 'session_shutdown' }); session.dispose(); }
@@ -53,7 +55,8 @@ test('authenticated phone controls the installed merged extension in the same na
           await options?.onPayload?.({ text }, model);
           stream.push({ type: 'start', partial: message });
           await new Promise((resolve) => {
-            const timeout = setTimeout(done, text.includes('silent') ? 16000 : text === 'queue boundary' ? 5000 : text === 'delivery boundary' ? 2500 : 80);
+            const timeout = text === 'queue boundary' ? undefined : setTimeout(done, text.includes('silent') ? 16000 : text === 'delivery boundary' ? 2500 : 80);
+            if (text === 'queue boundary') releaseQueue = done;
             function done() { clearTimeout(timeout); options?.signal?.removeEventListener('abort', done); resolve(); }
             options?.signal?.addEventListener('abort', done, { once: true });
           });
@@ -261,18 +264,52 @@ test('authenticated phone controls the installed merged extension in the same na
   await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('native follow-up only');
   await page.getByRole('button', { name: '发送', exact: true }).click({ button: 'right' });
   await page.getByRole('menu', { name: '发送选项', exact: true }).getByRole('menuitem', { name: '排队', exact: true }).click();
-  await expect.poll(() => session.getFollowUpMessages()).toEqual(['native follow-up only']);
+  await expect(page.locator('[data-queue-id]')).toHaveCount(1);
+  const queued = await api('/api/session/queue?id=' + encodeURIComponent(id));
+  assert.equal(queued.items[0].message, 'native follow-up only');
+  const consumedQueueId = queued.items[0].id;
+  assert.deepEqual(session.getFollowUpMessages(), [], 'web items stay retractable until native settlement');
+  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('cancel this native follow-up');
+  const queuedImage = Buffer.concat([await page.screenshot({ clip: { x: 0, y: 0, width: 10, height: 10 } }), Buffer.alloc(2 << 20)]);
+  await page.locator('input[type=file]').setInputFiles({ name: 'withdraw.png', mimeType: 'image/png', buffer: queuedImage });
+  await page.getByRole('button', { name: '发送', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '排队', exact: true }).click();
+  await expect(page.locator('[data-queue-id]')).toHaveCount(2);
+  const beforeTake = await api('/api/session/queue?id=' + encodeURIComponent(id));
+  const imageDetail = await api('/api/session/queue?id=' + encodeURIComponent(id) + '&item=' + beforeTake.items[1].id);
+  assert.equal(imageDetail.item.images[0].data, queuedImage.toString('base64'), 'original image larger than ordinary control replies remains readable');
+  assert.ok(!JSON.stringify(await status()).includes('native follow-up only'), 'status snapshots carry no queued content');
+  await page.locator('[data-queue-id]').last().getByRole('button', { name: '取回编辑', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '给 Pi 发消息…' })).toHaveValue('cancel this native follow-up');
+  await expect(page.locator('.remote-images img')).toHaveCount(1);
+  await page.getByRole('button', { name: '发送', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '排队', exact: true }).click();
+  await expect(page.locator('[data-queue-id]')).toHaveCount(2);
+  await page.locator('[data-queue-id]').last().getByRole('button', { name: '取消排队', exact: true }).click();
+  await expect(page.locator('[data-queue-id]')).toHaveCount(1);
   assert.deepEqual(modelCalls.slice(queueStart).map((call) => call.text), ['queue boundary']);
   assert.equal(manager.getBranch().some((entry) => entry.message?.role === 'user' && JSON.stringify(entry.message.content).includes('native follow-up only')), false);
+  releaseQueue();
   await queueRun;
   await expect(page.locator('[data-message-id]').last()).toContainText('Native reply: native follow-up only');
   assert.deepEqual(modelCalls.slice(queueStart).map((call) => call.text), ['queue boundary', 'native follow-up only']);
   await expect(page.locator('[data-recovery-message]')).toHaveCount(0);
+  await expect(page.locator('[data-queue-id]')).toHaveCount(0);
+  const lateCancel = await fetch(server.baseURL + '/api/session/queue?id=' + encodeURIComponent(id), {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, origin: server.baseURL, 'content-type': 'application/json' },
+    body: JSON.stringify({ itemId: consumedQueueId }),
+  });
+  assert.equal(lateCancel.status, 409, 'already delivered queue item cannot be cancelled');
   assert.equal(typeof (await status()).usage.input, 'number');
   assert.ok((await status()).usage.input > 0);
   await page.getByRole('textbox', { name: "给 Pi 发消息…" }).fill('silent task');
   await page.getByRole('button', { name: "发送", exact: true }).click();
   await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'running');
+  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('preserve pending across native reload');
+  await page.getByRole('button', { name: '发送', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '排队', exact: true }).click();
+  await expect(page.locator('[data-queue-id]')).toHaveCount(1);
+  const pendingBeforeStop = (await api('/api/session/queue?id=' + encodeURIComponent(id))).items;
   const runningLeaf = manager.getLeafId();
   const runningSource = readFileSync(manager.getSessionFile(), 'utf8');
   const runningCopy = await fork();
@@ -286,6 +323,11 @@ test('authenticated phone controls the installed merged extension in the same na
   await page.getByRole('button', { name: "停止主代理", exact: true }).click();
   await expect(page.locator('.remote-header .remote-state')).toHaveAttribute('data-state', 'idle');
   assert.equal((await status()).outcome, 'aborted');
+  assert.deepEqual((await api('/api/session/queue?id=' + encodeURIComponent(id))).items, pendingBeforeStop, 'stop leaves pending items retractable');
+  await session.reload();
+  assert.deepEqual((await api('/api/session/queue?id=' + encodeURIComponent(id))).items, pendingBeforeStop, 'extension reload preserves exact queue identities');
+  await api('/api/session/queue?id=' + encodeURIComponent(id), { itemId: pendingBeforeStop[0].id });
+  assert.equal((await api('/api/session/queue?id=' + encodeURIComponent(id))).items.length, 0);
   await page.evaluate(() => { history.pushState(null, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); });
   await session.prompt('terminal result', { source: 'extension' });
   await expect.poll(async () => (await status()).unread).toBe(true, { message: 'list browsing must not acknowledge' });

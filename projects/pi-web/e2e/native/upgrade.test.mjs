@@ -82,11 +82,12 @@ test('real Go upgrades and waiting workers never replace documents; only manual 
       // This is the original failure: a current document is controlled by an older worker.
       const fresh = await context.newPage();
       let freshDocuments = 0;
-      let fullReads = 0;
+      let initialReads = 0;
       fresh.on('request', request => {
         if (request.isNavigationRequest()) freshDocuments++;
         const url = new URL(request.url());
-        if (url.pathname === '/api/session' && !url.searchParams.has('after') && !url.searchParams.has('before')) fullReads++;
+        // A device bookmark may bootstrap a bounded around-window instead of the tail.
+        if (url.pathname === '/api/session' && !url.searchParams.get('after') && !url.searchParams.has('before') && !url.searchParams.has('forward')) initialReads++;
       });
       await fresh.goto(server.baseURL + '/session?id=' + encodeURIComponent(id));
       await expect.poll(() => fresh.evaluate(async () => (await navigator.serviceWorker.getRegistration())?.waiting?.state), { timeout: 15000 }).toBe('installed');
@@ -94,7 +95,7 @@ test('real Go upgrades and waiting workers never replace documents; only manual 
       await expect.poll(() => releaseMark(fresh)).toBe('updated');
       await fresh.waitForTimeout(1200);
       assert.equal(freshDocuments, 1);
-      assert.equal(fullReads, 1, 'a current session must not fall back to another full read when its worker catches up');
+      assert.equal(initialReads, 1, 'a current session must bootstrap only once, including bookmark restores, when its worker catches up');
       assert.equal(await page.evaluate(() => window.__beforeUpgrade), true);
       assert.equal(await otherPage.evaluate(() => window.__otherDocument), true);
       assert.equal(await releaseMark(page), '');
@@ -134,11 +135,15 @@ test('real Go upgrades and waiting workers never replace documents; only manual 
       assert.equal(await releaseMark(fresh), 'updated', 'refreshing one tab must not refresh another');
       assert.ok(alive(ownerPID));
       writeFileSync(gate, 'release');
-      await expect(page.getByText('Native lifecycle reply: hold-until-release: survive this deployment', { exact: true })).toBeVisible({ timeout: 15000 });
+      const continuedReply = page.getByText('Native lifecycle reply: hold-until-release: survive this deployment', { exact: true });
+      await expect(continuedReply).toBeAttached({ timeout: 15000 });
+      // Refresh restores the old reading point; following new output is explicit.
+      await page.getByRole('button', { name: '最新消息', exact: true }).click();
+      await expect(continuedReply).toBeVisible();
       await expect.poll(() => readDiagnostics(root).filter(event => event.event === 'page.reload').length, { timeout: 15000 }).toBe(2);
       assert.ok(readDiagnostics(root).filter(event => event.event === 'page.reload').every(event => event.reason === 'manual'));
       assert.deepEqual(errors, []);
-      console.log(JSON.stringify({ engine: name, sameNativePID: true, sameHostPID: true, manualOnly: true, currentPageOldWorkerNoReload: true, fullReads, oldAndNewAssetsWithoutServer: true, pendingControlProtected: true, noReplay: true, rollback: true, independentTabs: true }));
+      console.log(JSON.stringify({ engine: name, sameNativePID: true, sameHostPID: true, manualOnly: true, currentPageOldWorkerNoReload: true, initialReads, oldAndNewAssetsWithoutServer: true, pendingControlProtected: true, noReplay: true, rollback: true, independentTabs: true }));
     });
   }
 });

@@ -138,6 +138,9 @@ func (m *Manager) Control(ctx context.Context, session sessions.ResolvedSession,
 				return nil, errors.New("排队不修改当前运行设置，请先应用设置")
 			}
 		}
+		if queued && owner == nil {
+			return nil, errors.New("当前会话未连接可管理排队的 Pi，请直接发送或在电脑端 /reload")
+		}
 		var worker ChatWorker
 		if owner == nil {
 			if action == "send" && !queued {
@@ -172,7 +175,7 @@ func (m *Manager) Control(ctx context.Context, session sessions.ResolvedSession,
 			if err != nil {
 				return nil, err
 			}
-			if state["canQueue"] != true {
+			if state["canQueue"] != true || state["queueRevision"] == nil {
 				return nil, errors.New("当前 Pi 尚未提供排队控制，请先在电脑端 /reload")
 			}
 		}
@@ -190,6 +193,24 @@ func (m *Manager) Control(ctx context.Context, session sessions.ResolvedSession,
 			}
 		}
 		return call(command)
+	})
+}
+
+// Commands reads the live catalog when available, otherwise discovers project resources.
+// Discovery runs inside the same session gate as startup and never creates a worker.
+func (m *Manager) Commands(ctx context.Context, session sessions.ResolvedSession, discover func(context.Context, string) (map[string]any, error)) (map[string]any, error) {
+	return m.run(ctx, session.Session.ID, func(e *execution) (map[string]any, error) {
+		owner, err := m.owner(session.Session)
+		if err != nil {
+			return nil, err
+		}
+		if owner != nil {
+			return owner.Call(ctx, map[string]any{"action": "commands", "sessionId": session.Session.SessionUUID})
+		}
+		if e.worker != nil && e.worker.Status().State != WorkerStateError {
+			return callWorker(ctx, e.worker, map[string]any{"action": "commands"})
+		}
+		return discover(ctx, session.Session.Project)
 	})
 }
 

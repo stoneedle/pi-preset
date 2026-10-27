@@ -38,6 +38,7 @@ export async function openFixtureOwner({ agentDir, sessionPath, getState = () =>
     const read = db.prepare('SELECT acknowledged FROM session_results WHERE session_id=? AND result_id=?').get(sessionId, replyId);
     return { id, sessionId, instanceId, revision, state: state.state, mainRunning: state.state === 'running',
       children: state.state === 'background' ? 1 : 0, availability: 'connected', canControl: true, canQueue: true,
+      queueRevision: 0, queueCount: 0,
       chatAvailable: true, cwd: entries[0].cwd,
       replyId, leafId, unread: Boolean(replyId && !read?.acknowledged),
       completed: state.state === 'idle' && ['stop', 'length'].includes(outcome), outcome,

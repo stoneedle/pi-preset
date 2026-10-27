@@ -58,10 +58,7 @@ test('空闲逐页预取完整近期历史，保持底部且断网分享包含�
   await expect.poll(() => page.locator('.remote-main').evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(3);
   await context.setOffline(true);
   try {
-    await page.locator('[data-message-id]').last().locator('.remote-markdown').evaluate((node) => {
-      const range = document.createRange(); range.selectNodeContents(node);
-      const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
-    });
+    await page.locator('summary[aria-label="更多"]').click();
     await page.getByRole('button', { name: '分享已加载上下文', exact: true }).click();
     await expect.poll(() => page.evaluate(() => Boolean((window as any).__shared))).toBe(true);
     expect(extra).toEqual([]);
@@ -99,10 +96,7 @@ test('大历史超过旧预算仍能预取分享，不提前渲染也不截断�
   await expect(page.locator(`[data-message-id="${large.id}"]`)).toHaveCount(0);
   await context.setOffline(true);
   try {
-    await page.locator('[data-message-id]').last().locator('.remote-markdown').evaluate((node) => {
-      const range = document.createRange(); range.selectNodeContents(node);
-      const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
-    });
+    await page.locator('summary[aria-label="更多"]').click();
     await page.getByRole('button', { name: '分享已加载上下文', exact: true }).click();
     await expect.poll(() => page.evaluate(() => Boolean((window as any).__shared))).toBe(true);
   } finally { await context.setOffline(false); }
