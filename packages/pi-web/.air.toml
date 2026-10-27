@@ -1,0 +1,13 @@
+root = "."
+tmp_dir = "build/dev"
+
+[build]
+  bin = "./build/dev/pi-web"
+  cmd = "go build -o ./build/dev/pi-web ./cmd/pi-web"
+  delay = 1000
+  exclude_dir = ["build", "vendor", "node_modules", "web/node_modules", "e2e/node_modules", "web/src", ".git"]
+  exclude_regex = ["_test.go"]
+  include_file = ["web/dist/.vite/manifest.json"]
+  send_interrupt = true
+  kill_delay = "1s"
+  args_bin = ["--host", "127.0.0.1", "-p", "31416"]

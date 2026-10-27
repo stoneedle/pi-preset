@@ -1,0 +1,20 @@
+{
+  "name": "pi-agy-gemini",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Subscription-backed Gemini subagent for Pi.",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "ajv": "8.17.1",
+    "pi-subagents": "file:../pi-subagents"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

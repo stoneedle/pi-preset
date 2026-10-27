@@ -5,5 +5,5 @@ __pycache__/
 *.sqlite-*
 .env
 .env.*
-.dev/
-projects/pi-web/.pi/skills/memory/
+.DS_Store
+Thumbs.db
