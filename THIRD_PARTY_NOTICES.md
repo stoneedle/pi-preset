@@ -6,7 +6,7 @@
 
 | 范围 | 来源及版权 | 许可与声明 |
 |---|---|---|
-| `projects/pi-extensions`（含行内技能补全） | [CNife/pi-extensions](https://github.com/CNife/pi-extensions)，Copyright 2025 CNife；本地改造来自 [stoneedle fork](https://github.com/stoneedle/pi-extensions) | 项目内 MIT `LICENSE` 及各模块自带声明 |
+| `extensions/inline-skill-completion` | 来自 [CNife/pi-extensions](https://github.com/CNife/pi-extensions) 的 `packages/inline-skill-completion`，Copyright 2025 CNife；本地改造来自 [stoneedle fork](https://github.com/stoneedle/pi-extensions) | 目录内 MIT `LICENSE` |
 | `projects/pi-web` | [ygncode/pi-web](https://github.com/ygncode/pi-web)，Copyright 2026 Set Kyar Wa Lar (YGNCode)；本地改造来自 stoneedle fork | 项目内 MIT `LICENSE` |
 | `projects/pi-web/.pi/extensions/lib/title` | [t0mj/pi-title-glyphs](https://github.com/t0mj/pi-title-glyphs)，Copyright 2026 t0mj；标题与命名实现作为 Pi Web 的内部模块维护 | 模块内 MIT `LICENSE` |
 | `projects/pi-subagents` | [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents)，Copyright 2026 Nico Bailon；本地改造来自 stoneedle fork | 项目内 MIT `LICENSE` |

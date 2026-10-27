@@ -17,16 +17,13 @@ pi 原生有两个限制：
 
 ## 安装
 
-本 fork 只修改本扩展，其他扩展和 Pi 核心不变。安装子目录，不要安装 monorepo 根目录（根目录分发的是其他个人扩展）：
+在本合集根目录安装这个扩展：
 
 ```bash
-git clone https://github.com/stoneedle/pi-extensions.git
-cd pi-extensions
-pi install ./packages/inline-skill-completion
-pi remove npm:@cnife/pi-inline-skill-completion
+pi install ./extensions/inline-skill-completion
 ```
 
-已安装过原 npm 包时移除它，避免重复加载；未安装时省略最后一行。在已有 Pi 会话中执行 `/reload` 生效。后续在克隆目录中 `git pull`，再 `/reload`。
+如果已安装原 npm 包，先用 `pi remove npm:@cnife/pi-inline-skill-completion` 移除，避免重复加载。在已有 Pi 会话中执行 `/reload` 生效。
 
 兼容接缝已在 Pi 1.3.0 验证：仅 TUI 使用继承 `CustomEditor` 的输入钩子，调用私有 `requestAutocomplete()` 补齐句中触发。Pi 升级后需复验此接口；RPC 等模式不替换编辑器。
 

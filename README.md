@@ -26,9 +26,9 @@
 
 目录中包含扩展代码、[Gemini 协作身份](extensions/agy-gemini/collaboration.md)、[角色提示词](extensions/agy-gemini/role.md)和执行协议。依赖 `pi-subagents`，使用者需要自行安装并登录 agy CLI。
 
-### [行内技能补全](projects/pi-extensions/packages/inline-skill-completion/)
+### [行内技能补全](extensions/inline-skill-completion/)
 
-基于 [CNife/pi-extensions](https://github.com/CNife/pi-extensions) 改造。在输入正文和后续行中使用 `/skill:` 补全，支持多个技能的折叠展示。源码位于下方收录的完整 `pi-extensions` 项目中，保留上游 MIT 许可。
+基于 [CNife/pi-extensions](https://github.com/CNife/pi-extensions) 的行内技能补全改造。在输入正文和后续行中使用 `/skill:` 补全，支持多个技能的折叠展示。保留上游 MIT 许可。
 
 ### 两个小扩展
 
@@ -42,7 +42,6 @@
 | 项目 | 内容 | 上游 |
 |---|---|---|
 | [pi-web](projects/pi-web/) | Pi 手机遥控界面，侧重弱网阅读与接续工作；包含终端状态标题、会话命名和后台标题摘要 | [ygncode/pi-web](https://github.com/ygncode/pi-web) |
-| [pi-extensions](projects/pi-extensions/) | 扩展集合；我目前使用和改造的是其中的行内技能补全，项目内也保留其他上游扩展 | [CNife/pi-extensions](https://github.com/CNife/pi-extensions) |
 | [pi-subagents](projects/pi-subagents/) | 子代理编排及自己的结果交付相关改造 | [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) |
 
 这些是源码项目，不意味着需要同时启用所有扩展。使用入口、依赖和具体功能见各自 README。
