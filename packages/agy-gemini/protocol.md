@@ -1,6 +1,6 @@
 # agy adapter
 
-The user-level `agy-gemini` Pi extension registers the permanent `gemini` role and an `agy` external-job provider with pi-subagents. The generic `subagent` tool owns delegation, completion notifications, public run references, and resume. The user-level `APPEND_SYSTEM.md` owns invocation policy; `collaboration.md` owns the shared collaboration identity and authority boundaries; `role.md` adds Gemini's exploration, design and human-facing writing remit; `adapter.mjs` owns agy CLI invocation, parsing, process lifetime, and conversation mapping. The extension injects the shared contract into the parent's prompt sections before each run and prepends the same contract to Gemini's registered system prompt.
+The user-level `agy-gemini` Pi extension registers the `gemini` role and an `agy` external-job provider with pi-subagents. The generic `subagent` tool owns delegation, completion notifications, public run references, and resume. The user-level `APPEND_SYSTEM.md` owns invocation policy; `collaboration.md` owns the shared collaboration identity and authority boundaries; `role.md` adds Gemini's exploration, design and human-facing writing remit; `adapter.mjs` owns agy CLI invocation, parsing, process lifetime, and conversation mapping. The extension injects the shared contract into the parent's prompt sections before each run and prepends the same contract to Gemini's registered system prompt.
 
 ## Execution
 
@@ -18,7 +18,7 @@ Full replies live in adapter-owned artifacts. The provider returns both the body
 
 ## State and failure
 
-SQLite records job identity, workspace, immutable execution contract, parent mapping, conversation ID, terminal state, and artifact path. Schema text and reply artifacts represent external protocol documents. The state store lives in the system temporary directory. A unique successor relation permits continuation only from a confirmed latest result; a failed/cancelled successor blocks its old parent reference. The extension registers the permanent role at session startup; Pi retains the original run's recovery descriptor and execution contract for resume after a host restart.
+SQLite records job identity, workspace, immutable execution contract, parent mapping, conversation ID, terminal state, and artifact path. Schema text and reply artifacts represent external protocol documents. The state store lives in the system temporary directory. A unique successor relation permits continuation only from a confirmed latest result; a failed/cancelled successor blocks its old parent reference. The extension registers its role at session startup; Pi retains the original run's recovery descriptor and execution contract for resume after a host restart.
 
 The adapter holds running process handles in the owning Pi runtime. On shutdown it terminates those owned local processes. A reattachment with a running database row but no owned process fails with `execution_unknown`; it cannot prove remote outcome. The plugin's external provider protocol has no cancel callback, so this extension connects public child-stop and observed owner-terminal events to its process controller.
 

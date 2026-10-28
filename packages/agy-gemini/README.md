@@ -1,6 +1,6 @@
 # Gemini 角色与 agy 执行提供者
 
-`agy-gemini` 注册常驻 `gemini` 角色与 `agy` external-job 提供者。主代理通过 pi-subagents 的通用 `subagent` 工具委派，agy 使用自己的订阅登录执行 Gemini。
+`agy-gemini` 注册 `gemini` 角色与 `agy` external-job 提供者。主代理通过 pi-subagents 的通用 `subagent` 工具委派，agy 使用自己的订阅登录执行 Gemini。其他角色也可通过同一提供者执行，Impeccable 角色的注册与提示装配见[接入说明](../../references/impeccable-agents.md)。
 
 ## 使用
 
@@ -28,7 +28,7 @@ subagent({ action: "stop", id: "<正在运行的 runId>" })
 
 扩展加载时读取共享契约。在每次 `before_agent_start` 中，将它加入主代理的 `gemini_collaboration` prompt section，因此首次构造交接 task 前、续聊以及异步完成后的承接均能看到身份边界，不依赖工具是否已经启用。契约只适用于用户已邀请 Gemini 的问题，不会自动调用 Gemini，也不通过关键词猜测用户是否已邀请。
 
-session 启动时，将同一份契约与 `role.md` 拼成 Gemini 的 `systemPrompt`。Gemini 仍使用 fresh 上下文，不继承主代理的会话、项目规则或 skills；具体用户原话、授权材料与交付要求来自本次 task。修改提示后重启 Pi 或 `/reload` 生效；这是角色原则的自动加载，不增加模式开关、审稿状态机或纠错计数器。
+session 启动时，将同一份契约与 `role.md` 拼成 `gemini` 角色的 `systemPrompt`。该角色使用 fresh 上下文，不继承主代理的会话、项目规则或 skills；具体用户原话、授权材料与交付要求来自本次 task。修改提示后重启 Pi 或 `/reload` 生效；这是角色原则的自动加载，不增加模式开关、审稿状态机或纠错计数器。
 
 - **Collaboration**（`collaboration.md`）：双方共享的协作身份与权责。
 - **Role**（`role.md`）：Gemini 专属的探索、设计与写作任务。

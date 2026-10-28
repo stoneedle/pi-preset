@@ -34,10 +34,11 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', async () => {
     await close();
     adapter = new AgyAdapter(root);
+    const knownRuns = new Set<string>();
     disposeProvider = registerExternalJobProvider({
       name: 'agy',
-      start: input => adapter!.start(input),
-      followUp: input => adapter!.followUp(input),
+      start: input => { knownRuns.add(input.runId); return adapter!.start(input); },
+      followUp: input => { knownRuns.add(input.runId); return adapter!.followUp(input); },
       status: id => adapter!.status(id),
       result: id => adapter!.result(id),
       reattach: id => adapter!.reattach(id),
@@ -53,19 +54,15 @@ export default function (pi: ExtensionAPI) {
       },
     });
     disposeRole = () => role.dispose();
-    const knownRuns = new Set<string>();
     const removeChildStop = pi.events.on('subagent:child-status', async event => {
       const runId = event.childRunId ?? event.runId;
-      if ((event.agent === ROLE_NAME || adapter?.ownsRun(runId)) && (event.status === 'stopping' || event.status === 'stopped'))
+      if ((knownRuns.has(runId) || adapter?.ownsRun(runId)) && (event.status === 'stopping' || event.status === 'stopped'))
         await adapter?.cancelRun(runId);
-    });
-    const removeStart = pi.events.on('subagent:async-started', event => {
-      if (event.agent === ROLE_NAME) knownRuns.add(event.id);
     });
     const removeTerminal = pi.events.on('subagent:process-terminal', async proof => {
       if (proof.state === 'observed' && knownRuns.delete(proof.runId)) await adapter?.ownerTerminated(proof.runId);
     });
-    disposeStops = () => { removeChildStop(); removeStart(); removeTerminal(); knownRuns.clear(); };
+    disposeStops = () => { removeChildStop(); removeTerminal(); knownRuns.clear(); };
   });
   pi.on('session_shutdown', close);
 }

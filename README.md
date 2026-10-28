@@ -67,6 +67,8 @@ git -C "$HOME\.pi\preset" pull --ff-only
 
 Chrome DevTools 按整个 `chrome-devtools` MCP 服务选择，不固定工具数量；每台电脑仍自行配置该服务。当前子代理将选中工具直接暴露，`tool_search` 不会自动将其转为延迟加载。浏览器操作沿用 `APPEND_SYSTEM.md` 中的约定。数据库、嵌套委派、Goal、图像生成及其他提供者由具体任务另行配置，工具名单不改变项目规则和技能的继承策略。
 
+Impeccable 的三个角色由 `extensions/impeccable-agents.ts` 按需注册，契约直接读取已安装的上游技能，不增加常驻广告。documenter 与 asset-producer 使用共享设置中的模型覆盖；finish-reviewer 通过 agy 执行。它们只加载各自所需工具，权限与材料交接见[接入说明](references/impeccable-agents.md)。
+
 修改后在主会话执行 `/reload`，新启动的子代理使用新配置；已运行的子代理不自动换配置。
 
 ## Fast 与手机速度控制

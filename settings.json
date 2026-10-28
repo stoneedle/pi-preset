@@ -32,7 +32,17 @@
     "defaultExtensions": [
       "~/.pi/agent/npm/node_modules/pi-web-access/dist/index.js",
       "~/.pi/preset/extensions/bash-timeout-guard.ts"
-    ]
+    ],
+    "agentOverrides": {
+      "impeccable-documenter": {
+        "model": "openai-codex/gpt-6.1-terra",
+        "thinking": "max"
+      },
+      "impeccable-asset-producer": {
+        "model": "openai-codex/gpt-6.1-terra",
+        "thinking": "max"
+      }
+    }
   },
   "compaction": {
     "modelOverrides": {
