@@ -29,7 +29,10 @@
   ],
   "subagents": {
     "disableBuiltins": true,
-    "defaultExtensions": []
+    "defaultExtensions": [
+      "~/.pi/agent/npm/node_modules/pi-web-access/dist/index.js",
+      "~/.pi/preset/extensions/bash-timeout-guard.ts"
+    ]
   },
   "compaction": {
     "modelOverrides": {

@@ -5,7 +5,7 @@ advertise: true
 model: openai-codex/gpt-6.1-sol
 fast: true
 thinking: medium
-tools: read, bash, edit, write, grep, find, ls
+tools: read, bash, edit, write, grep, find, ls, codemode, tool_search, web_enable, web_search, fetch_content, get_search_content, source_check, contact_supervisor, mcp:chrome-devtools
 inheritProjectContext: true
 inheritGlobalContext: true
 inheritSkills: true

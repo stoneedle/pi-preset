@@ -5,9 +5,7 @@ advertise: true
 model: openai-codex/gpt-6-luna
 fast: true
 thinking: max
-tools: read, bash, edit, write, grep, find, ls, web_enable, web_search, fetch_content, get_search_content
-extensions:
-  - ~/.pi/agent/npm/node_modules/pi-web-access/dist/index.js
+tools: read, bash, edit, write, grep, find, ls, codemode, tool_search, web_enable, web_search, fetch_content, get_search_content, source_check, contact_supervisor, mcp:chrome-devtools
 inheritProjectContext: true
 inheritSkills: false
 defaultContext: fresh

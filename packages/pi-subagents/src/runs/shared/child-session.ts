@@ -442,16 +442,19 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			const themeKey = Symbol.for("@earendil-works/pi-coding-agent:theme");
 			const themeInitialized = Boolean((globalThis as Record<symbol, unknown>)[themeKey]);
 			if (!themeInitialized && typeof pi.initTheme === "function") pi.initTheme(settingsManager.getTheme());
-			// SDK sessions do not install Pi's CLI built-ins. Use the host's own
-			// codemode factory only when this child can select it; older Pi hosts
-			// without that factory retain the strict missing-tool diagnostic.
-			const createCodemodeExtension = (pi as PiCodingAgentModule & { createCodemodeExtension?: () => ChildHookExtension["factory"] }).createCodemodeExtension;
-			const codemode = typeof createCodemodeExtension === "function" &&
-				!launch.runtime.capabilityCeiling?.denyExtensions &&
-				(launch.tools === undefined || launch.tools.includes("codemode")) &&
-				!launch.excludeTools?.includes("codemode")
-				? [{ name: "codemode", factory: createCodemodeExtension(), replaceable: true }]
-				: [];
+			// SDK sessions do not install CLI built-ins. Register the host factories
+			// only for permitted tools; missing factories retain the normal diagnostic.
+			const hostFactories = pi as PiCodingAgentModule & {
+				createCodemodeExtension?: () => ChildHookExtension["factory"];
+				createToolSearchExtension?: () => ChildHookExtension["factory"];
+			};
+			const toolProviders = [
+				{ name: "codemode", tool: "codemode", create: hostFactories.createCodemodeExtension },
+				{ name: "tool-search", tool: "tool_search", create: hostFactories.createToolSearchExtension },
+			].flatMap(({ name, tool, create }) =>
+				typeof create === "function" && !launch.runtime.capabilityCeiling?.denyExtensions &&
+				(launch.tools === undefined || launch.tools.includes(tool)) && !launch.excludeTools?.includes(tool)
+					? [{ name, factory: create(), replaceable: true }] : []);
 			const loader = new pi.DefaultResourceLoader({
 				cwd: launch.cwd,
 				agentDir,
@@ -467,7 +470,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				extensionFactories: [...launch.hooks, ...(commands ? [{ name: "pi-subagents:commands", factory: (api: ExtensionAPI) => {
 					api.registerTool(commands.wrap(pi.createBashTool(launch.cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition));
 					api.registerTool(commands.tool());
-				} }] : []), ...codemode, ...(builtinMcp ? [builtinMcp] : [])],
+				} }] : []), ...toolProviders, ...(builtinMcp ? [builtinMcp] : [])],
 				extensionsOverride: (result) => orderChildPromptHooks(prioritizeChildCommandRuntime(result)),
 				...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),
