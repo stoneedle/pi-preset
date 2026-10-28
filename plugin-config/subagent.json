@@ -1,0 +1,30 @@
+{
+  "toolActivation": "auto",
+  "toolDescriptionMode": "compact",
+  "disabledFeatures": [
+    "agent-management",
+    "watchdog",
+    "panes",
+    "lane-management",
+    "spawn-budget-grants",
+    "preflight",
+    "lane-metadata",
+    "gates",
+    "usage-budgets",
+    "tool-budgets",
+    "control-overrides",
+    "extension-bindings",
+    "external-machines",
+    "workflow-scripts"
+  ],
+  "missions": { "enabled": false },
+  "scheduledRuns": { "enabled": false },
+  "inlineToolDisplay": "summary",
+  "fleetView": true,
+  "asyncWidget": false,
+  "asyncByDefault": false,
+  "defaultSubagentContext": "fresh",
+  "parallel": { "maxTasks": 2, "concurrency": 2 },
+  "maxActiveAsyncRunsPerSession": 2,
+  "maxSubagentDepth": 1
+}

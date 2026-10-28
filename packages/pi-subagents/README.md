@@ -10,16 +10,11 @@
 
 ## Install
 
-This checkout includes local changes. From the preset repository root, install this source package:
-
 ```bash
-npm --prefix packages/pi-subagents ci --ignore-scripts --omit=dev
-pi install ./packages/pi-subagents
+pi install npm:pi-subagents
 ```
 
-Do not substitute the upstream npm package when reproducing this preset. Shared settings and custom agents are configured in the [root README](../../README.md).
-
-Background children use the host's SDK: npm Pi keeps its detached Node runner; the official Pi 0.86.1 Linux x64 standalone release loads the same runner through Pi's embedded SDK, without a separate SDK install. See [Standalone background execution](docs/standalone-background.md) for the supported boundary and validation gate.
+That is the only required step. Background children use the host's SDK: npm Pi keeps its detached Node runner; the official Pi 0.86.1 Linux x64 standalone release loads the same runner through Pi's embedded SDK, without a separate SDK install. See [Standalone background execution](docs/standalone-background.md) for the supported boundary and validation gate.
 
 ## Try this first
 
@@ -56,16 +51,6 @@ If you want every implementation reviewed, say so in your prompt or project inst
 ```text
 When you finish implementing, run a reviewer subagent before summarizing.
 ```
-
-### Final answer delivery
-
-If you want a specialized child agent to produce the final answer directly without parent summarization or rewriting, ask Pi to use final delivery (`options.delivery: "final"`):
-
-```text
-Investigate this issue first, then run oracle and deliver its verbatim output as the final response.
-```
-
-When the child succeeds, Pi renders the child's raw, unedited text as the terminal response and ends the turn without querying the parent model again. If the child fails, errors out, or returns empty text, Pi falls back seamlessly to the parent model to answer the original request directly.
 
 ## Builtin agents
 

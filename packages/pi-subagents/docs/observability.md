@@ -312,7 +312,7 @@ A child session's header records the launching session's file as `parentSession`
 
 ## Completion notifications
 
-Async completions belong only to the originating session. The result watcher emits `subagent:async-complete` for detached runs. Awaited children emit it when they settle, with `awaitedByCaller: true` and `triggerTurn: false` (`parentWorkflowRunId` is included only for workflow children). They do not send a separate child notification or turn. Final delivery (`delivery: "final"`) reuses this same awaited ownership: the child's raw answer is displayed once in the conversation, without a background completion notice or wake.
+Async completions belong only to the originating session. The result watcher emits `subagent:async-complete` for detached runs. Awaited workflow children emit it when they settle, with `awaitedByWorkflow: true`, `parentWorkflowRunId`, and `triggerTurn: false`. They do not send a separate child notification or turn.
 
 Successful sibling completions are held briefly and delivered as a quiet grouped completion when they finish within a short window (see `completionBatch` in [configuration.md](configuration.md)), avoiding unread markers on inactive tabs. Failed and paused completions remain visible and fire immediately.
 

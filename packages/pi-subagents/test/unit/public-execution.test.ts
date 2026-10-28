@@ -79,14 +79,6 @@ describe("public subagent execution normalization", () => {
 		);
 	});
 
-	it("admits final delivery only for a direct awaited child", () => {
-		assert.equal(normalizePublicSubagentExecution({ agent: "writer", delivery: "final" }).ok, true);
-		assert.equal(normalizePublicSubagentExecution({ agent: "writer", delivery: "final", async: true }).ok, true);
-		for (const override of [{ delivery: "other" }, { action: "list" }, { workflow: "review" }, { tasks: [] }, { chain: [] }, { async: false }, { foregroundOnly: true }, { chatProgress: "live-card" }]) {
-			assert.equal(normalizePublicSubagentExecution({ agent: "writer", delivery: "final", ...override }).ok, false, JSON.stringify(override));
-		}
-	});
-
 	it("rejects unsafe base refs at the public boundary", () => {
 		for (const baseRef of ["refs/heads/unsafe..ref", "branch name", "HEAD^{tree}", "@", "a".repeat(40), "a".repeat(64), 42]) {
 			const result = normalizePublicSubagentExecution({ agent: "worker", baseRef });

@@ -1022,7 +1022,7 @@ export default function registerSubagentNotify(
 		}
 	};
 	const unsubscribeAsync = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
-		if ((data as CompletionNotification).awaitedByCaller === true) return;
+		if ((data as CompletionNotification).awaitedByWorkflow === true) return;
 		void deliver(data as CompletionNotification);
 	});
 	const unsubscribeForeground = pi.events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, (data) => {

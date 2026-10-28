@@ -228,7 +228,6 @@ export interface SubagentRunConfig {
 	runtimeAcknowledgedExtensions?: RuntimeAcknowledgedChildExtensions;
 	runnerProcessInstanceId?: string;
 	launchBarrierToken?: string;
-	awaitResult?: boolean;
 	parentWorkflowRunId?: string;
 	workflowKey?: string;
 	lane?: WorkflowLaneMetadata;
@@ -2047,7 +2046,6 @@ export async function runSubagent(
 		...(config.sessionId ? { sessionId: config.sessionId } : {}),
 		...(config.completionOwnerId ? { completionOwnerId: config.completionOwnerId } : {}),
 		mode: config.resultMode ?? (flatSteps.length > 1 ? "chain" : "single"),
-		...(config.awaitResult === true ? { awaitResult: true } : {}),
 		...(config.nestedSelf ? { isNested: true } : {}),
 		state: "running",
 		steering: createSteeringStatus(),

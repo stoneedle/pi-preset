@@ -65,34 +65,6 @@ The first stage of each lane is launched by one existing `runs.all(...)` batch. 
 
 The complete plain-JSON inventory is validated before the first launch (maximum 32 lanes, 16 stages per lane, 64 total stages, and 64 KiB canonical JSON). A failed, stopped, or detached stage blocks only its lane and marks later stages `skipped`; an explicit `structuredOutput.verdict === "blocked"` has the same effect. Reviewer prose is not parsed. The bounded board returns lane/stage keys, state, `ok`, run ids, explicit output references, bounded errors, and optional verdicts, not transcripts. Use raw `runs.run(...)`/`runs.all(...)` for conditional or rolling workflows.
 
-### Final answer delivery
-
-Use `options.delivery: "final"` when a specialized child agent should deliver the terminal user-facing answer directly, bypassing parent-model summarization, rewriting, or post-review. The parent model should complete any necessary investigation, scoping, or fact verification first, invoking final delivery as its concluding action rather than an intermediate review step.
-
-```ts
-subagent({ agent: "oracle", task: "Deliver the final architecture evaluation and tradeoffs.", options: { delivery: "final" } })
-```
-
-#### Rules and constraints
-
-- **Direct single child only**: Requires `{ agent, task? }`. It cannot be combined with `action`, `workflow`, `workflowScript`, `chain`, or `tasks`.
-- **Exclusive tool call**: Final delivery must be the sole tool call in its model response batch. It cannot run alongside other tool calls and cannot be wrapped in another tool or code execution mode.
-- **Async execution**: Runs as an awaited background execution. `async` may be omitted (defaults to `true`) or explicitly set to `true`. Synchronous execution (`async: false`), `foregroundOnly`, and `chatProgress: "live-card"` are rejected.
-- **Clean launch boundary**: At launch time, the session must have no active child runs, pending completion notifications, open supervisor requests, or queued user messages.
-- **Queued message check**: After the child settles, the runtime re-checks for queued user messages. If a new user message arrived while waiting, the turn does not terminate so the parent session can resume and handle the incoming message.
-
-#### Success delivery
-
-- **Verbatim text artifact**: The runtime reads the child's original output file directly from disk (`savedOutputPath`, `outputPath`, or `resultArtifactPath`, falling back to `finalOutput`). It is never trimmed, truncated, or reformatted.
-- **Direct handoff**: Dispatches a visible custom message (`customType: "subagent-final"`, `display: true`, `triggerTurn: false`) containing the raw child text directly into the conversation.
-- **Immediate termination**: The tool call returns `terminate: true` with receipts and output provenance in its details, concluding the turn without prompting the parent model. Normal background completion notifications are suppressed (`awaitedByCaller: true`) to prevent competing wakes or duplicate deliveries. Subsequent user messages resume the parent session normally.
-
-#### Failure, fallback, and cancellation
-
-- **Fallback to parent**: If the child run fails, aborts with an error, fails to save or read its output artifact, or produces empty text, no partial text is published to the user. The tool call returns a failure result (`finalDelivery.status: "fallback"`) without terminating (no `terminate: true`).
-- **Context pruning**: On the following model request, the failed tool call and tool result are stripped from provider context messages (the underlying session log on disk is preserved), and an injected instruction directs the parent model to fulfill the original user request itself without retrying final delivery or referencing partial child artifacts.
-- **Cancellation**: User aborts, explicit child stops, or signal cancellations stop the local child process and terminate the turn (`terminate: true`, `finalDelivery.status: "cancelled"`). Cancellation does not trigger fallback to the parent model. External provider jobs rely on existing runner cancellation capabilities and do not guarantee remote termination.
-
 ## Parameter reference
 
 The `subagent` tool schema lists `agent`, `task`, `workflow`, `args`, `async`, `model`, `cwd`, `worktree`, `output`, `action`, `id` and `message` at the top level and every other field inside `options`, for example `subagent({ action: "status", id: "<run-id>", options: { view: "transcript" } })`. Management fields and the `runId`, `maxRuntimeMs` and `isolation` aliases also keep working at the top level, as in RPC payloads, slash commands, schedules and workflow `runs.run`/`runs.all` items; a field given in both places with different values is rejected.
@@ -129,7 +101,6 @@ The `subagent` tool schema lists `agent`, `task`, `workflow`, `args`, `async`, `
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `async` | boolean | default-on | Background execution. Workflows default to background. `async:false` blocks the parent until completion. A local foreground child runs inside the parent Pi process and never loads the parent's ambient extensions, but it does inherit the providers those extensions registered. A pane-native remote foreground child instead uses the remote machine's provider discovery and configuration. Agents that need MCP tools (`mcpDirectTools`, or MCP tools from an ambient adapter such as pi-mcp-adapter) must run as background children, which load them inside the detached runner process. |
-| `options.delivery` | `"final"` | - | Direct terminal answer delivery (`"final"`). Executes a single `{ agent, task? }` child as an awaited background run, renders its raw text artifact directly to the user as a `subagent-final` message, and terminates the turn (`terminate: true`) without parent model rephrasing. Rejects `action`, `workflow`, `tasks`, `chain`, `async: false`, `foregroundOnly`, and `chatProgress: "live-card"`. If the child fails or returns empty text, falls back to the parent model to continue the request. |
 | `options.chatProgress` | `auto \| off \| live-card` | `auto` | Workflow chat projection. `auto` renders a live in-chat card only for watched foreground workflows in the same Git repository, including managed worktrees; it is off otherwise. Explicit `live-card` requires `async:false` and the same Git repository. Async workflows have no inline live card, so omit `chatProgress` or use `auto`/`off`; use `async:false` only when the parent must block. |
 | `isolation` | `none \| worktree` | - | Alias kept at the top level; prefer `worktree`. Workflow child isolation. `none` runs in the shared cwd and does not need Git. `worktree` requires a managed Git worktree. Do not combine it with a contradictory `worktree` value. |
 | `options.baseRef` | string | `HEAD` | `HEAD` or a supported named ref such as `refs/heads/release`, `refs/tags/v1`, or `origin/main`. Full 40/64-character commit IDs and revision expressions such as `HEAD~1` are unsupported. The ref must resolve to a commit at worktree allocation; omitted values default to `HEAD` resolved at that time. Source-checkout cleanliness is still checked. For a workflow script, set it on the outer request as a default or on an individual `runs.run`/`runs.all` child to override it. |
@@ -334,8 +305,6 @@ The manifest stores one of these fail-closed eligibility states: `active` (an ow
 A failure in the subagent workflow, child launch, prompt runtime, extension loading, or child tooling setup is a lane infrastructure blocker, not permission to silently change execution mode. Stop and report the exact failure, run/status, and repo/cwd/worktree/branch/ref state. Before a same-protocol retry or asking the owner, verify the worktree is clean or capture the partial diff. Retry or fix the `subagent` path only through a clear same-protocol action.
 
 For backlog lanes and other subagent-governed workflows, external/foreground/CLI fallback requires explicit owner approval. Do not silently switch to `interactive_shell`, `pi -ne`, Codex/Claude/Cursor CLI, a foreground agent, or another external mode. `interactive_shell` remains valid when the user explicitly requests visible foreground/CLI work or the task is outside the governed subagent protocol. Pi core may print a generic `pi -ne` extension-load hint; that out-of-repo hint is not protocol-approved fallback. A verified compaction abort may continue the retained child once on its already resolved model; it never selects another model.
-
-Automatic fallback to the parent model applies solely when the user explicitly opts into final delivery (`delivery: "final"`). In that mode, child failure or empty output prompts the parent model to answer the original request directly. This fallback is specific to the final-delivery contract and does not loosen the strict execution-mode boundaries or failure rules for ordinary workflows, multi-child runs, or backlog lanes.
 
 ```ts
 subagent({ action: "status" })

@@ -156,7 +156,6 @@ const ControlOverrides = Type.Object({
 const SubagentParamProperties = {
 	agent: Type.Optional(Type.String({ description: "One-child agent or management target." })),
 	task: Type.Optional(Type.String({ description: "One-child task; requires agent." })),
-	delivery: Type.Optional(Type.String({ enum: ["final"], description: "Final child answer; success stops, failure resumes parent." })),
 	extensionBindings: Type.Optional(Type.Unsafe({ type: "object", maxProperties: 16, additionalProperties: true, description: "Child-only plain JSON; package.name/1; depth 16, 256 props, 16 KiB." })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.String({ minLength: 1,

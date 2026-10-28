@@ -1960,7 +1960,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			if (task === "Succeeded") firstRunId = child.id as string;
 			const matches = completed.filter((event) => event.id === child.id);
 			assert.equal(matches.length, 1);
-			assert.equal(matches[0]?.awaitedByCaller, true);
+			assert.equal(matches[0]?.awaitedByWorkflow, true);
 			assert.equal(matches[0]?.parentWorkflowRunId, child.parentWorkflowRunId);
 			assert.equal(matches[0]?.sessionId, child.sessionId);
 			assert.equal(matches[0]?.completionOwnerId, child.completionOwnerId);
@@ -1990,7 +1990,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			}
 			const matches = completed.filter((event) => event.id === explicitStart.id);
 			assert.equal(matches.length, 1);
-			assert.equal(matches[0]?.awaitedByCaller, undefined);
+			assert.equal(matches[0]?.awaitedByWorkflow, undefined);
 		} finally {
 			watcher.stopResultWatcher();
 		}

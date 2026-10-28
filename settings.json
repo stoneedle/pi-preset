@@ -9,6 +9,24 @@
   "codemode": {
     "mode": "on"
   },
+  "packages": [
+    "../preset/packages/pi-subagents",
+    "../preset/packages/agy-gemini",
+    "../preset/packages/pi-web",
+    "../preset/packages/inline-skill-completion",
+    "../upstreams",
+    "npm:pi-web-access@0.37.0",
+    "npm:pi-codex-image-gen@0.1.15",
+    "npm:@calesennett/pi-codex-fast@0.1.11",
+    "npm:pi-compact-transcript@0.11.1",
+    "npm:pi-goal@0.1.7"
+  ],
+  "extensions": [
+    "../preset/extensions"
+  ],
+  "skills": [
+    "!**/.agents/skills/{agy,archify,ask-matt,code-review,codebase-design,diagnosing-bugs,domain-modeling,find-skills,grill-me,grill-with-docs,grilling,handoff,impeccable,implement,implement-spec,improve-codebase-architecture,pr,prototype,research,retro,setup-matt-pocock-skills,tdd,teach,to-questionnaire,to-spec,to-tickets,triage,wait-what,wayfinder,whiteboard,wizard,writing-for-agents}/**"
+  ],
   "subagents": {
     "disableBuiltins": true,
     "defaultExtensions": []
@@ -42,5 +60,6 @@
     "mode": "fast"
   },
   "hideThinkingBlock": true,
-  "outputPad": 0
+  "outputPad": 0,
+  "lastChangelogVersion": "1.4.0"
 }

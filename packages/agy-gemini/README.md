@@ -6,14 +6,7 @@
 
 调用授权见用户级 `APPEND_SYSTEM.md`，双方的协作身份见 [collaboration.md](collaboration.md)，由扩展自动注入。先安装并登录 agy，通过 `agy models` 核对实际目录。
 
-在合集根目录执行：
-
-```bash
-npm --prefix packages/pi-subagents ci --ignore-scripts --omit=dev
-npm --prefix packages/agy-gemini ci --ignore-scripts --omit=peer
-pi install ./packages/pi-subagents
-pi install ./packages/agy-gemini
-```
+在合集根目录执行 `setup.ps1`，统一准备依赖并连接 Pi。插件安装声明由根目录 `settings.json` 管理。
 
 依赖通过 `file:../pi-subagents` 指向同级 fork，不另装 npm 上游。完整环境配置见[根目录 README](../../README.md)。
 

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { readStatus } from "../../shared/utils.ts";
-import { awaitedAsyncResultPath } from "./async-execution.ts";
+import { workflowAwaitedAsyncResultPath } from "./async-execution.ts";
 import { waitForImportedAsyncRoot, type ImportedAsyncRootResult } from "./chain-root-attachment.ts";
 import { currentPidNamespaceScope } from "./pid-namespace.ts";
 import { resultPayloadPathForSessionRun, resultSnapshotReplaced, withResultRunLease, type ResultSnapshot } from "./result-files.ts";
@@ -45,7 +45,7 @@ export async function awaitExistingAsyncRun(asyncDir: string, runId: string, sig
 	// The launcher's initial status has no workflow identity until the runner starts, so only the
 	// mode is checked here; a run that does not publish to the workflow result path stays unavailable.
 	if (status.mode !== "single") return { status: "unavailable", reason: `Async run '${runId}' is not a single-agent run.` };
-	const resultPath = awaitedAsyncResultPath(asyncDir);
+	const resultPath = workflowAwaitedAsyncResultPath(asyncDir);
 	let runnerExited = false;
 	let completed: ImportedAsyncRootResult;
 	try {
@@ -69,7 +69,7 @@ export async function awaitExistingAsyncRun(asyncDir: string, runId: string, sig
  * claimant whose payload a newer one replaced, get undefined and launch fresh.
  */
 export function claimWorkflowAwaitedResult(asyncDir: string, claimant: string, read: ResultSnapshot): string | undefined {
-	const resultPath = awaitedAsyncResultPath(asyncDir);
+	const resultPath = workflowAwaitedAsyncResultPath(asyncDir);
 	const claimedPath = `${resultPath}.${claimant}.claimed`;
 	try {
 		return withResultRunLease(asyncDir, read.runId, () => {

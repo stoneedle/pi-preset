@@ -118,7 +118,7 @@ it("does not deliver awaited workflow child lifecycle completions", async () => 
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 			id: "awaited-child", runId: "awaited-child", sessionId: "session-1", completionOwnerId: COMPLETION_OWNER_ID,
 			agent: "echo", mode: "single", state: "complete", success: true, summary: "private result",
-			awaitedByCaller: true, parentWorkflowRunId: "workflow", triggerTurn: false,
+			awaitedByWorkflow: true, parentWorkflowRunId: "workflow", triggerTurn: false,
 		});
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert.deepEqual(sent, []);

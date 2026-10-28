@@ -23,12 +23,12 @@
 
 需要 Pi 1.3.0+、Node.js 22.19+、Go 1.26+、Git 和 GNU Make。Windows 使用 Git Bash；Go、Node.js、Git 和 GNU Make 均需加入 PATH。远程访问使用已有的 Tailscale。
 
-在本合集根目录执行：
+合集环境在根目录执行 `setup.ps1`，统一准备依赖、连接 Pi 并安装网页服务。插件加载来源由根目录 `settings.json` 管理。
+
+仅重建、部署本包时，在本包目录执行：
 
 ```bash
-npm --prefix packages/pi-web ci --ignore-scripts
-pi install ./packages/pi-web
-node packages/pi-web/scripts/run-lifecycle.mjs install
+node scripts/run-lifecycle.mjs install
 ```
 
 安装入口会先构建前端和 Go 程序，再安装对应平台的程序与登录启动配置。默认地址是 `http://127.0.0.1:31415`。
