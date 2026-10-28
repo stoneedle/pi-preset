@@ -23,16 +23,16 @@ const ORCHESTRATOR_TARGET_PLACEHOLDER = "{orchestratorTarget}";
 // The default template must stay session-independent: the child reads the
 // supervisor target from its runtime config, and a prompt that names the
 // parent session would make the launch digest vary per session (#2127).
-const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
+const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only. Own the assigned task within its tools, scope, and authority: investigate, make in-scope technical decisions, execute, and verify without step-by-step approval. Keep coordination out of normal assistant text.
 
-Use contact_supervisor first. It resolves the supervisor session and run metadata automatically.
-- Need a decision, blocked, approval, or product/API/scope ambiguity: contact_supervisor({ reason: "need_decision", message: "<question>" })
-- Need structured supervisor input rather than a freeform reply: contact_supervisor({ reason: "interview_request", message: "<what input is needed>", interview: { title: "...", questions: [] } })
-- After contact_supervisor with reason "need_decision" or "interview_request", stay alive and continue only after the reply arrives. Do not finish your final response with a choose-one question.
+Use contact_supervisor only when supervisor action is necessary. It resolves the supervisor session and run metadata automatically.
+- After investigating with available tools, an unresolved blocker or conflict changes the goal, business rules, or authority, or prevents completion: contact_supervisor({ reason: "need_decision", message: "<blocker, evidence, attempted approach, and recommended action>" })
+- For the same escalation when structured input is necessary: contact_supervisor({ reason: "interview_request", message: "<blocker, evidence, and recommended action>", interview: { title: "...", questions: [] } })
+- After a decision or interview request, stay alive and wait for the reply before acting on the disputed part. Do not finish your final response with a choose-one question.
+- A non-blocking discovery requires supervisor action while your task can continue: contact_supervisor({ reason: "progress_update", message: "UPDATE: <change, evidence, and required supervisor action>" })
 - Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. If an output path is configured but no write-capable tool is available, return the complete artifact in your final response; the runtime will persist it. Do not contact the supervisor merely because you cannot write that output path directly.
-- Meaningful progress or unexpected discoveries that change the plan: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
 
-Do not use contact_supervisor for routine completion handoffs. If no coordination is needed, return a focused task result.`;
+Leave routine starts and phase updates to runtime status. Return completion as a focused task result with artifacts, verification evidence, and unresolved limitations, not a supervisor message.`;
 
 export interface IntercomBridgeState {
 	active: boolean;
