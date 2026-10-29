@@ -229,6 +229,7 @@ export class SessionState {
       attentionId: prompt?.id ?? null, attentionKind: prompt?.kind ?? null, availability: 'connected', canControl: true, canQueue: true,
       queueRevision: this.queue.revision, queueCount: this.queue.count,
       canCompact: !mainRunning && !prompt && this.children === 0,
+      canReload: !mainRunning && !prompt && this.children === 0,
       compaction: { running: this.compacting, error: this.compactionError },
       model: this.ctx.model?.id, modelName: this.ctx.model?.name, provider: this.ctx.model?.provider,
       thinking: this.pi.getThinkingLevel(), context: this.ctx.getContextUsage() ?? null,

@@ -76,6 +76,7 @@ test('returning to a visited conversation is local and preserves its draft durin
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   await expect(page.getByText('Previously read reply stays visible offline.', { exact: true })).toBeVisible();
   await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('保留未发送草稿');
+  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).blur();
   await page.getByRole('button', { name: '会话列表', exact: true }).click();
   const drawer = page.getByRole('dialog', { name: '会话', exact: true });
   await drawer.getByRole('button', { name: '搜索会话', exact: true }).click();
@@ -120,6 +121,7 @@ test('a send receipt survives session navigation without losing the next draft',
     await input.fill('等待回执的消息');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.waitForFunction(() => (window as any).__releaseSend);
+    await input.blur();
     await page.getByRole('button', { name: '会话列表', exact: true }).click();
     await page.getByRole('dialog', { name: '会话', exact: true }).getByRole('button', { name: '搜索会话', exact: true }).click();
     await page.getByRole('dialog', { name: '会话', exact: true }).getByRole('searchbox').fill(other);

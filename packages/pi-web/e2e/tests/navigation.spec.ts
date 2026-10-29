@@ -45,6 +45,7 @@ test('session navigation keeps the live drawer, expanded projects and loaded pag
     await page.goto(`/session?id=${encodeURIComponent(ids[0])}`);
     await expect(page.locator('.remote-header > .remote-state')).toHaveAttribute('data-visual', 'running');
     await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('切换后仍属于第一个会话的草稿');
+    await page.getByRole('textbox', { name: '给 Pi 发消息…' }).blur();
     const drawer = page.getByRole('dialog', { name: '会话', exact: true });
     await page.getByRole('button', { name: '会话列表', exact: true }).click();
     const project = drawer.locator('.remote-project').filter({ has: page.locator('.remote-project-label strong', { hasText: basename(workingDir) }) });

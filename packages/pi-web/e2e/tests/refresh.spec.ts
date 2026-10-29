@@ -28,6 +28,7 @@ test('manual refresh is reachable from home and conversation and only clears the
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   const input = page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
   await input.fill('刷新允许丢弃的未发送草稿');
+  await input.blur();
   await page.locator('summary[aria-label="更多"]').click();
   page.once('dialog', (dialog) => dialog.accept());
   const navigation = page.waitForEvent('framenavigated', frame => frame === page.mainFrame());
@@ -42,6 +43,7 @@ test('canceling manual refresh preserves all input and the current document', as
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
   const input = page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
   await input.fill('取消刷新后继续编辑');
+  await input.blur();
   await page.evaluate(() => { (window as any).__sameDocument = true; });
   let question = '';
   page.once('dialog', async (dialog) => { question = dialog.message(); await dialog.dismiss(); });
@@ -122,6 +124,7 @@ test('manual preflight is single-flight and a control started during it prevents
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForFunction(() => Boolean((window as any).__releaseControl));
   await page.evaluate(() => (window as any).__releasePreflight());
+  await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).blur();
   await page.locator('summary[aria-label="更多"]').click();
   await expect(refresh).toBeDisabled();
   expect(await page.evaluate(() => (window as any).__sameDocument)).toBe(true);

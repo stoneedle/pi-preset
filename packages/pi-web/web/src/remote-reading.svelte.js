@@ -88,7 +88,11 @@ function readingAnchor(viewport) {
   if (part < 0) return anchor;
   const node = parts[part];
   anchor.part = part;
-  if (scope !== message) anchor.block = Number(scope.dataset.readingBlock);
+  if (scope !== message) {
+    anchor.block = Number(scope.dataset.readingBlock);
+    anchor.expanded =
+      scope.querySelector('.remote-block-toggle')?.getAttribute('aria-expanded') === 'true';
+  }
   anchor.messageOffset = anchor.offset;
   anchor.offset = node.getBoundingClientRect().top - top;
   const rect = node.getBoundingClientRect();

@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick, untrack } from 'svelte';
-  import { icon, Brain, Terminal, SquarePen, ChevronDown, X } from '../shared/icons.js';
+  import { icon, Brain, Terminal, SquarePen, X } from '../shared/icons.js';
   import { request } from '../remote-api.js';
   import { editDraft } from '../remote-drafts.svelte.js';
 
@@ -12,6 +12,9 @@
     onsessioninfo,
     oncompact,
     canCompact = false,
+    onreload,
+    canReload = false,
+    reloading = false,
   } = $props();
   const categories = [
     { source: 'skill', label: '技能', glyph: Brain },
@@ -25,6 +28,7 @@
   let commands = $state([]);
   let loading = $state(false);
   let error = $state('');
+  let actionError = $state('');
   let dismissed = $state(null);
   let panel = $state(null);
   let bar = $state(null);
@@ -39,6 +43,17 @@
         ? [
             { name: 'session', label: '会话详情', action: onsessioninfo },
             { name: 'compact', label: '压缩上下文', action: oncompact, disabled: !canCompact },
+            ...(onreload
+              ? [
+                  {
+                    name: 'reload',
+                    label: reloading ? '正在重载…' : '重载 Pi 资源',
+                    action: reload,
+                    disabled: !canReload,
+                    keepOpen: true,
+                  },
+                ]
+              : []),
           ]
         : []),
       ...commands.filter((command) => command.source === (category || 'skill')),
@@ -70,14 +85,14 @@
     if (!panel) return;
     if (visible) {
       panel.showPopover();
-      tick().then(position);
+      reposition();
     } else panel.hidePopover();
   });
   $effect(() => {
     options;
     loading;
     error;
-    tick().then(position);
+    reposition();
   });
 
   async function load(source, retry = false) {
@@ -105,6 +120,10 @@
     }
   }
 
+  function reposition() {
+    tick().then(position);
+  }
+
   function position() {
     if (!panel?.matches(':popover-open') || !bar) return;
     const anchor = bar.getBoundingClientRect();
@@ -124,12 +143,25 @@
     panel?.hidePopover();
   }
 
+  async function reload() {
+    actionError = '';
+    try {
+      await onreload();
+      loaded = null;
+      currentCatalog = false;
+      close();
+    } catch (err) {
+      actionError = err.message;
+    }
+  }
+
   function select(command) {
-    close();
     if (command.action) {
+      if (!command.keepOpen) close();
       command.action();
       return;
     }
+    close();
     const prefix = `/${command.name} `;
     const existing = composer.text.match(/^\/(\S+)/)?.[1];
     const completing = slashQuery !== undefined || commands.some((item) => item.name === existing);
@@ -158,15 +190,15 @@
     };
     window.addEventListener('pointerdown', outside, true);
     window.addEventListener('keydown', escape, true);
-    window.addEventListener('resize', position);
-    window.visualViewport?.addEventListener('resize', position);
-    window.visualViewport?.addEventListener('scroll', position);
+    window.addEventListener('resize', reposition);
+    window.visualViewport?.addEventListener('resize', reposition);
+    window.visualViewport?.addEventListener('scroll', reposition);
     return () => {
       window.removeEventListener('pointerdown', outside, true);
       window.removeEventListener('keydown', escape, true);
-      window.removeEventListener('resize', position);
-      window.visualViewport?.removeEventListener('resize', position);
-      window.visualViewport?.removeEventListener('scroll', position);
+      window.removeEventListener('resize', reposition);
+      window.visualViewport?.removeEventListener('resize', reposition);
+      window.visualViewport?.removeEventListener('scroll', reposition);
     };
   });
 </script>
@@ -185,11 +217,9 @@
         else {
           category = item.source;
           search = '';
+          actionError = '';
         }
-      }}
-      >{@html icon(item.glyph, { size: 15 })}{item.label}{@html icon(ChevronDown, {
-        size: 12,
-      })}</button
+      }}>{@html icon(item.glyph, { size: 15 })}{item.label}</button
     >
   {/each}
 </div>
@@ -223,6 +253,7 @@
           >{/if}</button
       >
     {/each}
+    {#if category && actionError}<div class="command-error" role="alert">{actionError}</div>{/if}
     {#if category && loading}<p role="status">加载中…</p>{/if}
     {#if category && error}<div class="command-error" role="alert">
         {error}<button type="button" onclick={() => load(resource, true)}>重试</button>
@@ -313,8 +344,8 @@
     justify-content: space-between;
     gap: 12px;
     width: 100%;
-    min-height: 44px;
-    padding: 10px 12px;
+    min-height: 36px;
+    padding: 6px 12px;
     border: 0;
     border-radius: 10px;
     background: transparent;

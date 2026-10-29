@@ -117,7 +117,11 @@ func (owner Registration) Call(ctx context.Context, payload any) (map[string]any
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+owner.Token)
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	timeout := 5 * time.Second
+	if command, ok := payload.(map[string]any); ok && command["action"] == "reload" {
+		timeout = 40 * time.Second
+	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("无法连接到现有 Pi 实例：%w", err)

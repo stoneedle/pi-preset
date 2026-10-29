@@ -152,6 +152,20 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 0, reply)
 }
 
+func (s *Server) handleReloadSession(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		InstanceID string `json:"instanceId"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	if body.InstanceID == "" {
+		writeJSONError(w, http.StatusBadRequest, "instanceId required")
+		return
+	}
+	s.handleControl(w, r, map[string]any{"action": "reload", "instanceId": body.InstanceID})
+}
+
 func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CustomInstructions string `json:"customInstructions"`

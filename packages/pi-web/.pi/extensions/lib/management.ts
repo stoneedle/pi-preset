@@ -699,13 +699,14 @@ async function showRemoteAccess(
   }
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, reloadResources: (ctx: ExtensionCommandContext) => Promise<void>) {
   // ── /pi-web ───────────────────────────────────────────────────────
   pi.registerCommand("pi-web", {
     description: "管理 pi-web 服务、令牌和远程访问",
 
     handler: async (args, ctx: ExtensionCommandContext) => {
       const [subcommand = "status"] = normalizeCommandArgs(args);
+      if (subcommand === "reload") return reloadResources(ctx);
       const bin = await findPiWebBinary(pi);
       const detected = await detectHostPort(pi);
       const host = detected?.host || "127.0.0.1";
@@ -721,7 +722,7 @@ export default function (pi: ExtensionAPI) {
         subcommand === "-h"
       ) {
         ctx.ui.notify(
-          "用法：/pi-web [status|version|path|token|set-token|start|stop|restart|remote|help]",
+          "用法：/pi-web [status|version|path|token|set-token|start|stop|restart|reload|remote|help]",
           "info",
         );
         return;
@@ -855,7 +856,7 @@ export default function (pi: ExtensionAPI) {
 
       if (subcommand !== "status") {
         ctx.ui.notify(
-          `未知的 /pi-web 命令： ${subcommand}. 用法：/pi-web [status|version|path|token|set-token|start|stop|restart|remote|help]`,
+          `未知的 /pi-web 命令： ${subcommand}. 用法：/pi-web [status|version|path|token|set-token|start|stop|restart|reload|remote|help]`,
           "warning",
         );
         return;

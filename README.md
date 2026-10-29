@@ -45,21 +45,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\.pi\preset\setup.
 
 Pi 从共享设置直接加载 `preset/extensions` 和本地包；`agent/extensions` 留给插件的本机运行文件，不整体接入 Git。共享设置排除 `~/.agents/skills` 中由本合集管理的同名副本，以及 Codex 专属技能；其他本机技能和工具自带入口保持原样，不因此进入仓库。项目技能仍按 Pi 的项目信任规则加载。
 
-## 日常修改
+## 日常维护
 
-- 提示词、角色、定制技能和共享偏好：编辑仓库文件，或编辑 Pi 对应的链接路径。
-- 自制单文件扩展：放入 `extensions/`；完整插件：放入 `packages/` 并在 `settings.json` 登记本地路径。
-- 原版插件：使用 `pi install npm:包名@版本`；声明直接写回仓库中的设置。
-- 原版技能：修改 `preset.json` 的上游 commit 和所选目录，再运行 `setup.ps1`。
-- 开始修改某个原版组件时：先将它纳入本地维护目录，替换原版加载声明，只保留一个加载来源。
+在任意工作目录授权 agent 维护或发布 Pi 定制时，按[维护约定](references/preset-maintenance.md)执行；不需要切到配置仓库再发起任务。
 
-一端提交并推送，另一端拉取：
-
-```powershell
-git -C "$HOME\.pi\preset" pull --ff-only
-```
-
-仅修改文本或 TypeScript 扩展后执行 `/reload`。安装声明、依赖锁或上游索引变化后重跑 `setup.ps1`；它也会从当前源码构建并安装 Pi Web。Git 不传递依赖安装树或编译产物，也不自动解决两端的 Git 冲突。
+日常维护复用现有安装与检查入口，按改动范围执行；首次安装使用 `setup.ps1`。发布和多端同步按用户授权分别处理。新会话使用新资源；已有会话通过 `/reload` 更新，不强制中断运行中的任务。
 
 ## 子代理工具
 

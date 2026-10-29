@@ -82,6 +82,7 @@ test("browse is passive; sending starts and reuses one worker for text, pictures
   expect(readdirSync(join(agentDir, "pi-web", "owners")).filter((name) => name === id + ".json")).toHaveLength(1);
   expect(existsSync(join(agentDir, "session-status"))).toBe(false);
   expect(JSON.parse(readFileSync(ownerFile, 'utf8')).pid).toBe(firstPID);
+  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).blur();
   const infoBar = page.getByRole('group', { name: '会话信息', exact: true });
   for (const label of ['输入 token', '输出 token', '缓存命中率', '上下文窗口']) {
     await expect(infoBar.locator(`[aria-label="${label}"]`)).toBeVisible();

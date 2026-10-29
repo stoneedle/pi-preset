@@ -15,6 +15,7 @@ import { BINARY, REPO_ROOT } from '../lib/paths.ts';
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const releaseMark = page => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--pi-web-release-probe').trim());
 async function refresh(page) {
+  await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).blur();
   await page.locator('summary[aria-label="更多"]').click();
   const navigation = page.waitForEvent('framenavigated', frame => frame === page.mainFrame());
   await page.getByRole('button', { name: '刷新界面', exact: true }).click();
@@ -99,6 +100,7 @@ test('real Go upgrades and waiting workers never replace documents; only manual 
       assert.equal(await page.evaluate(() => window.__beforeUpgrade), true);
       assert.equal(await otherPage.evaluate(() => window.__otherDocument), true);
       assert.equal(await releaseMark(page), '');
+      await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).blur();
       await page.locator('summary[aria-label="更多"]').click();
       await expect(page.getByRole('button', { name: '刷新界面', exact: true })).toBeDisabled();
       await page.locator('summary[aria-label="更多"]').click();

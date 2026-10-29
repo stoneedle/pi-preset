@@ -94,6 +94,7 @@ test('phone sends and new-session run actual installed native Pi workers', { tim
   for (const text of ['Actual background continue', 'Reuse actual worker', 'Fresh native resume after exit']) assert.ok(branch.includes('Native lifecycle reply: ' + text), 'resume preserves persisted answers');
   assert.deepEqual(readdirSync(join(root, 'sessions', '--first-project--')), [firstID], 'resume does not create a recovery copy');
 
+  await page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true }).blur();
   await page.getByRole('button', { name: "新建会话", exact: true }).click();
   const editor = page.getByRole('dialog', {name:'新对话',exact:true});
   await editor.getByRole('button', {name:'选择项目',exact:true}).click();

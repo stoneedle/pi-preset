@@ -44,6 +44,7 @@ test('发送过程中只显示按钮进度，成功和跨导航均不插入额�
     owner.publish();
     await expect(page.locator(`[data-message-id="${firstId}"]`)).toBeVisible();
     await expect(pending).toHaveCount(0);
+    await draft.blur();
     await page.getByRole('button', { name: '会话列表', exact: true }).click();
     const drawer = page.getByRole('dialog', { name: '会话', exact: true });
     await drawer.getByRole('button', { name: '搜索会话', exact: true }).click();
@@ -151,6 +152,7 @@ test('长按保留输入焦点且仅排队，失败提供恢复入口且不重�
     await expect(page.locator('.remote-main article')).toHaveCount(2);
     await draft.fill('发送期间继续写的下一份草稿');
     await page.screenshot({ path: info.outputPath('queue-320-sending.png'), animations: 'disabled' });
+    await draft.blur();
 
     await page.getByRole('button', { name: '会话列表', exact: true }).click();
     const drawer = page.getByRole('dialog', { name: '会话', exact: true });

@@ -31,6 +31,8 @@
 
 ### 环境约定
 
+Pi 环境维护（扩展、技能、角色、提示词与共享配置）须经用户授权；开始前读取 `~/.pi/preset` 中的[维护约定](references/preset-maintenance.md)。
+
 默认使用中文，代码符号和必要技术名词保持项目用语。文本和 CLI 使用 UTF-8。交付链接本地文件或目录使用 `file:///` URI。
 
 `bash.timeout` 的单位是**秒**，直接调用 `bash` 和在 Codemode 中调用 `tools.bash` 均相同；`codemode` 的 `timeout_ms` 使用毫秒。

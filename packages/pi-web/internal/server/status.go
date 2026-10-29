@@ -37,6 +37,7 @@ type runtimeSnapshot struct {
 	CanControl    bool            `json:"canControl"`
 	CanQueue      bool            `json:"canQueue"`
 	CanCompact    bool            `json:"canCompact"`
+	CanReload     bool            `json:"canReload"`
 	Compaction    json.RawMessage `json:"compaction,omitempty"`
 	QueueRevision int64           `json:"queueRevision"`
 	QueueCount    int             `json:"queueCount"`

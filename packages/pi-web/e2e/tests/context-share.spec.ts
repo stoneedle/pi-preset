@@ -10,6 +10,7 @@ function isFullContentRequest(url: string) {
     !(pathname === '/api/session/image' && searchParams.get('thumbnail') === '1');
 }
 async function openSharing(page: Page) {
+  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).blur();
   await page.locator('summary[aria-label="更多"]').click();
 }
 async function mockSharing(page: Page, supported = true) {

@@ -96,6 +96,11 @@
   let laterLoading = $state(false);
   let laterController;
   let textarea = $state(null);
+  let editorFocused = $state(false);
+  let keyboardVisible = $state(null);
+  let editorPointer = $state(false);
+  let editorBlurTimer;
+  const editing = $derived(editorPointer || (editorFocused && keyboardVisible !== false));
   let drawerTrigger = $state(null);
   let newTask = $state(null);
   let pushSettings = $state(null);
@@ -118,6 +123,7 @@
   let messageActions = $state(null);
   let forkBusy = $state(false);
   let closingProcess = $state(false);
+  let reloadingResources = $state(false);
 
   $effect(() => {
     if (!sessionId) document.title = appName.name;
@@ -125,9 +131,22 @@
 
   const activeState = $derived(connected ? status.state : 'unknown');
   const runtimeKnown = $derived(connected && status.availability === 'connected');
-  const canSend = $derived(chatAvailable && !composer.sending && !closingProcess);
+  const canSend = $derived(
+    chatAvailable && !composer.sending && !closingProcess && !reloadingResources,
+  );
+  const canReload = $derived(
+    runtimeKnown &&
+      status.canReload === true &&
+      !composer.sending &&
+      !closingProcess &&
+      !reloadingResources,
+  );
   const canShutdown = $derived(
-    runtimeKnown && status.canControl && !composer.sending && !closingProcess,
+    runtimeKnown &&
+      status.canControl &&
+      !composer.sending &&
+      !closingProcess &&
+      !reloadingResources,
   );
   const canQueue = $derived(
     canSend &&
@@ -153,7 +172,7 @@
       thinking: pending.thinking || (runtimeKnown ? status.thinking : ''),
       fast: pending.speed ? { mode: pending.speed } : runtimeKnown ? status.fast : null,
       deferSettings: !runtimeKnown || Object.keys(pending).length > 0,
-      disabled: !chatAvailable || composer.sending,
+      disabled: !chatAvailable || composer.sending || reloadingResources,
     };
   });
   const atBottom = () =>
@@ -189,7 +208,8 @@
 
   const readingAnchor = () => reading.capture();
   const restoreAnchor = (anchor) => {
-    if (Number.isInteger(anchor?.block)) blockViews[`${anchor.id}:${anchor.block}`]?.reveal();
+    if (Number.isInteger(anchor?.block) && anchor.expanded)
+      blockViews[`${anchor.id}:${anchor.block}`]?.reveal();
     const restored = reading.restore(anchor);
     if (restored) previousScrollTop = viewport.scrollTop;
     return restored;
@@ -486,6 +506,17 @@
     }
   }
 
+  async function reloadResources() {
+    if (!canReload) return;
+    reloadingResources = true;
+    try {
+      await post(endpoint('/api/session/reload'), { instanceId: status.instanceId });
+      refreshStatus.run();
+    } finally {
+      reloadingResources = false;
+    }
+  }
+
   async function shutdownProcess() {
     if (!canShutdown) return;
     info.open = false;
@@ -742,13 +773,39 @@
       if (button) openPreview(button.dataset.previewPath);
     };
     window.addEventListener('click', onFilePreview);
-    const onViewport = () =>
-      document.documentElement.style.setProperty(
-        '--remote-height',
-        `${window.visualViewport?.height || window.innerHeight}px`,
-      );
+    let layoutWidth = window.innerWidth;
+    let fullHeight = document.documentElement.clientHeight;
+    const onViewport = () => {
+      const visual = window.visualViewport;
+      const height = visual?.height || window.innerHeight;
+      const layoutHeight = document.documentElement.clientHeight;
+      const inputFocused = document.activeElement?.matches('input, textarea');
+      if (window.innerWidth !== layoutWidth || (!inputFocused && keyboardVisible !== true))
+        fullHeight = layoutHeight;
+      else fullHeight = Math.max(fullHeight, layoutHeight);
+      layoutWidth = window.innerWidth;
+      const keyboard = fullHeight - height * (visual?.scale || 1) > 150;
+      // Once a soft keyboard is observed, dismissal is independent of editor focus.
+      if (keyboard || keyboardVisible !== null) keyboardVisible = keyboard;
+      document.documentElement.style.setProperty('--remote-height', `${height}px`);
+    };
+    window.addEventListener('resize', onViewport);
     window.visualViewport?.addEventListener('resize', onViewport);
     onViewport();
+    const beginEditorPointer = () => {
+      editorPointer = editing;
+    };
+    const endEditorPointer = () => {
+      if (!editorPointer) return;
+      clearTimeout(editorBlurTimer);
+      // Touch compatibility clicks can arrive after pointerup in a later task.
+      editorBlurTimer = setTimeout(() => {
+        editorPointer = false;
+      }, 0);
+    };
+    window.addEventListener('pointerdown', beginEditorPointer, true);
+    window.addEventListener('click', endEditorPointer, true);
+    window.addEventListener('pointercancel', endEditorPointer, true);
     const stopReading = reading.start(() => bottom(true));
     return () => {
       rememberSession();
@@ -770,7 +827,12 @@
       window.removeEventListener('online', onVisible);
       window.removeEventListener('focus', onVisible);
       window.removeEventListener('click', onFilePreview);
+      window.removeEventListener('resize', onViewport);
       window.visualViewport?.removeEventListener('resize', onViewport);
+      window.removeEventListener('pointerdown', beginEditorPointer, true);
+      window.removeEventListener('click', endEditorPointer, true);
+      window.removeEventListener('pointercancel', endEditorPointer, true);
+      clearTimeout(editorBlurTimer);
 
       document.documentElement.style.removeProperty('--remote-height');
     };
@@ -778,7 +840,12 @@
 </script>
 
 <!-- eslint-disable svelte/no-at-html-tags -- Lucide icons and escaped Markdown renderer -->
-<div class="remote-app" class:remote-home={!sessionId} bind:this={drawerSurface}>
+<div
+  class="remote-app"
+  class:remote-home={!sessionId}
+  class:remote-editing={editing}
+  bind:this={drawerSurface}
+>
   <header class="remote-header">
     {#if sessionId}<button
         type="button"
@@ -1043,7 +1110,10 @@
         catalogKey={status.instanceId || ''}
         onsessioninfo={() => sessionTools.open()}
         oncompact={() => sessionTools.open('compact')}
-        canCompact={runtimeKnown && status.canCompact === true}
+        canCompact={runtimeKnown && status.canCompact === true && !reloadingResources}
+        onreload={reloadResources}
+        {canReload}
+        reloading={reloadingResources}
         {canSend}
         running={status.mainRunning || activeState === 'running'}
         onsend={sendMessage}
@@ -1057,7 +1127,11 @@
           if (info) info.open = false;
         }}
         onfocus={() => {
+          editorFocused = true;
           if (info) info.open = false;
+        }}
+        onblur={() => {
+          editorFocused = false;
         }}
         status={modelStatus}
         {models}
@@ -1242,6 +1316,10 @@
     flex: none;
     z-index: 2;
     background: var(--body-bg);
+  }
+  .remote-editing > .remote-header,
+  .remote-editing > :global(.session-info) {
+    display: none;
   }
   .remote-home .remote-header {
     padding: 22px 20px 18px;

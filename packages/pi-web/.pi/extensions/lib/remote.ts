@@ -8,6 +8,7 @@ import { setFastState } from "./fast-state.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { basename, join } from "node:path";
 import {
   mkdirSync,
@@ -30,6 +31,7 @@ export async function openRemote(
   agentDir: string,
   state: SessionState,
   title: SessionTitle,
+  reloadResources: () => Promise<void>,
 ) {
   const sessionFile = ctx.sessionManager.getSessionFile();
   if (!sessionFile || (ctx.mode !== "tui" && ctx.mode !== "rpc")) return;
@@ -45,6 +47,9 @@ export async function openRemote(
   let closed = false;
   let retiring = false;
   let pendingControls = 0;
+  let reloadSocket: Socket | undefined;
+  let reloading = false;
+  const connections = new Set<Socket>();
 
   async function release() {
     generation++;
@@ -59,11 +64,18 @@ export async function openRemote(
     registration = undefined;
     const previous = server;
     server = undefined;
-    if (previous)
-      await new Promise<void>((resolve) => {
-        previous.close(() => resolve());
-        previous.closeAllConnections();
-      });
+    if (previous) {
+      if (reloadSocket) {
+        // ctx.reload() awaits shutdown. Keep only its response alive without waiting on it.
+        previous.close();
+        for (const socket of connections) if (socket !== reloadSocket) socket.destroy();
+      } else {
+        await new Promise<void>((resolve) => {
+          previous.close(() => resolve());
+          previous.closeAllConnections();
+        });
+      }
+    }
   }
 
   async function claim() {
@@ -182,6 +194,7 @@ export async function openRemote(
         if (
           !current ||
           retiring ||
+          reloading ||
           currentGeneration !== generation ||
           input.sessionId !== sessionId ||
           current.sessionManager.getSessionId() !== sessionId
@@ -197,6 +210,7 @@ export async function openRemote(
           "thinking",
           "speed",
           "compact",
+          "reload",
         ].includes(input.action);
         if (mutation) pendingControls++;
         try {
@@ -327,6 +341,23 @@ export async function openRemote(
                   })),
               });
               return;
+            case "reload": {
+              state.updateContext(current);
+              if (input.instanceId !== state.instanceId)
+                throw new Error("Pi 实例已更新，请重新打开命令列表");
+              if (!state.snapshot().canReload || pendingControls > 1)
+                throw new Error("请等待 Pi 和子任务空闲后再重载资源");
+              reloading = true;
+              reloadSocket = res.socket ?? undefined;
+              try {
+                await reloadResources();
+                reply(200, { status: "reloaded" });
+              } finally {
+                reloading = false;
+                reloadSocket = undefined;
+              }
+              return;
+            }
             case "compact":
               if (typeof input.customInstructions !== "string") throw new Error("invalid compaction instructions");
               state.compact(input.customInstructions);
@@ -349,6 +380,10 @@ export async function openRemote(
             error: error instanceof Error ? error.message : String(error),
           });
       }
+    });
+    server.on("connection", (socket) => {
+      connections.add(socket);
+      socket.once("close", () => connections.delete(socket));
     });
     try {
       await new Promise<void>((resolve, reject) => {

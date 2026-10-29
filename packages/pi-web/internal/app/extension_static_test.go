@@ -15,7 +15,7 @@ func TestPiWebExtensionRegistersExpectedCommands(t *testing.T) {
 	for _, want := range []string{
 		`pi.registerCommand("pi-web"`,
 		`pi.registerCommand("remote"`,
-		`用法：/pi-web [status|version|path|token|set-token|start|stop|restart|remote|help]`,
+		`用法：/pi-web [status|version|path|token|set-token|start|stop|restart|reload|remote|help]`,
 		"launchctl",
 		"systemctl",
 		`import("qrcode")`,

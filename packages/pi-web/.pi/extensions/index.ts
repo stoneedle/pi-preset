@@ -8,10 +8,12 @@ import { SessionTitle, firstUserText, openingTaskText, titleModel } from './lib/
 import { externalBadge, renderTitle } from './lib/title/format.ts';
 import { observeTerminalFocus } from './lib/title/focus.ts';
 import management from './lib/management.ts';
+import { resourceReload } from './lib/resource-reload.ts';
 
 export default function (pi: ExtensionAPI) {
-  management(pi);
   let state: SessionState | undefined;
+  const reload = resourceReload(pi, () => state);
+  management(pi, reload.run);
   let title: SessionTitle | undefined;
   let remote: Awaited<ReturnType<typeof openRemote>>;
   let ctxRef: ExtensionContext | undefined;
@@ -62,7 +64,7 @@ export default function (pi: ExtensionAPI) {
       if (focused) acknowledge();
     });
     render();
-    try { remote = await openRemote(pi, ctx, getAgentDir(), state, title); }
+    try { remote = await openRemote(pi, ctx, getAgentDir(), state, title, reload.request); }
     catch (error) { ctx.ui.notify(`远程控制不可用： ${error}`, 'error'); }
     try {
       const first = title.name ? undefined : firstUserText(ctx);

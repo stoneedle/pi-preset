@@ -17,6 +17,7 @@ test.afterEach(async ({ request }) => {
 });
 
 async function openName(page: Page) {
+  await page.locator('.remote-composer textarea').evaluateAll(nodes => nodes.forEach(node => (node as HTMLTextAreaElement).blur()));
   await page.locator('summary[aria-label="更多"]').click();
   await page.getByRole('button', { name: '应用名称', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '应用名称', exact: true });

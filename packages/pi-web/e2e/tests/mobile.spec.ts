@@ -74,6 +74,16 @@ test("draft grows with newlines and wrapping, shrinks after edits and sends only
     const draft = page.getByRole("textbox", { name: "给 Pi 发消息…" });
     const height = () => draft.evaluate((element) => element.getBoundingClientRect().height);
     const initialHeight = await height();
+    const header = page.locator('.remote-header');
+    const sessionInfo = page.getByRole('group', { name: '会话信息', exact: true });
+    const mainHeight = () => page.locator('.remote-main').evaluate(node => node.clientHeight);
+    await expect(sessionInfo).toBeVisible();
+    const idleMainHeight = await mainHeight();
+    const toolbarHeight = (await header.boundingBox())!.height + (await sessionInfo.boundingBox())!.height;
+    await draft.focus();
+    await expect(header).toBeHidden();
+    await expect(sessionInfo).toBeHidden();
+    await expect.poll(mainHeight).toBeGreaterThanOrEqual(idleMainHeight + toolbarHeight - 1);
     await draft.fill("第一行\n第二行\n第三行\n第四行");
     await expect.poll(height).toBeGreaterThan(initialHeight + 20);
     await draft.fill("短消息");
@@ -92,6 +102,9 @@ test("draft grows with newlines and wrapping, shrinks after edits and sends only
     await expect.poll(shellHeight).toBeLessThanOrEqual(181);
     await expect.poll(height).toBeGreaterThan(100);
     expect(await draft.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    await expect(header).toBeHidden();
+    await expect(sessionInfo).toBeHidden();
+    expect(await mainHeight()).toBeGreaterThan(120);
     expect(await page.locator(".remote-composer .remote-actions").evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(361);
     await expect(page.getByRole("combobox", { name: "消息投递" })).toHaveCount(0);
     await draft.fill("当前任务的新引导\n附加细节");
@@ -99,6 +112,11 @@ test("draft grows with newlines and wrapping, shrinks after edits and sends only
     if (info.project.name === "Mobile Chrome") await page.screenshot({ path: info.outputPath("growing-composer-320-keyboard.png") });
     await page.getByRole("button", { name: "发送", exact: true }).click();
     await expect(draft).toHaveValue("");
+    await expect(draft).toBeFocused();
+    await expect(header).toBeHidden();
+    await page.locator('.remote-main').click({ position: { x: 5, y: 5 } });
+    await expect(header).toBeVisible();
+    await expect(sessionInfo).toBeVisible();
     await expect.poll(height).toBe(initialHeight);
     expect(sent).toHaveLength(1);
     expect(sent[0].message.replace(/\r\n/g, "\n")).toBe("当前任务的新引导\n附加细节");
@@ -111,6 +129,69 @@ test("draft grows with newlines and wrapping, shrinks after edits and sends only
     await expect.poll(editorHeight).toBeLessThanOrEqual(181);
     await expect(editor.getByRole('button', { name: '发送', exact: true })).toBeInViewport();
   } finally { await owner.close(); }
+});
+
+test('收起键盘但输入框仍聚焦时恢复顶栏，再次弹出键盘时收起且保留草稿', async ({ page, sessionsDir, workingDir }, info) => {
+  const id = writeSession(sessionsDir, uniqueSessionName(info, 'keyboard-toolbar'), buildSession({ cwd: workingDir }).entries);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(`/session?id=${encodeURIComponent(id)}`);
+  const draft = page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
+  const header = page.locator('.remote-header');
+  const sessionInfo = page.getByRole('group', { name: '会话信息', exact: true });
+  const text = '收起键盘不应清除草稿或光标位置。'.repeat(30);
+  await draft.fill(text);
+  await draft.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(12, 12));
+  const resizeKeyboard = async (height: number | null, resizeLayout: boolean) => {
+    if (resizeLayout) {
+      await page.setViewportSize({ width: 320, height: height ?? 800 });
+      return;
+    }
+    await page.evaluate(height => {
+      if (height === null) delete (window.visualViewport as any).height;
+      else Object.defineProperty(window.visualViewport, 'height', { configurable: true, value: height });
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    }, height);
+  };
+  for (const resizeLayout of [false, false, true, true]) {
+    await resizeKeyboard(360, resizeLayout);
+    await expect(header).toBeHidden();
+    await expect(sessionInfo).toBeHidden();
+    await resizeKeyboard(420, resizeLayout);
+    await expect(header).toBeHidden();
+    await resizeKeyboard(null, resizeLayout);
+    await expect(header).toBeVisible();
+    await expect(sessionInfo).toBeVisible();
+    await expect(draft).toBeFocused();
+    await expect(draft).toHaveValue(text);
+    expect(await draft.evaluate((node: HTMLTextAreaElement) => node.selectionStart)).toBe(12);
+  }
+  if (info.project.name === 'Mobile Chrome') await page.screenshot({ path: info.outputPath('keyboard-dismissed-toolbar-320.png') });
+});
+
+test('输入时点击正文操作，顶栏等点击完成后恢复且不吞掉操作', async ({ page, sessionsDir, workingDir, browserName, isMobile }, info) => {
+  const id = writeSession(sessionsDir, uniqueSessionName(info, 'editing-actions'), buildSession({ cwd: workingDir }).entries);
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async (text: string) => { (window as any).__copiedReply = text; },
+  } }));
+  await page.goto(`/session?id=${encodeURIComponent(id)}`);
+  const draft = page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
+  await draft.fill('点击操作也不能丢失草稿');
+  const copy = page.locator('article[aria-label="Pi"]').getByRole('button', { name: '复制', exact: true });
+  const box = (await copy.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const client = browserName === 'chromium' && isMobile ? await page.context().newCDPSession(page) : null;
+  try {
+    if (client) await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    else { await page.mouse.move(x, y); await page.mouse.down(); }
+    await expect(page.locator('.remote-header')).toBeHidden();
+    expect(Math.abs((await copy.boundingBox())!.y - box.y)).toBeLessThan(1);
+    if (client) await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    else await page.mouse.up();
+    await expect.poll(() => page.evaluate(() => (window as any).__copiedReply)).toBe('Initial reply.');
+    await expect(page.locator('.remote-header')).toBeVisible();
+    await expect(draft).toHaveValue('点击操作也不能丢失草稿');
+  } finally { await client?.detach(); }
 });
 
 test("mobile has one compact interface and no workspace entry points", async ({
@@ -158,6 +239,7 @@ test("session drawer preserves the conversation and fits narrow keyboard viewpor
   const conversation = page.locator(".remote-app > .remote-main");
   await expect(conversation.locator("article")).toHaveCount(3);
   await page.getByRole("textbox", { name: "给 Pi 发消息…" }).fill("尚未发送的草稿");
+  await page.getByRole("textbox", { name: "给 Pi 发消息…" }).blur();
   await page.locator('.remote-attach input').setInputFiles({
     name: "drawer.png", mimeType: "image/png", buffer: Buffer.from(pixel, "base64"),
   });
@@ -463,7 +545,12 @@ test('两行标题与单行箭头信息条，环内百分比按原生阈值变�
         }));
         expect(label.width).toBeLessThanOrEqual(label.innerDiameter);
       }
-      await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('标题与信息吸附在顶部，输入和停止仍可用。'.repeat(25));
+      const draft = page.getByRole('textbox', { name: '给 Pi 发消息…' });
+      await draft.fill('退出输入后恢复顶部信息，草稿和停止仍可用。'.repeat(25));
+      await expect(page.locator('.remote-header')).toBeHidden();
+      await expect(bar).toBeHidden();
+      await draft.blur();
+      await expect(bar).toBeVisible();
       await page.evaluate(() => {
         Object.defineProperty(visualViewport, 'height', { configurable: true, value: 360 });
         visualViewport!.dispatchEvent(new Event('resize'));

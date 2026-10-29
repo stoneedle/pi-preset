@@ -93,6 +93,7 @@ for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]])
     let calls = 0;
     page.on('request', request => { if (new URL(request.url()).pathname === '/api/session/shutdown') calls++; });
     const chooseClose = async (accept) => {
+      await draft.blur();
       await page.getByLabel('更多', { exact: true }).click();
       await closeButton.scrollIntoViewIfNeeded();
       await expect(closeButton).toBeEnabled();

@@ -22,10 +22,14 @@
     onsessioninfo,
     oncompact,
     canCompact = false,
+    onreload,
+    canReload = false,
+    reloading = false,
     queueStatus = {},
     queueAvailable = false,
     oninput,
     onfocus,
+    onblur,
     onmodelopen,
     onmodel,
     onthinking,
@@ -157,6 +161,9 @@
   {onsessioninfo}
   {oncompact}
   {canCompact}
+  {onreload}
+  {canReload}
+  {reloading}
   onselect={(position) => {
     flushSync();
     textarea?.focus({ preventScroll: true });
@@ -210,6 +217,7 @@
       use:grow={composer.text}
       {oninput}
       {onfocus}
+      {onblur}
     ></textarea>
     <div class="remote-actions">
       <label class="remote-attach" aria-label="拍照或选择图片" title="添加图片">

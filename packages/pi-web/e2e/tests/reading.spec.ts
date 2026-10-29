@@ -148,17 +148,38 @@ test('刷新按持久书签直接读取旧位置，不逐页扫历史、不保�
   await expect(page.getByRole('textbox', { name: '给 Pi 发消息…' })).toHaveValue('');
 });
 
-test('阅读长回复、键盘缩小及选字后仍守住原文字，不因布局变化恢复跟随', async ({ page, sessionsDir, workingDir }, info) => {
+test('阅读长回复、输入时顶栏显隐、键盘缩小及选字后仍守住原文字，不因布局变化恢复跟随', async ({ page, sessionsDir, workingDir }, info) => {
   const session = readingSession(sessionsDir, workingDir, info);
   await page.goto(`/session?id=${encodeURIComponent(session.id)}`);
   await expect(page.locator('[data-message-id]')).toHaveCount(30);
   await page.locator(`[data-message-id="${session.ids[82]}"] p`).nth(3).scrollIntoViewIfNeeded();
   const saved = await position(page);
-  await page.getByRole('textbox', { name: '给 Pi 发消息…' }).fill('长草稿\n'.repeat(12));
+  const draft = page.getByRole('textbox', { name: '给 Pi 发消息…' });
+  await draft.fill('长草稿\n'.repeat(12));
+  await expect(page.locator('.remote-header')).toBeHidden();
+  await expect(page.getByRole('group', { name: '会话信息', exact: true })).toBeHidden();
+  await expectPosition(page, saved);
+  await draft.blur();
+  await expect(page.locator('.remote-header')).toBeVisible();
+  await expectPosition(page, saved);
+  await draft.focus();
   await page.evaluate(() => {
     Object.defineProperty(window.visualViewport, 'height', { configurable: true, value: 380 });
     window.visualViewport!.dispatchEvent(new Event('resize'));
   });
+  await expectPosition(page, saved);
+  await page.evaluate(() => {
+    delete (window.visualViewport as any).height;
+    window.visualViewport!.dispatchEvent(new Event('resize'));
+  });
+  await expect(page.locator('.remote-header')).toBeVisible();
+  await expect(draft).toBeFocused();
+  await expectPosition(page, saved);
+  await page.evaluate(() => {
+    Object.defineProperty(window.visualViewport, 'height', { configurable: true, value: 380 });
+    window.visualViewport!.dispatchEvent(new Event('resize'));
+  });
+  await expect(page.locator('.remote-header')).toBeHidden();
   await expectPosition(page, saved);
   await page.locator(`[data-message-id="${saved.id}"] p`).first().evaluate(node => {
     const range = document.createRange(); range.selectNodeContents(node);
@@ -214,6 +235,38 @@ test('书签所在分支消失时回退到最近共同前文，而非新分支�
   await expect(page.getByRole('button', { name: '加载后续消息', exact: true })).toBeAttached();
   await expect.poll(() => page.evaluate(id => JSON.parse(localStorage.getItem('pi-web:reading') || '{}')[id]?.id, session.id)).toBe(session.ids[60]);
 });
+
+for (const kind of ['tool', 'thinking']) {
+  test(`阅读折叠${kind === 'tool' ? '工具' : '思考'}摘要时，后台更新和刷新不自动展开或读取正文`, async ({ page, sessionsDir, workingDir }, info) => {
+    const { entries, lastId } = buildSession({ cwd: workingDir });
+    entries.push({ type: 'message', id: 'folded-reading', parentId: lastId, message: { role: 'assistant', content: kind === 'tool'
+      ? [{ type: 'toolCall', id: 'folded-call', name: 'bash', arguments: { command: 'keep-folded' } }]
+      : [{ type: 'thinking', thinking: '折叠的思考摘要。\n\n不应自动读取的完整思考。'.repeat(20) }] } });
+    if (kind === 'tool') entries.push({ type: 'message', id: 'folded-result', parentId: 'folded-reading', message: { role: 'toolResult', toolCallId: 'folded-call', content: [{ type: 'text', text: '不应自动读取的工具正文。' }] } });
+    const tail = assistantTextEntry(kind === 'tool' ? 'folded-result' : 'folded-reading', '摘要之后的长回复。\n\n'.repeat(80));
+    entries.push(tail.entry);
+    const id = writeSession(sessionsDir, uniqueSessionName(info, 'folded-reading'), entries);
+    const reads: string[] = [];
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/session/block') reads.push(request.url()); });
+    await page.goto(`/session?id=${encodeURIComponent(id)}`);
+    const toggle = page.locator('[data-message-id="folded-reading"] .remote-block-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect.poll(() => page.locator('.remote-main').evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(5);
+    await toggle.evaluate(node => {
+      const main = node.closest('.remote-main')!;
+      main.scrollTop += node.getBoundingClientRect().top - main.getBoundingClientRect().top;
+    });
+    await expect.poll(() => page.evaluate(id => JSON.parse(localStorage.getItem('pi-web:reading') || '{}')[id]?.id, id)).toBe('folded-reading');
+    appendEntry(sessionsDir, id, assistantTextEntry(tail.id, '后台更新，不应展开摘要。').entry);
+    await expect(page.getByText('后台更新，不应展开摘要。', { exact: true })).toBeAttached();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(reads).toHaveLength(0);
+    await page.reload();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('button', { name: '最新消息', exact: true })).toBeVisible();
+    expect(reads).toHaveLength(0);
+  });
+}
 
 test('工具正文的段落坐标跨后台更新和刷新恢复，只展开并补取正在阅读的块', async ({ page, sessionsDir, workingDir }, info) => {
   const { entries, lastId } = buildSession({ cwd: workingDir });

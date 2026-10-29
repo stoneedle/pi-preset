@@ -13,6 +13,7 @@ const picture = { name: 'guard.png', mimeType: 'image/png', buffer: Buffer.from(
 const releaseMark = page => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--pi-web-release-probe').trim());
 const waitRelease = (page, expected) => page.waitForFunction(expected => getComputedStyle(document.documentElement).getPropertyValue('--pi-web-release-probe').trim() === expected, expected);
 async function clickRefresh(page) {
+  await page.locator('.remote-composer textarea').blur();
   await page.locator('summary[aria-label="更多"]').click();
   await page.getByRole('button', { name: '刷新界面', exact: true }).click();
 }
@@ -62,6 +63,7 @@ test('manual refresh protects all local drafts and controls without coordinating
       const input = page.getByRole('textbox', { name: '给 Pi 发消息…', exact: true });
       await input.fill('另一会话中暂存的 prompt');
       await page.locator('.remote-attach input').setInputFiles(picture);
+      await input.blur();
       await page.getByRole('button', { name: '会话列表', exact: true }).click();
       const drawer = page.getByRole('dialog', { name: '会话', exact: true });
       await drawer.getByRole('button', { name: '搜索会话', exact: true }).click();
@@ -138,6 +140,7 @@ test('manual refresh protects all local drafts and controls without coordinating
         await input.fill('发送期间继续写的新草稿');
         const target = mark === 'updated' ? '' : 'updated';
         await restart(target ? updated.binary : BINARY);
+        await input.blur();
         await page.locator('summary[aria-label="更多"]').click();
         await expect(page.getByRole('button', { name: '刷新界面', exact: true })).toBeDisabled();
         await page.locator('summary[aria-label="更多"]').click();
