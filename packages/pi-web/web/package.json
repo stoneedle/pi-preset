@@ -14,7 +14,8 @@
   "dependencies": {
     "lucide": "^1.17.0",
     "marked": "latest",
-    "mermaid": "^12.2.0"
+    "mermaid": "^12.2.0",
+    "photoswipe": "5.4.4"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

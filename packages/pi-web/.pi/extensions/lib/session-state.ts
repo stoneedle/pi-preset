@@ -175,7 +175,7 @@ export class SessionState {
       : this.children === null ? 'unknown' : this.children > 0 ? 'background' : 'idle';
     const result = this.result();
     let record: ReturnType<Receipts['read']>;
-    let childFailure = false;
+    let childOutcome: 'error' | 'aborted' | null = null;
     let receiptKnown = Boolean(this.receipts);
     try {
       if (this.pendingSettlement && this.receipts) {
@@ -185,15 +185,17 @@ export class SessionState {
       if (result.id) record = this.receipts?.read(this.sessionId, result.id);
       if (result.id && record) {
         const dependencies: string[] | null = JSON.parse(record.completion_children);
-        childFailure = !record.completed && !record.completion_pending && Boolean(dependencies?.length);
-        if (record.completion_pending) {
+        childOutcome = record.completion_outcome;
+        if (!record.completed && !childOutcome && (record.completion_pending || dependencies === null || dependencies.length > 0)) {
           const outcomes = dependencies?.map((id) => this.childRuns?.get(id));
-          childFailure = Boolean(outcomes?.some((outcome) => outcome && ['failed', 'partial', 'stopped', 'rejected'].includes(outcome)));
-          if (childFailure) this.receipts?.cancelCompletion(this.sessionId, result.id);
+          if (outcomes?.some((outcome) => outcome && ['failed', 'partial', 'rejected'].includes(outcome))) childOutcome = 'error';
           else if (state === 'idle') {
-            if (!outcomes || outcomes.some((outcome) => outcome !== 'complete')) state = 'unknown';
-            else this.receipts?.complete(this.sessionId, result.id);
+            if (!outcomes || outcomes.some((outcome) => outcome !== 'complete' && outcome !== 'stopped')) state = 'unknown';
+            else if (outcomes.includes('stopped')) childOutcome = 'aborted';
+            else if (record.completion_pending) this.receipts?.complete(this.sessionId, result.id);
+            else state = 'unknown';
           }
+          if (childOutcome) this.receipts?.cancelCompletion(this.sessionId, result.id, childOutcome);
           if (this.receipts) record = this.receipts.read(this.sessionId, result.id);
         }
       }
@@ -225,7 +227,7 @@ export class SessionState {
       id: this.id, name: (this.ctx.sessionManager.getSessionName() || '').slice(0, 160), sessionId: this.sessionId, instanceId: this.instanceId,
       state, mainRunning, children: this.children, replyId: result.id, leafId: this.ctx.sessionManager.getLeafId(),
       unread: result.id ? (receiptKnown ? !record?.acknowledged : null) : false,
-      completed: Boolean(record?.completed), outcome: childFailure ? 'error' : result.outcome,
+      completed: Boolean(record?.completed), outcome: childOutcome ?? result.outcome,
       attentionId: prompt?.id ?? null, attentionKind: prompt?.kind ?? null, availability: 'connected', canControl: true, canQueue: true,
       queueRevision: this.queue.revision, queueCount: this.queue.count,
       canCompact: !mainRunning && !prompt && this.children === 0,

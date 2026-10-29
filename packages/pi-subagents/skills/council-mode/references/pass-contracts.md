@@ -4,7 +4,7 @@ Load this before launching council advisors.
 
 ## Pass 1 report
 
-Native Pi advisors should receive this `outputSchema`. External runners should receive the same shape as plain JSON text and no `outputSchema`.
+Native Pi advisors receive this schema through `options.outputSchema`. External runners receive the same shape as plain JSON task text and no native output-schema option.
 
 ```js
 const pass1OutputSchema = {
@@ -72,28 +72,13 @@ For external runners, say: `Return only JSON matching this shape. Do not wrap it
 
 ## Pass 1 aggregate receipt
 
-Return one aggregate receipt. Preserve result order or map it by stable key.
-
-```js
-return {
-  pass: 1,
-  advisors: results.map((result, index) => ({
-    key: result.key,
-    agent: result.agent,
-    requestedContext: roster[index].context ?? "runtime-default-unknown",
-    runId: result.runId,
-    report: result.structuredOutput ?? result.output
-  }))
-};
-```
-
-Do not replace `runtime-default-unknown` with a guessed context.
+After reading the saved reports, return one aggregate receipt in roster order. For each advisor include its executable profile name, latest child runId, known context mode, and report. Identify children from completion notices or run status, not from a parent workflow ID. Use `runtime-default-unknown` when the context mode is not known rather than guessing it.
 
 ## Pass 2 challenge
 
 A challenge packet contains only disputed claims, strong conflicting evidence, missing proof, owner decisions, and high-impact risks. Attribute peer content as "another advisor". Do not include full peer reports.
 
-Native Pi advisors receive `pass2OutputSchema`. External runners and fresh external fallbacks receive the same shape as JSON-only task text and no `outputSchema`.
+Native Pi continuations explicitly replace the stored Pass 1 schema with `options.outputSchema: pass2OutputSchema`. External runners receive the same shape as JSON-only message text and no native output-schema option.
 
 ```js
 const pass2OutputSchema = {
@@ -126,25 +111,15 @@ const pass2OutputSchema = {
 };
 ```
 
-Use stable resume keys such as `cross-oracle`, `phase: "Council pass 2"`, concise labels, and `output: false` unless separate artifacts are useful. The aggregate Pass 2 receipt uses the Pass 1 row shape with the new `runId` and `structuredOutput ?? output`. Pass 3 resumes those latest ids with new stable keys.
+For a completed native advisor:
 
-## Advisor profile template
-
-Create model-based advisors in the user or project agent directory, not in this package:
-
-```markdown
----
-name: council-sol
-description: Read-only fresh-context advisor for bounded council decisions
-tools: read, grep, find, ls
-model: provider/top-reasoning-model
-thinking: high
-systemPromptMode: replace
-inheritProjectContext: true
-inheritSkills: false
-defaultContext: fresh
-acceptanceRole: read-only
----
-
-Analyze the council question independently. Inspect evidence directly. Do not edit, run mutating commands, commit, push, contact peers, or spawn subagents. Return concise, cited advice using the report contract in the council task.
+```javascript
+subagent({
+  action: "resume",
+  id: "<latest child runId>",
+  message: "<curated challenge packet; retain the read-only scope>",
+  options: { outputSchema: pass2OutputSchema },
+})
 ```
+
+The aggregate Pass 2 receipt uses the same fields as Pass 1 with the new runIds and saved reports. Pass 3 continues those latest ids with the same challenge schema. Reuse the selected model profiles; the council task supplies the read-only scope and report contract.

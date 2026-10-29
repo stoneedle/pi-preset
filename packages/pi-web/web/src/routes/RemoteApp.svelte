@@ -17,6 +17,7 @@
   } from '../shared/icons.js';
   import Markdown from '../components/Markdown.svelte';
   import RemoteBlock from '../components/RemoteBlock.svelte';
+  import ImageViewer from '../components/ImageViewer.svelte';
   import MessageActions from '../components/MessageActions.svelte';
   import CopyAction from '../components/CopyAction.svelte';
   import ForkAction from '../components/ForkAction.svelte';
@@ -753,22 +754,6 @@
     window.addEventListener('focus', onVisible);
     const onFilePreview = (event) => {
       if (info?.open && !info.contains(event.target)) info.open = false;
-      const image = event.target.closest?.('[data-image-url]');
-      if (image) {
-        event.preventDefault();
-        clearPreview();
-        previewPath = '';
-        previewError = '';
-        preview = {
-          image: true,
-          url: image.dataset.imageUrl,
-          name: image.dataset.imageName,
-          downloadURL: image.dataset.imageDownload,
-          source: image.dataset.imageSource,
-        };
-        previewDialog.showModal();
-        return;
-      }
       const button = event.target.closest?.('button[data-preview-path]');
       if (button) openPreview(button.dataset.previewPath);
     };
@@ -777,14 +762,14 @@
     let fullHeight = document.documentElement.clientHeight;
     const onViewport = () => {
       const visual = window.visualViewport;
-      const height = visual?.height || window.innerHeight;
+      const height = (visual?.height || window.innerHeight) * (visual?.scale || 1);
       const layoutHeight = document.documentElement.clientHeight;
       const inputFocused = document.activeElement?.matches('input, textarea');
       if (window.innerWidth !== layoutWidth || (!inputFocused && keyboardVisible !== true))
         fullHeight = layoutHeight;
       else fullHeight = Math.max(fullHeight, layoutHeight);
       layoutWidth = window.innerWidth;
-      const keyboard = fullHeight - height * (visual?.scale || 1) > 150;
+      const keyboard = fullHeight - height > 150;
       // Once a soft keyboard is observed, dismissal is independent of editor focus.
       if (keyboard || keyboardVisible !== null) keyboardVisible = keyboard;
       document.documentElement.style.setProperty('--remote-height', `${height}px`);
@@ -1163,30 +1148,15 @@
   <SessionTools bind:this={sessionTools} {sessionId} {status} known={runtimeKnown} />
 {/if}
 
-<dialog
-  class="remote-preview"
-  class:remote-preview-fullscreen={preview?.image}
-  aria-label="预览"
-  bind:this={previewDialog}
-  onclose={clearPreview}
->
+<dialog class="remote-preview" aria-label="预览" bind:this={previewDialog} onclose={clearPreview}>
   <header>
     <strong title={preview?.name || previewPath}>{preview?.name || previewPath}</strong>
-    <button
-      type="button"
-      onclick={() => {
-        if (preview?.image) {
-          previewError = '';
-          const url = new URL(preview.url, location.href);
-          url.searchParams.set('attempt', Date.now());
-          preview = { ...preview, url: url.pathname + url.search };
-        } else openPreview(previewPath);
-      }}
-      disabled={previewLoading}>重新加载</button
+    <button type="button" onclick={() => openPreview(previewPath)} disabled={previewLoading}
+      >重新加载</button
     >
     {#if preview?.source}<a href={preview.source} target="_blank" rel="noreferrer">原文</a>{/if}
     <a
-      href={preview?.downloadURL || fileDownloadURL(sessionId, previewPath)}
+      href={fileDownloadURL(sessionId, previewPath)}
       download={preview?.name || fileName(previewPath)}
       target="_blank"
       rel="noreferrer">下载</a
@@ -1197,15 +1167,7 @@
   </header>
   {#if previewLoading}<p role="status">加载中…</p>{/if}
   {#if previewError}<p role="alert">{previewError}</p>{/if}
-  {#if preview?.image}
-    <div class="remote-preview-image">
-      <img
-        src={preview.url}
-        alt={preview.name}
-        onerror={() => (previewError = '图片加载失败，请重试。')}
-      />
-    </div>
-  {:else if preview}
+  {#if preview}
     <iframe
       src={preview.url}
       title={preview.name}
@@ -1215,6 +1177,7 @@
   {/if}
 </dialog>
 
+<ImageViewer />
 <NewTask bind:this={newTask} />
 <PushSettings bind:this={pushSettings} />
 <AppNameSettings bind:this={nameSettings} />
@@ -1630,16 +1593,6 @@
     color: var(--text);
     background: var(--surface);
   }
-  .remote-preview-fullscreen {
-    inset: 0;
-    width: 100vw;
-    max-width: none;
-    height: var(--remote-height, 100dvh);
-    max-height: var(--remote-height, 100dvh);
-    margin: 0;
-    border: 0;
-    border-radius: 0;
-  }
   .remote-preview[open] {
     display: flex;
     flex-direction: column;
@@ -1669,17 +1622,6 @@
   .remote-preview p {
     padding: 0 12px;
     overflow-wrap: anywhere;
-  }
-  .remote-preview-image {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    overscroll-behavior: contain;
-  }
-  .remote-preview-image img {
-    display: block;
-    width: 100%;
-    height: auto;
   }
   .remote-preview iframe {
     width: 100%;

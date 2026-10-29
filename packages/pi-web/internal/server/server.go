@@ -111,7 +111,7 @@ func initDB(agentDir string) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS session_management (session_id TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS project_management (project TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS session_results (session_id TEXT NOT NULL, result_id TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, completion_pending INTEGER NOT NULL DEFAULT 0, completion_children TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(session_id,result_id))`,
+		`CREATE TABLE IF NOT EXISTS session_results (session_id TEXT NOT NULL, result_id TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, completion_pending INTEGER NOT NULL DEFAULT 0, completion_children TEXT NOT NULL DEFAULT '[]', completion_outcome TEXT CHECK(completion_outcome IN ('error','aborted')), PRIMARY KEY(session_id,result_id))`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			db.Close()

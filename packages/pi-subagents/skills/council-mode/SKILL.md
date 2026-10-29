@@ -5,55 +5,35 @@ description: Run a bounded supervisor-mediated advisor council. Use when the use
 
 # Council Mode
 
-Council mode is parent-supervised advice for a material decision with real tradeoffs. It is not free-form agent chat, implementation work, a transcript dump, mutation authority, or a council UI.
+Council mode is parent-supervised advice for a material decision with real tradeoffs. It is not implementation authority, free-form agent chat, or transcript sharing. The parent selects the roster, relays curated claims, judges the evidence, and writes the memo. Advisors stay read-only and do not see peer transcripts by default.
 
-The parent selects the roster, relays only curated claims, decides validity, and writes the memo. Advisors stay read-only and do not see peer transcripts by default.
-
-Before launch, read:
-
-- `skills/pi-subagents/references/execution-controls.md`
-- `skills/council-mode/references/pass-contracts.md`
+Before launch, read `../pi-subagents/SKILL.md`, the local routing document it names, and `references/pass-contracts.md`.
 
 ## Roster
 
-Run `subagent({ action: "list" })`, then choose 2-3 executable advisor names that start with `council-`. The prefix is convention only. Never use more than four advisors.
+Choose two or three available model profiles through the local routing policy; never exceed four. Reuse those profiles as advisors for this task instead of requiring a separate agent name or persistent council persona. Give each advisor the same decision frame, scope, constraints, and evidence targets so model diversity is not confused with different questions.
 
-If fewer than two council profiles are available, fill with `oracle`, then `reviewer`. Launch fallback `oracle` with `context: "fork"`; let fallback `reviewer` use its normal profile context. Note fallbacks and known context modes in the memo. If fewer than two advisors remain, use the normal one-oracle consultation loop and label it degraded mode.
+When the user supplies an explicit roster, resolve exactly those current agent names. Report an unavailable name instead of silently replacing it. If fewer than two executable advisors are available, report the limitation and offer a single-agent consultation rather than presenting it as a council.
 
-`council-*` profiles live in user or project agent directories, not this package. A profile defines model, tools, context, output defaults, and persistent stance. Keep advisors read-only, disable inherited skills unless needed, and put stance in the profile body instead of inventing per-run role labels.
-
-External-job/package advisors may join only when their provider is registered. Treat them as ordinary advisor names in `runs.all`, but honor their runner limits: they may lack repo tools, structured output, or resumability. Include evidence they cannot read, request JSON text instead of `outputSchema`, and use a fresh-context fallback when they cannot resume for cross-exam.
+All council tasks are read-only, including tasks assigned to profiles with write tools. Use fresh sessions for independent Pass 1 reports. External-job agents participate only within their existing authorization and provider contract: include evidence they cannot read, request JSON text rather than native outputSchema, and honor their async and follow-up limits.
 
 ## Passes
 
-Pass 1 is independent reports. Pass 2 is one cross-exam. Run Pass 3 only when `--max-passes 3` was requested and a material dispute can still be settled by evidence. Never run an unbounded loop.
+Pass 1 is independent reports. Pass 2 is one cross-exam. Run Pass 3 only when `--max-passes 3` was requested and a material dispute can still be settled by evidence. Stop at convergence, the pass cap, infrastructure failure, or user interruption; do not add a round for polish or symmetry.
 
 ## Protocol
 
-1. Write the council brief: question, scope, non-goals, evidence targets, roster, known advisor context modes, and pass cap.
-2. Tell the user the roster, context modes, and pass cap.
-3. Launch one async workflow script (a ```` ```js workflow ```` block plus `subagent({ workflow: true, async: true })`) with `runs.all` for Pass 1. Use stable keys, `phase: "Council pass 1"`, concise labels, and `output: false` unless separate artifacts are useful. Set `context` only when the profile context is known or a fallback rule requires it.
-4. Return one aggregate Pass 1 receipt. On completion, tell the user completion count, agreement count, dispute count, and whether Pass 2 is needed.
-5. Synthesize the claim matrix in the parent: agreements, disputed claims, missing proof, owner decisions, and at most five material relay claims per advisor.
-6. For Pass 2, tell the user which claims are relayed and why they matter. Resume each advisor with a curated challenge packet. A resume needs a retained run id and task; it excludes `agent` and rejects `gate`. Record each new run id; Pass 3 resumes those latest ids with new stable keys.
-7. Stop at convergence, pass cap, failed fallback, or user interruption. The parent writes the final memo.
+1. Write the brief: question, scope, non-goals, evidence targets, roster, known context modes, and pass cap. Tell the user the roster and cap.
+2. Launch Pass 1 through the local direct or tasks API. A shared native batch may use `options.outputSchema` for the Pass 1 contract; external jobs receive that shape in task text instead. Keep native and external calls separate when their options differ, and respect configured capacity.
+3. Continue independent work or yield for native notifications. Read each saved report, then return one aggregate receipt with advisor names, child runIds, context modes, and reports.
+4. Synthesize agreements, disputed claims, missing proof, owner decisions, and at most five material relay claims per advisor. Tell the user completion, agreement and dispute counts, and whether Pass 2 is needed.
+5. For Pass 2, resume each completed advisor with a curated challenge packet and the Pass 2 report contract. Use `action:"resume"`, its latest child runId, and message; replace the native output schema as described in the report contract, and do not resend agent or model. Record the newly returned runIds for a possible Pass 3. If a runner cannot resume, report that limitation; a fresh continuation with the prior report is labeled as such, not true retained-context cross-exam.
+6. Write the final memo. Implementation requires a separate user request or existing implementation authorization; council advice does not grant it.
 
-If an advisor is not resumable, run the same profile fresh with its Pass 1 report and challenge packet. Label it a fresh-context fallback, not true cross-exam.
-
-Do not set `clarify`, `worktree`, `gate`, tool budgets, or tight usage budgets on advisors. Bound work through the roster, pass cap, and report length.
+Use the report contracts to bound the work, not worktrees, acceptance gates, tool budgets, or execution-mode changes. Infrastructure failures follow the local delegation failure policy rather than triggering an improvised replacement roster.
 
 ## Memo
 
-Converged means no disputed claim remains that both affects the recommendation and can plausibly be settled by advisor evidence. Put unresolved disputes in owner decisions. Do not add a round for polish or symmetry.
+Convergence means no disputed claim remains that both affects the recommendation and can plausibly be settled by advisor evidence. Put unresolved choices with the user.
 
-The memo states:
-
-- question and scope
-- recommendation and rationale
-- accepted and rejected feedback with reasons
-- owner decisions
-- evidence and run ids
-- confidence and what would change the decision
-- roster, passes, fallbacks, and known advisor context modes
-
-Identify advisors by profile name. State when fallback `oracle` was forked and context-aware. Escalate to a writer only after the memo and only when the user requests it.
+The memo states the question and scope; recommendation and rationale; accepted and rejected feedback with reasons; unresolved owner decisions; evidence and runIds; confidence and what would change the decision; roster, actual passes, context modes, and any fresh continuations. Identify advisors by their executable profile names.

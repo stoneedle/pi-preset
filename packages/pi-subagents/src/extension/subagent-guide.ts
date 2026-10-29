@@ -29,7 +29,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const COUNCIL_FILES = [
 	"skills/council-mode/SKILL.md",
 	"skills/council-mode/references/pass-contracts.md",
-	"skills/pi-subagents/references/execution-controls.md",
+	"skills/pi-subagents/SKILL.md",
 ];
 
 interface GuideSection {

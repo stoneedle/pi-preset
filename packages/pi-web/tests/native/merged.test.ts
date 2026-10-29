@@ -6,6 +6,7 @@ import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { DatabaseSync } from 'node:sqlite';
+import { sessionPresentation } from '../../shared/session-presentation.js';
 
 test('one real merged extension owns native controls, snapshots, branch results and durable confirmations without Go', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'pi-web-native-'));
@@ -19,9 +20,10 @@ test('one real merged extension owns native controls, snapshots, branch results 
   let children = 0;
   let failQuery = false;
   let omitChild = false;
+  let childOutcome = 'complete';
   eventBus.on('subagents:rpc:v1:request', (request: any) => {
     eventBus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
-      success: !failQuery, data: { fleet: { totalActive: children }, asyncSnapshot: { kind: 'pi-subagents.async-status-snapshot', version: 1, runs: omitChild ? [] : [{ id: 'controlled-child', state: children ? 'running' : 'complete' }] } },
+      success: !failQuery, data: { fleet: { totalActive: children }, asyncSnapshot: { kind: 'pi-subagents.async-status-snapshot', version: 1, runs: omitChild ? [] : [{ id: 'controlled-child', state: children ? 'running' : childOutcome }] } },
     });
   });
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager, eventBus,
@@ -153,6 +155,57 @@ test('one real merged extension owns native controls, snapshots, branch results 
   assert.equal(readdirSync(join(root, 'pi-web', 'owners')).length, 1);
   assert.equal(existsSync(join(root, 'session-status')), false);
   assert.deepEqual(errors, []);
+
+  let stoppedReply = '';
+  for (const terminal of ['stopped', 'failed', 'partial', 'rejected']) {
+    children = 1;
+    eventBus.emit('subagent:async-started', {});
+    await new Promise(setImmediate);
+    await session.extensionRunner!.emit({ type: 'agent_start' });
+    const replyId = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Normal parent handoff' }],
+      api: 'test', model: 'test', provider: 'test', stopReason: 'stop', timestamp: Date.now() } as any);
+    children = 0;
+    childOutcome = terminal;
+    await session.extensionRunner!.emit({ type: 'agent_settled', aborted: false });
+    const expected = terminal === 'stopped' ? 'stopped' : 'failed';
+    assert.equal(sessionPresentation(await snapshot()).kind, expected, `child ${terminal} keeps its own terminal meaning`);
+    assert.equal((await snapshot()).completed, false);
+    if (terminal === 'stopped') {
+      stoppedReply = replyId;
+      const receipts = new DatabaseSync(join(root, 'pi-web.sqlite'));
+      receipts.prepare('UPDATE session_results SET completion_outcome=NULL,acknowledged=1 WHERE session_id=? AND result_id=?')
+        .run(manager.getSessionId(), replyId);
+      receipts.close();
+      omitChild = true;
+      await session.reload();
+      owner = JSON.parse(readFileSync(ownerFile, 'utf8'));
+      assert.equal(sessionPresentation(await snapshot()).kind, 'unknown', 'cancelled flags without terminal evidence cannot imply failure or success');
+      omitChild = false;
+      eventBus.emit('subagent:async-complete', {});
+      await new Promise(setImmediate);
+      assert.equal(sessionPresentation(await snapshot()).kind, 'stopped', 'a cancelled candidate without a cause is repaired from authoritative child evidence');
+      assert.equal((await snapshot()).unread, false, 'repair preserves acknowledgement');
+    }
+    omitChild = true;
+    await session.reload();
+    owner = JSON.parse(readFileSync(ownerFile, 'utf8'));
+    assert.equal((await snapshot()).replyId, replyId);
+    assert.equal(sessionPresentation(await snapshot()).kind, expected, 'reload retains the recorded cause without re-reading child history');
+    assert.equal((await snapshot()).completed, false);
+    omitChild = false;
+    eventBus.emit('subagent:async-complete', {});
+    await new Promise(setImmediate);
+  }
+  manager.branch(stoppedReply);
+  await session.extensionRunner!.emit({ type: 'session_tree', newLeafId: stoppedReply } as any);
+  assert.equal(sessionPresentation(await snapshot()).kind, 'stopped', 'another result cannot overwrite a stopped receipt');
+  await session.extensionRunner!.emit({ type: 'agent_start' });
+  manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Fresh successful round' }],
+    api: 'test', model: 'test', provider: 'test', stopReason: 'stop', timestamp: Date.now() } as any);
+  await session.extensionRunner!.emit({ type: 'agent_settled', aborted: false });
+  assert.equal(sessionPresentation(await snapshot()).kind, 'completed', 'historical stopped/failed children cannot poison a fresh successful round');
+  manager.branch(secondReply);
+  await session.extensionRunner!.emit({ type: 'session_tree', newLeafId: secondReply } as any);
 
   const configDir = join(root, 'extension-data', 'pi-title-glyphs');
   mkdirSync(configDir, { recursive: true });

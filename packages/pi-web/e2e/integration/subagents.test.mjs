@@ -10,11 +10,16 @@ import { expect } from '@playwright/test';
 import { startControlledChat } from '../lib/controlled-chat.mjs';
 import { startNativePi } from '../lib/native-cli.mjs';
 import { startServer, stopServer } from '../lib/server.ts';
+import { sessionPresentation } from '../../shared/session-presentation.js';
 
-const providerDir = resolve(process.argv[2] || '');
-if (!existsSync(join(providerDir, 'index.js'))) throw new Error('Pass an installed pi-subagents package directory');
+assert.ok(process.argv[2], 'Pass a pi-subagents package directory');
+const providerDir = resolve(process.argv[2]);
+const packageInfo = JSON.parse(readFileSync(join(providerDir, 'package.json'), 'utf8'));
+assert.equal(packageInfo.name, 'pi-subagents');
+const providerEntry = resolve(providerDir, packageInfo.pi.extensions[0]);
+assert.ok(existsSync(providerEntry), 'Pass a pi-subagents package directory with its declared extension entry');
 
-test('actual child-provider restore, terminal failure and completion do not rely on counted hints', { timeout: 180000 }, async (t) => {
+test('actual child-provider restore, completion, failure and stop retain distinct result receipts', { timeout: 180000 }, async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'pi-web-child-provider-'));
   const cwd = join(root, 'cwd'); mkdirSync(cwd); mkdirSync(join(root, 'agents')); mkdirSync(join(root, 'extensions', 'subagent'), { recursive: true });
   const chat = await startControlledChat();
@@ -39,7 +44,7 @@ test('actual child-provider restore, terminal failure and completion do not rely
   const abort = new AbortController();
   let reading;
   const launch = () => startNativePi({ agentDir: root, cwd, sessionPath: manager.getSessionFile(),
-    extensions: [join(providerDir, 'index.js'), resolve('e2e/lib/subagent-probe.mjs')] });
+    extensions: [providerEntry, resolve('e2e/lib/subagent-probe.mjs')] });
   const call = async (method, params) => {
     const requestId = randomUUID();
     await native.command('prompt', { message: '/lifecycle-child ' + JSON.stringify({ requestId, method, params }) });
@@ -60,7 +65,7 @@ test('actual child-provider restore, terminal failure and completion do not rely
   };
   const row = (replyId) => {
     const db = new DatabaseSync(join(root, 'pi-web.sqlite'), { readOnly: true });
-    try { return db.prepare('SELECT completed,completion_pending FROM session_results WHERE session_id=? AND result_id=?').get(manager.getSessionId(), replyId); }
+    try { return db.prepare('SELECT completed,completion_pending,completion_outcome FROM session_results WHERE session_id=? AND result_id=?').get(manager.getSessionId(), replyId); }
     finally { db.close(); }
   };
   const events = () => {
@@ -106,7 +111,7 @@ test('actual child-provider restore, terminal failure and completion do not rely
         if (!data || data === 'reload' || data === 'new-session') continue;
         const value = JSON.parse(data); const snapshot = value.id ? value : value[id];
         if (snapshot) snapshots.push({ instanceId: snapshot.instanceId, state: snapshot.state, availability: snapshot.availability,
-          replyId: snapshot.replyId, completed: snapshot.completed, children: snapshot.children });
+          replyId: snapshot.replyId, completed: snapshot.completed, outcome: snapshot.outcome, children: snapshot.children });
       }
     }
   })();
@@ -147,14 +152,37 @@ test('actual child-provider restore, terminal failure and completion do not rely
   const failedDetail = await call('status', { id: failed.id });
   assert.equal(failedDetail.details.lifecycleStatus.processTerminal.state, 'observed');
   assert.equal(chat.requests.filter((request) => request.fail).length, 1);
+  await expect.poll(() => row(failureResult).completion_outcome).toBe('error');
   assert.equal(row(failureResult).completed, 0, 'child failure cannot turn the earlier waiting result into successful completion');
   assert.ok(!events().some((event) => event.identity === failureResult));
   assert.equal(new Set(events().map((event) => event.identity)).size, events().length);
-  const packageInfo = JSON.parse(readFileSync(join(providerDir, 'package.json'), 'utf8'));
+  chat.hold();
+  const stopped = await spawn('hold-until-release intentionally stopped child');
+  await expect.poll(() => chat.requests.filter((request) => request.hold).length, { timeout: 20000 }).toBe(3);
+  const stoppedResult = await parentResult('Normal handoff; stop the remaining child work');
+  await call('stop', { id: stopped.id });
+  await expect.poll(async () => (await call('status')).asyncSnapshot.runs.find((run) => run.id === stopped.id)?.state, { timeout: 20000 }).toBe('stopped');
+  await expect.poll(() => row(stoppedResult).completion_outcome).toBe('aborted');
+  await expect.poll(async () => (await status()).state).toBe('idle');
+  await native.command('prompt', { message: '/lifecycle-result ' + stoppedResult });
+  await expect.poll(async () => sessionPresentation(await status()).kind).toBe('stopped');
+  assert.equal((await status()).replyId, stoppedResult);
+  assert.equal(row(stoppedResult).completed, 0, 'intentional stop is not successful completion');
+  assert.ok(!events().some((event) => event.identity === stoppedResult), 'stop cannot emit a successful-completion notification');
+  const stoppedInstance = (await currentNative()).instanceId;
+  await native.command('prompt', { message: '/lifecycle-reload' });
+  await expect.poll(async () => (await status()).instanceId).not.toBe(stoppedInstance);
+  await expect.poll(async () => sessionPresentation(await status()).kind).toBe('stopped');
+  await native.command('prompt', { message: 'Continue with a fresh successful round after the stop' });
+  await expect.poll(async () => sessionPresentation(await status()).kind).toBe('completed');
+  assert.notEqual((await status()).replyId, stoppedResult);
+  assert.equal(row(stoppedResult).completion_outcome, 'aborted', 'a later success does not rewrite the stopped result');
+  assert.ok(!events().some((event) => event.identity === stoppedResult));
   const report = { provider: { name: packageInfo.name, version: packageInfo.version,
-    entrySHA256: createHash('sha256').update(readFileSync(join(providerDir, 'index.js'))).digest('hex') },
+    entrySHA256: createHash('sha256').update(readFileSync(providerEntry)).digest('hex') },
     nativeRuntimeReload: true, realChildProcessAliveAfterReload: true, authoritativeReloadAndResume: true,
-    successfulChildTerminalProof: true, failedChildTerminalProof: true, noEarlyOrFalseCompletion: true,
+    successfulChildTerminalProof: true, failedChildTerminalProof: true, stoppedChildSurvivesReload: true,
+    freshSuccessAfterStop: true, noEarlyOrFalseCompletion: true,
     actualCompatibleHTTPRequests: chat.requests.length, snapshots: snapshots.length,
     scope: 'real installed child provider, native CLI/SDK and authenticated Go; controlled localhost model transport, no commercial request' };
   console.log(JSON.stringify(report));

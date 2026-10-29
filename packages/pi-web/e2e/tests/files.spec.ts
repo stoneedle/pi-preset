@@ -224,15 +224,15 @@ test("draft and message thumbnails stay compact without fetching originals", asy
   expect(await original.body()).toEqual(Buffer.from(pictures[0].data, 'base64'));
   await expect(page.locator('.remote-image').getByRole('link', { name: '下载', exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: '打开图片', exact: true }).first().click();
-  const opened = page.getByRole('dialog', { name: '预览', exact: true });
+  const opened = page.getByRole('dialog', { name: '图片预览：图片', exact: true });
   await expect(opened.locator('img')).toHaveJSProperty('naturalWidth', 1080);
   await expect(opened.locator('img')).not.toHaveAttribute('src', /[?&]thumbnail=/);
-  await expect(opened.getByRole('link', { name: '下载', exact: true })).toBeVisible();
+  await expect(opened.getByRole('link', { name: '下载原图', exact: true })).toBeVisible();
   expect(await opened.evaluate((dialog) => {
     const box = dialog.getBoundingClientRect();
     return box.left === 0 && box.top === 0 && box.width === innerWidth && box.height === window.visualViewport!.height;
   })).toBe(true);
-  await opened.getByRole('button', { name: '关闭', exact: true }).click();
+  await opened.getByRole('button', { name: '关闭图片预览', exact: true }).click();
 
   const input = page.getByRole('textbox', { name: '给 Pi 发消息…' });
   await input.fill('Keep this draft while previewing and removing its image.');
@@ -275,7 +275,7 @@ test("draft and message thumbnails stay compact without fetching originals", asy
   await expect(draftPreview.locator('img')).toHaveAttribute('src', /^blob:/);
   await expect(draftPreview.locator('header')).toContainText('long-mobile-screenshot.png');
   const draftDownloadPromise = page.waitForEvent('download');
-  await draftPreview.getByRole('link', { name: '下载', exact: true }).click();
+  await draftPreview.getByRole('link', { name: '下载原图', exact: true }).click();
   const draftDownload = await draftDownloadPromise;
   expect(draftDownload.suggestedFilename()).toBe('long-mobile-screenshot.png');
   const draftChunks = [];
@@ -288,11 +288,11 @@ test("draft and message thumbnails stay compact without fetching originals", asy
     const box = dialog.getBoundingClientRect();
     return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= 360;
   })).toBe(true);
-  expect(await draftPreview.locator('.draft-image-body').evaluate((body) => {
-    body.scrollTop = body.scrollHeight;
-    return body.scrollTop > 0 &&
-      body.querySelector('img')!.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 1;
-  })).toBe(true);
+  const fitted = (await draftPreview.locator('img').boundingBox())!;
+  expect(fitted.y).toBeGreaterThanOrEqual(0);
+  expect(fitted.y + fitted.height).toBeLessThanOrEqual(360);
+  await draftPreview.getByRole('button', { name: '放大图片', exact: true }).click();
+  await expect.poll(async () => (await draftPreview.locator('img').boundingBox())!.width).toBeGreaterThan(fitted.width * 2);
   await page.getByRole('button', { name: '关闭图片预览', exact: true }).click();
   await expect(draftPreview).not.toBeVisible();
   await page.getByRole('button', { name: '移除 long-mobile-screenshot.png', exact: true }).click();
@@ -341,16 +341,16 @@ test("tool image metadata stays body-free and unfolded file links become actiona
   expect(bodyRequests.filter((url) => new URL(url).searchParams.get("thumbnail") !== "1")).toEqual([]);
   await expect(page.locator(".remote-image")).not.toContainText("下载");
   await page.getByRole("link", { name: "打开图片", exact: true }).click();
-  const preview = page.getByRole("dialog", { name: "预览", exact: true });
+  const preview = page.getByRole("dialog", { name: "图片预览：图片", exact: true });
   await expect(preview.locator("img")).toHaveJSProperty("naturalWidth", picture.readUInt32BE(16));
   const downloadPromise = page.waitForEvent("download");
-  await preview.getByRole("link", { name: "下载" }).click();
+  await preview.getByRole("link", { name: "下载原图", exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("image.png");
   const chunks = [];
   for await (const chunk of (await download.createReadStream())!) chunks.push(chunk);
   expect(Buffer.concat(chunks)).toEqual(picture);
-  await preview.getByRole("button", { name: "关闭", exact: true }).click();
+  await preview.getByRole("button", { name: "关闭图片预览", exact: true }).click();
   expect(bodyRequests.some((url) => url.includes("/api/session/block"))).toBe(false);
   await page.getByRole("button", { name: /bash generate assets/ }).click();
   const generated = page.getByRole("group", { name: "generated.md", exact: true });
@@ -415,11 +415,11 @@ test('named image references stay thumbnail-only and coordinate notes stay out o
   await expect(page.locator('.remote-main').getByRole('link', { name: '下载', exact: true })).toHaveCount(0);
   for (const index of [1, 2, 3]) {
     await page.getByRole('link', { name: '打开图片', exact: true }).nth(index).click();
-    const preview = page.getByRole('dialog', { name: '预览', exact: true });
-    await expect(preview.locator('strong')).toHaveText(name);
+    const preview = page.getByRole('dialog', { name: `图片预览：${name}`, exact: true });
+    await expect(preview.locator('header')).toContainText(name);
     await expect(preview.locator('img')).toHaveJSProperty('naturalHeight', 2412);
     const downloading = page.waitForEvent('download');
-    await preview.getByRole('link', { name: '下载', exact: true }).click();
+    await preview.getByRole('link', { name: '下载原图', exact: true }).click();
     const download = await downloading;
     expect(download.suggestedFilename()).toBe(index === 1 ? 'image.png' : name);
     const chunks = [];
@@ -428,7 +428,7 @@ test('named image references stay thumbnail-only and coordinate notes stay out o
     if (index === 2 && info.project.name === 'Mobile Chrome') {
       await page.screenshot({ path: info.outputPath('named-image-fullscreen-320.png') });
     }
-    await preview.getByRole('button', { name: '关闭', exact: true }).click();
+    await preview.getByRole('button', { name: '关闭图片预览', exact: true }).click();
   }
   expect(readFileSync(nativePath)).toEqual(originalRecord);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

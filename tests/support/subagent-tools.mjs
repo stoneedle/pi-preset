@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 const [root, realHome] = process.argv.slice(2);
+const profiles = ['luna', 'terra', 'sol', 'astra'];
 const agentDir = process.env.PI_CODING_AGENT_DIR;
 const workspace = path.join(process.cwd(), 'workspace');
 const forbiddenCall = path.join(process.cwd(), 'forbidden-database-call');
@@ -14,7 +15,7 @@ const settings = JSON.parse(fs.readFileSync(path.join(root, 'settings.json'), 'u
 const subagents = { ...settings.subagents, defaultExtensions: settings.subagents.defaultExtensions.map(p => p.replace(/^~(?=[/\\])/, realHome)) };
 fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ subagents }));
 fs.writeFileSync(path.join(agentDir, 'web-search.json'), JSON.stringify({ toolActivation: 'dynamic' }));
-for (const name of ['implementer', 'luna', 'advisor']) fs.copyFileSync(path.join(root, 'agents', `${name}.md`), path.join(agentDir, 'agents', `${name}.md`));
+for (const name of profiles) fs.copyFileSync(path.join(root, 'agents', `${name}.md`), path.join(agentDir, 'agents', `${name}.md`));
 const server = path.join(root, 'tests/support/mcp-tooling-server.mjs');
 fs.writeFileSync(path.join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: {
   'chrome-devtools': { command: process.execPath, args: [server, 'browser'], exposure: 'deferred' },
@@ -68,7 +69,7 @@ try {
   for (let i = 0; i < 200 && parent.getAllTools().filter(t => t.name.startsWith('mcp__')).length < 4; i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(parent.getAllTools().filter(t => t.name.startsWith('mcp__')).length, 4, 'Both fixture MCP servers must be connected');
   const { agents } = discoverAgents(workspace, 'user');
-  for (const host of ['parent', 'runner']) for (const name of ['implementer', 'luna', 'advisor']) {
+  for (const host of ['parent', 'runner']) for (const name of profiles) {
     const agent = agents.find(a => a.name === name);
     assert.ok(agent);
     const launch = buildInProcessChildLaunch({
@@ -107,18 +108,12 @@ try {
       const file = path.join(workspace, 'probe.txt');
       fs.writeFileSync(file, 'tooling fixture');
       assert.match(body(await call('read', { path: file })), /tooling fixture/);
-      for (const tool of ['bash', 'edit', 'write']) assert.equal(active.has(tool), name !== 'advisor', `${host}/${name}: local mutation ${tool}`);
-      if (name === 'advisor') {
-        const deniedWrite = body(await call('codemode', { code: `try { await tools.write({path:${JSON.stringify(file)},content:"unexpected"}); } catch (error) { text("WRITE_DENIED:" + error.message); }` }));
-        assert.match(deniedWrite, /WRITE_DENIED:/);
-        assert.equal(fs.readFileSync(file, 'utf8'), 'tooling fixture');
-      } else {
-        await call('write', { path: file, content: 'changed through child' });
-        assert.equal(fs.readFileSync(file, 'utf8'), 'changed through child');
-        const guarded = body(await call('codemode', { code: 'try { await tools.bash({command:"echo SHOULD_NOT_RUN",timeout:360000}); } catch (error) { text(error.message); }' }));
-        assert.match(guarded, /bash.timeout 的单位是秒/);
-        assert.match(body(await call('bash', { command: 'echo child-shell-ok', timeout: 5 })), /child-shell-ok/);
-      }
+      for (const tool of ['bash', 'edit', 'write']) assert.ok(active.has(tool), `${host}/${name}: local mutation ${tool}`);
+      await call('write', { path: file, content: 'changed through child' });
+      assert.equal(fs.readFileSync(file, 'utf8'), 'changed through child');
+      const guarded = body(await call('codemode', { code: 'try { await tools.bash({command:"echo SHOULD_NOT_RUN",timeout:360000}); } catch (error) { text(error.message); }' }));
+      assert.match(guarded, /bash.timeout 的单位是秒/);
+      assert.match(body(await call('bash', { command: 'echo child-shell-ok', timeout: 5 })), /child-shell-ok/);
       console.log(`PASS ${host}/${name}`);
     } finally { await child.dispose(); }
   }
@@ -135,7 +130,7 @@ try {
       assert.ok(!native.getAllTools().some(t => ['codemode', 'tool_search'].includes(t.name)));
     } finally { await child.dispose(); }
   }
-  console.log('PASS shared tooling for 3 roles in foreground and background sessions');
+  console.log('PASS shared tooling for configured model profiles in foreground and background sessions');
 } finally {
   await factory.dispose();
   await parent.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });

@@ -4,9 +4,9 @@ description: Delegate primary-source research to a background agent and save cit
 disable-model-invocation: true
 ---
 
-Spin up a **background agent** to do the research, so you keep working while it reads.
+In the parent session, delegate the research to a **background agent** using the local model-routing policy, so you keep working while it reads. When you are already the assigned research child, do the research directly rather than delegating again.
 
-Its job:
+The researcher's job:
 
 1. Investigate the question against **primary sources** (official docs, source code, specs, first-party APIs), not a secondary write-up of them. Follow every claim back to the source that owns it.
 2. Write the findings to a single Markdown file, citing each claim's source.

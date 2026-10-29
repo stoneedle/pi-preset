@@ -225,6 +225,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## 外部依赖与本地集成
 
+- `packages/pi-web/web/` 的图片预览依赖 [PhotoSwipe 5.4.4](https://github.com/dimsemenov/PhotoSwipe/tree/v5.4.4)：MIT，Copyright (c) 2014-2022 Dmitry Semenov, https://dimsemenov.com；通过 npm 安装，适用依赖内 `LICENSE` 及上文完整 MIT 正文，不复制源码。
 - `pi-web-access`、`pi-compact-transcript`、`pi-goal`：MIT；本仓库仅提供安装来源，不复制这些包。
 - `pi-codex-image-gen`：Apache-2.0；原包另有 NOTICE 和 OpenAI Codex 衍生文件声明，本仓库不复制该包。
 - `@calesennett/pi-codex-fast`：未发现上游声明许可证，本仓库不收录该插件原版源码。自写快捷键位于 `extensions/codex-fast-shortcut.ts`，已安装版本的会话接口适配脚本位于 `packages/pi-web/scripts/enable-fast-state.mjs`。提供链接和集成代码不代表获得上游再分发授权。

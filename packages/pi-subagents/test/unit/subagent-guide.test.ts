@@ -38,8 +38,8 @@ describe("subagent guide", () => {
 
 		assert.match(guide, /# Council Mode/);
 		assert.match(guide, /skills\/council-mode\/references\/pass-contracts\.md -->/);
-		assert.match(guide, /skills\/pi-subagents\/references\/execution-controls\.md -->/);
-		assert.match(guide, /Completed external-job runs can use `action: "resume"` for provider follow-up when the registered provider exposes `followUp\(input\)`/);
+		assert.match(guide, /skills\/pi-subagents\/SKILL\.md -->/);
+		assert.match(guide, /External jobs use their registered runner contract/);
 		assert.doesNotMatch(guide, /External job profiles do not support[^.\n]*steer\/resume/);
 	});
 

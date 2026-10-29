@@ -37,6 +37,8 @@ import {
   Copy,
   GitFork,
   Power,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide';
 
 export function icon(node, { size = 20 } = {}) {
@@ -90,4 +92,6 @@ export {
   Copy,
   GitFork,
   Power,
+  ZoomIn,
+  ZoomOut,
 };

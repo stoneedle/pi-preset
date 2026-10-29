@@ -22,9 +22,9 @@
   "inlineToolDisplay": "summary",
   "fleetView": true,
   "asyncWidget": false,
-  "asyncByDefault": false,
+  "asyncByDefault": true,
   "defaultSubagentContext": "fresh",
-  "parallel": { "maxTasks": 2, "concurrency": 2 },
+  "parallel": { "maxTasks": 4, "concurrency": 2 },
   "maxActiveAsyncRunsPerSession": 2,
   "maxSubagentDepth": 1
 }

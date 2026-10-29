@@ -9,7 +9,7 @@ import { piSdk } from '../scripts/preset.mjs';
 import { resolveHostPeerAliases } from '../packages/pi-subagents/src/runs/background/runner-aliases.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-test('configured native roles get working shared tools without parent extensions or database access', { timeout: 120000 }, async () => {
+test('configured native model profiles get working shared tools without parent extensions or database access', { timeout: 120000 }, async () => {
   const sdk = await piSdk();
   const peers = resolveHostPeerAliases(sdk.getPackageDir());
   assert.deepEqual(peers.missing, []);
@@ -24,7 +24,7 @@ test('configured native roles get working shared tools without parent extensions
         HOME: temporary, USERPROFILE: temporary, PI_CODING_AGENT_DIR: path.join(temporary, '.pi/agent'),
         PI_SUBAGENTS_TEMP_ROOT: path.join(temporary, 'runs') },
     });
-    assert.match(output, /PASS shared tooling for 3 roles in foreground and background sessions/);
+    assert.match(output, /PASS shared tooling for configured model profiles in foreground and background sessions/);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
