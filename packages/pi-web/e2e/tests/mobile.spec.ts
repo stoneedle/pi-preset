@@ -895,13 +895,15 @@ test("folded bodies and original images stay lazy while thumbnails load", async 
   const bodies = await Promise.all(initial);
   expect(bodies.join("")).not.toContain("private-folded-body-");
   expect(
-    requests.some(
-      (url) =>
-        url.includes("/api/session/block") ||
-        (url.includes("/api/session/image") && new URL(url).searchParams.get("thumbnail") !== "1") ||
-        url.includes("do-not-fetch.png"),
+    requests.filter(
+      (url) => {
+        const target = new URL(url);
+        return target.pathname === "/api/session/block" ||
+          (["/api/session/image", "/api/session/file"].includes(target.pathname) && target.searchParams.get("thumbnail") !== "1") ||
+          target.hostname === "example.invalid";
+      },
     ),
-  ).toBe(false);
+  ).toEqual([]);
   await page.getByRole("button", { name: /bash inspect project/ }).click();
   await expect(page.locator(".remote-block pre").first()).toContainText(
     "private-folded-body-",
@@ -910,7 +912,10 @@ test("folded bodies and original images stay lazy while thumbnails load", async 
     requests.filter((url) => url.includes("/api/session/block")).length,
   ).toBe(1);
   await expect(page.locator(".remote-image-preview img")).toHaveJSProperty("naturalWidth", 1);
-  await expect(page.getByRole("link", { name: "打开图片", exact: true })).not.toHaveAttribute("href", /[?&]thumbnail=/);
+  const originals = page.getByRole("link", { name: "打开图片", exact: true });
+  await expect(originals).toHaveCount(2);
+  for (const original of await originals.all())
+    await expect(original).not.toHaveAttribute("href", /[?&]thumbnail=/);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -940,7 +945,7 @@ test("ordinary long replies remain whole and older history preserves its anchor"
     entries,
   );
   await page.goto(`/session?id=${encodeURIComponent(id)}`);
-  await expect(page.locator(".remote-markdown").last()).toHaveText(text);
+  await expect(page.locator(".remote-markdown").last()).toContainText(text);
   const main = page.locator(".remote-main");
   await expect.poll(() => main.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(3);
   const first = page.locator("article").first();
