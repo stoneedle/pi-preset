@@ -10,6 +10,7 @@ export const newTaskDraft = $state({
   text: '',
   revision: 0,
   images: [],
+  files: [],
   recoveries: [],
   composing: false,
   picking: false,
@@ -50,6 +51,7 @@ export function sessionComposer(id) {
       text: '',
       revision: 0,
       images: [],
+      files: [],
       recoveries: [],
       composing: false,
       picking: false,
@@ -66,6 +68,7 @@ export function hasUnsavedDrafts() {
     Boolean(
       draft.text.length ||
       draft.images.length ||
+      draft.files.length ||
       draft.recoveries.length ||
       draft.sending ||
       draft.composing ||
@@ -97,6 +100,7 @@ export function captureDraft(composer, settings = composer.settings || {}) {
     text: composer.text,
     revision: composer.revision,
     images: [...composer.images],
+    files: [...composer.files],
     settings: { ...settings },
   };
 }
@@ -104,6 +108,7 @@ export function captureDraft(composer, settings = composer.settings || {}) {
 export function completeDraft(composer, submitted) {
   if (composer.revision === submitted.revision) editDraft(composer, '');
   composer.images = composer.images.filter((image) => !submitted.images.includes(image));
+  composer.files = composer.files.filter((file) => !submitted.files.includes(file));
   if (composer.settings) {
     for (const [key, value] of Object.entries(submitted.settings)) {
       if (composer.settings[key] === value) delete composer.settings[key];
@@ -116,11 +121,13 @@ export function moveNewTaskDraft(id, settings = {}) {
   if (newTaskDraft.text)
     editDraft(target, [target.text, newTaskDraft.text].filter(Boolean).join('\n\n'));
   target.images = [...target.images, ...newTaskDraft.images];
+  target.files = [...target.files, ...newTaskDraft.files];
   target.recoveries = [...target.recoveries, ...newTaskDraft.recoveries];
   target.settings = { ...target.settings, ...settings };
   editDraft(newTaskDraft, '');
   Object.assign(newTaskDraft, {
     images: [],
+    files: [],
     recoveries: [],
     error: '',
     createdId: '',
@@ -141,13 +148,16 @@ export function restoreSubmission(composer, id) {
     composer.draftId === item.draftId &&
     composer.revision === item.revision &&
     composer.images.length === item.images.length &&
-    composer.images.every((image, index) => image === item.images[index]);
+    composer.images.every((image, index) => image === item.images[index]) &&
+    composer.files.length === item.files.length &&
+    composer.files.every((file, index) => file === item.files[index]);
   const remaining = composer.recoveries.filter((item) => item.id !== id);
   if (!unchanged) {
-    if (composer.text.length || composer.images.length)
+    if (composer.text.length || composer.images.length || composer.files.length)
       remaining.push({ ...captureDraft(composer), id: ++nextIdentity, state: 'draft' });
     editDraft(composer, item.text);
     composer.images = [...item.images];
+    composer.files = [...item.files];
   }
   composer.recoveries = remaining;
   return true;
@@ -166,6 +176,7 @@ export function recoverQueuedMessage(composer, item, error = '') {
     revision: 0,
     text: item.message,
     images,
+    files: [],
     settings: {},
     state: error ? 'uncertain' : 'draft',
     operation: error ? 'withdraw' : undefined,
@@ -180,7 +191,7 @@ export function discardRecovery(composer, id) {
   const message =
     item.state === 'draft'
       ? '丢弃这份暂存草稿？不会影响输入框中正在编辑的内容。'
-      : '忽略这条消息？保留的原文和图片将被移除，但不会取消 Pi 可能已接收的消息，也不会影响当前草稿。';
+      : '忽略这条消息？保留的原文和附件将被移除，但不会取消 Pi 可能已接收的消息，也不会影响当前草稿。';
   if (window.confirm(message))
     composer.recoveries = composer.recoveries.filter((item) => item.id !== id);
 }
@@ -193,6 +204,9 @@ export async function submitSessionMessage(id, submitted, composer, delivery = '
     if (Object.keys(submitted.settings).length)
       form.set('settings', JSON.stringify(submitted.settings));
     for (const image of submitted.images) form.append('images', image);
+    for (const file of submitted.files) form.append('files', file);
+    if (submitted.files.length)
+      form.set('fileNames', JSON.stringify(submitted.files.map((file) => file.name)));
     await request('/api/chat?id=' + encodeURIComponent(id), { method: 'POST', body: form });
     return true;
   } catch (error) {

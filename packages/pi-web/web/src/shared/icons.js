@@ -1,4 +1,6 @@
 import {
+  File,
+  Image,
   Circle,
   CircleHelp,
   CircleX,
@@ -54,6 +56,8 @@ export function icon(node, { size = 20 } = {}) {
 }
 
 export {
+  File,
+  Image,
   Circle,
   CircleHelp,
   CircleX,

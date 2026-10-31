@@ -438,7 +438,7 @@ test('an accepted send never erases text or a picture drafted while its receipt 
     await page.evaluate(() => (window as any).__releaseReceipt());
     await expect(page.getByRole('button', { name: "发送", exact: true })).toBeEnabled();
     await expect(page.getByRole('textbox', { name: "给 Pi 发消息…" })).toHaveValue('second draft');
-    await expect(page.locator('.remote-images')).toContainText('next-photo.png');
+    await expect(page.getByRole('button', { name: '查看图片：next-photo.png', exact: true })).toBeVisible();
     await page.getByRole('button', { name: "发送", exact: true }).click();
     await expect(page.locator('[data-message-id]').last()).toContainText('Stub reply: second draft');
     await page.getByRole('button', { name: "停止主代理", exact: true }).click();

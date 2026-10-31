@@ -63,6 +63,7 @@ for (const leave of [false, true]) {
     await input.fill('首条提交内容');
     await editor.getByRole('button', { name: '发送', exact: true }).click();
     await page.waitForFunction(() => Boolean((window as any).__releaseDraftSend));
+    await expect(editor.getByRole('button', { name: '添加附件', exact: true })).toBeDisabled();
     await input.fill('新任务发送期间继续输入的下一条');
     await editor.locator('input[type=file]').setInputFiles(image);
     if (leave) {

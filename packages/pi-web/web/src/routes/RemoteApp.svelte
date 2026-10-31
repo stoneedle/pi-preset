@@ -482,7 +482,8 @@
   async function sendMessage(event, delivery = 'steer') {
     event?.preventDefault();
     if (delivery === 'followUp' && !canQueue) return;
-    if (!canSend || (!composer.text.trim() && !composer.images.length)) return;
+    if (!canSend || (!composer.text.trim() && !composer.images.length && !composer.files.length))
+      return;
     composer.sending = true;
     const submitted = captureDraft(composer);
     try {

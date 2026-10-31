@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte';
 
-  let { label, children, dismissTargets = '' } = $props();
+  let { label, children, dismissTargets = '', dismissOnScroll = true } = $props();
   let panel;
   let anchor;
   let expandAnchor = true;
@@ -70,7 +70,10 @@
   onMount(() => {
     const dismiss = (event) => {
       // Scrolling an input inside a row is not scrolling the containing list.
-      if (event.target instanceof Node && event.target.contains(anchor)) close();
+      if (event.target instanceof Node && event.target.contains(anchor)) {
+        if (dismissOnScroll) close();
+        else position();
+      }
     };
     let dismissingRow = false;
     const outside = (event) => {

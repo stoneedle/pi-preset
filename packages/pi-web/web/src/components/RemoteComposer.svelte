@@ -1,7 +1,8 @@
 <script>
   import { onMount, onDestroy, flushSync } from 'svelte';
-  import { icon, Plus, ArrowUp, Square, LoaderCircle, Layers } from '../shared/icons.js';
+  import { icon, X, File, ArrowUp, Square, LoaderCircle, Layers } from '../shared/icons.js';
   import ModelPicker from './ModelPicker.svelte';
+  import ComposerAttachments from './ComposerAttachments.svelte';
   import ComposerCommands from './ComposerCommands.svelte';
   import SubmissionRecovery from './SubmissionRecovery.svelte';
   import QueuedMessages from './QueuedMessages.svelte';
@@ -198,13 +199,29 @@
     {/if}
   </div>
   <form class="composer-shell" onsubmit={onsend}>
-    {#if composer.images.length}<div class="remote-images">
+    {#if composer.images.length || composer.files.length}<div class="remote-images">
         {#each composer.images as image (image)}
           <DraftImage
             file={image}
             onremove={() => (composer.images = composer.images.filter((item) => item !== image))}
           />
         {/each}
+        {#if composer.files.length}
+          <div class="draft-files" aria-label="待发送文件">
+            {#each composer.files as file (file)}
+              <div class="draft-file">
+                {@html icon(File, { size: 18 })}
+                <span title={file.name}>{file.name}</span>
+                <button
+                  type="button"
+                  aria-label={`移除文件：${file.name}`}
+                  onclick={() => (composer.files = composer.files.filter((item) => item !== file))}
+                  >{@html icon(X, { size: 16 })}</button
+                >
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>{/if}
     <textarea
       bind:this={textarea}
@@ -220,20 +237,7 @@
       {onblur}
     ></textarea>
     <div class="remote-actions">
-      <label class="remote-attach" aria-label="拍照或选择图片" title="添加图片">
-        {@html icon(Plus, { size: 26 })}<input
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
-          multiple
-          onclick={() => (composer.picking = true)}
-          oncancel={() => (composer.picking = false)}
-          onchange={(event) => {
-            composer.images = [...composer.images, ...event.currentTarget.files];
-            composer.picking = false;
-            event.currentTarget.value = '';
-          }}
-        />
-      </label>
+      <ComposerAttachments {composer} disabled={draftMode && composer.sending} />
       <div class="composer-model">
         <ModelPicker
           model={status.model}
@@ -264,7 +268,7 @@
         type="submit"
         disabled={!canSend ||
           composer.sending ||
-          (!composer.text.trim() && !composer.images.length)}
+          (!composer.text.trim() && !composer.images.length && !composer.files.length)}
         aria-label="发送"
         aria-busy={composer.sending}
         aria-haspopup={canQueue ? 'menu' : undefined}
@@ -400,26 +404,34 @@
     flex: none;
     min-width: 0;
   }
-  .remote-attach {
+  .draft-files {
+    display: contents;
+  }
+  .draft-file {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    max-width: min(240px, 100%);
+    padding-left: 8px;
+    border-radius: 10px;
+    background: var(--surface-2);
+    font-size: 13px;
+  }
+  .draft-file span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .draft-file button {
+    flex: none;
     display: grid;
     place-items: center;
-    flex: none;
-    width: 36px;
-    min-height: 40px;
-    cursor: pointer;
-    border-radius: 50%;
-  }
-  .remote-attach:focus-within {
-    outline: 2px solid var(--accent);
-  }
-  .remote-attach input {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    clip-path: inset(50%);
-    padding: 0;
-    min-height: 0;
-    opacity: 0;
+    width: 44px;
+    min-height: 44px;
+    border: 0;
+    background: transparent;
   }
   .composer-model {
     flex: 1;
@@ -520,9 +532,6 @@
     }
     .remote-actions {
       gap: 4px;
-    }
-    .remote-attach {
-      width: 30px;
     }
   }
 </style>

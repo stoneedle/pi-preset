@@ -3,7 +3,7 @@
   import { restoreSubmission, discardRecovery } from '../remote-drafts.svelte.js';
 
   let { composer, item, onedit } = $props();
-  let images = $state([]);
+  let attachments = $state([]);
   let expanded = $state(false);
   const label = $derived(
     item.operation === 'withdraw'
@@ -19,8 +19,12 @@
             : '未确认是否发送成功',
   );
   $effect(() => {
-    const loaded = item.images.map((file) => ({ file, url: URL.createObjectURL(file) }));
-    images = loaded;
+    const loaded = [...item.images, ...item.files].map((file) => ({
+      file,
+      image: item.images.includes(file),
+      url: URL.createObjectURL(file),
+    }));
+    attachments = loaded;
     return () => loaded.forEach(({ url }) => URL.revokeObjectURL(url));
   });
 </script>
@@ -57,8 +61,10 @@
     <div class="recovery-preview" id={`recovery-${item.id}`}>
       {#if item.error}<p class="recovery-error">{item.error}</p>{/if}
       <div class="recovery-text">{item.text}</div>
-      {#each images as image (image.file)}
-        <a href={image.url} download={image.file.name}>保存图片：{image.file.name}</a>
+      {#each attachments as attachment (attachment.file)}
+        <a href={attachment.url} download={attachment.file.name}
+          >{attachment.image ? '保存图片' : '保存文件'}：{attachment.file.name}</a
+        >
       {/each}
       {#if item.state !== 'draft'}<p>重新编辑不会自动发送，当前草稿会另行暂存。</p>{/if}
       {#if item.operation === 'withdraw'}<p>

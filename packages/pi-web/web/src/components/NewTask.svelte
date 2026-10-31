@@ -106,7 +106,12 @@
   }
   async function send(event) {
     event.preventDefault();
-    if (draft.sending || !draft.path || (!draft.text.trim() && !draft.images.length)) return;
+    if (
+      draft.sending ||
+      !draft.path ||
+      (!draft.text.trim() && !draft.images.length && !draft.files.length)
+    )
+      return;
     draft.sending = true;
     draft.error = '';
     const submitted = captureDraft(draft, selectedSettings());
