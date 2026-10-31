@@ -15,17 +15,21 @@ class SketchDraft {
   }
 }
 
-export function saveSketchScene(composer, scene, version) {
+export function saveSketchScene(composer, scene, version, previousVersion) {
+  // An open editor may emit camera/UI updates after its PNG was sent. Only
+  // actual new content can recreate a draft cleared by that receipt.
+  if (!composer.sketch && version === previousVersion) return;
   const previous = composer.sketch;
   composer.sketch = new SketchDraft(scene, version, previous?.image, previous?.exportedVersion);
 }
 
-export function finishSketch(composer, { image, version: exportedVersion }) {
+export function finishSketch(composer, { image, version: exportedVersion, scene: exportedScene }) {
   const previous = composer.sketch?.image;
   const index = composer.images.indexOf(previous);
   if (index < 0) composer.images.push(image);
   else composer.images[index] = image;
-  const { scene, version } = composer.sketch;
+  const scene = composer.sketch?.scene || exportedScene;
+  const version = composer.sketch?.version ?? exportedVersion;
   composer.sketch = new SketchDraft(scene, version, image, exportedVersion);
 }
 
@@ -138,9 +142,11 @@ export function completeDraft(composer, submitted) {
   composer.images = composer.images.filter((image) => !submitted.images.includes(image));
   composer.files = composer.files.filter((file) => !submitted.files.includes(file));
   if (
-    composer.sketch === submitted.sketch &&
-    submitted.images.includes(submitted.sketch?.image) &&
-    submitted.sketch.version === submitted.sketch.exportedVersion
+    composer.sketch &&
+    submitted.sketch &&
+    composer.sketch.image === submitted.sketch.image &&
+    submitted.images.includes(submitted.sketch.image) &&
+    composer.sketch.version === submitted.sketch.exportedVersion
   )
     composer.sketch = null;
   if (composer.settings) {

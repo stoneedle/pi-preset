@@ -20,8 +20,8 @@
       if (disposed) return;
       controller = mountSketch(host, {
         scene: composer.sketch?.scene,
-        onchange: (scene, version) => {
-          if (!disposed) saveSketchScene(composer, scene, version);
+        onchange: (scene, version, previousVersion) => {
+          if (!disposed) saveSketchScene(composer, scene, version, previousVersion);
         },
         onready: () => (ready = true),
         onerror: (message) => (error = message),

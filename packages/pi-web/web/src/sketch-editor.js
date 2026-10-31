@@ -5,6 +5,7 @@ import {
   MainMenu,
   exportToBlob,
   hashElementsVersion,
+  isInvisiblySmallElement,
   convertToExcalidrawElements,
   CaptureUpdateAction,
 } from '@excalidraw/excalidraw';
@@ -17,6 +18,37 @@ const sceneVersion = (elements, appState) =>
 export function mountSketch(node, { scene, onchange, onready, onerror }) {
   const root = createRoot(node);
   let api;
+  let frame;
+  let observedVersion = scene ? sceneVersion(scene.elements, scene.appState) : null;
+  function keepTextVisible() {
+    const editor = document.activeElement;
+    if (!api || editor?.tagName !== 'TEXTAREA' || !node.contains(editor)) return;
+    const bounds = node.getBoundingClientRect();
+    const toolbar = node.querySelector('.App-toolbar-container')?.getBoundingClientRect();
+    const footer = node.querySelector('footer')?.getBoundingClientRect();
+    const top = Math.max(bounds.top + 12, toolbar?.bottom ? toolbar.bottom + 8 : bounds.top + 12);
+    const bottom = Math.min(
+      bounds.bottom - 12,
+      footer?.height ? footer.top - 8 : bounds.bottom - 12,
+    );
+    const text = editor.getBoundingClientRect();
+    const delta = text.bottom > bottom ? bottom - text.bottom : text.top < top ? top - text.top : 0;
+    if (Math.abs(delta) < 1) return;
+    const state = api.getAppState();
+    api.updateScene({ appState: { scrollY: state.scrollY + delta / state.zoom.value } });
+  }
+  function scheduleTextVisibility() {
+    cancelAnimationFrame(frame);
+    // Let the editor's own resize observer commit its new canvas dimensions first.
+    frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(keepTextVisible);
+    });
+  }
+  const resize = new ResizeObserver(scheduleTextVisibility);
+  resize.observe(node);
+  node.addEventListener('focusin', scheduleTextVisibility);
+  node.addEventListener('input', scheduleTextVisibility);
+  window.visualViewport?.addEventListener('resize', scheduleTextVisibility);
   root.render(
     createElement(
       Excalidraw,
@@ -35,6 +67,7 @@ export function mountSketch(node, { scene, onchange, onready, onerror }) {
           },
         },
         UIOptions: {
+          tools: { image: false },
           canvasActions: {
             export: false,
             loadScene: false,
@@ -47,8 +80,12 @@ export function mountSketch(node, { scene, onchange, onready, onerror }) {
           api = value;
           onready();
         },
-        onChange: (elements, appState, files) =>
-          onchange({ elements, appState, files }, sceneVersion(elements, appState)),
+        onChange: (elements, appState, files) => {
+          const version = sceneVersion(elements, appState);
+          const previousVersion = observedVersion;
+          observedVersion = version;
+          onchange({ elements, appState, files }, version, previousVersion);
+        },
       },
       createElement(MainMenu, null, createElement(MainMenu.DefaultItems.ClearCanvas)),
     ),
@@ -85,7 +122,9 @@ export function mountSketch(node, { scene, onchange, onready, onerror }) {
         );
         const width = image.naturalWidth * scale;
         const height = image.naturalHeight * scale;
-        const id = crypto.randomUUID();
+        const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+          byte.toString(16).padStart(2, '0'),
+        ).join('');
         const [element] = convertToExcalidrawElements([
           {
             type: 'image',
@@ -113,12 +152,15 @@ export function mountSketch(node, { scene, onchange, onready, onerror }) {
       await new Promise(requestAnimationFrame);
       // Export owns a fixed snapshot, not mutable scene objects that can change
       // while fonts or canvas.toBlob are completing asynchronously.
-      const elements = structuredClone(api.getSceneElements());
+      const allElements = structuredClone(api.getSceneElementsIncludingDeleted());
+      const elements = allElements.filter(
+        (element) => !element.isDeleted && !isInvisiblySmallElement(element),
+      );
       const appState = { ...api.getAppState() };
       const files = { ...api.getFiles() };
-      const version = sceneVersion(api.getSceneElementsIncludingDeleted(), appState);
-      if (!elements.some((element) => !element.isDeleted))
-        throw new Error('先画点什么，或添加一张图片。');
+      const version = sceneVersion(allElements, appState);
+      if (appState.pendingImageElementId) throw new Error('先放置图片，再完成草图。');
+      if (!elements.length) throw new Error('先画点什么，或添加一张图片。');
       const blob = await exportToBlob({
         elements,
         appState: {
@@ -129,14 +171,28 @@ export function mountSketch(node, { scene, onchange, onready, onerror }) {
         },
         files,
         mimeType: 'image/png',
-        maxWidthOrHeight: 1600,
+        getDimensions: (width, height) => {
+          // Draw in comfortable screen-sized coordinates, but rasterize from
+          // the source image at a useful output resolution.
+          const scale = 1600 / Math.max(width, height);
+          return { width: Math.round(width * scale), height: Math.round(height * scale), scale };
+        },
         exportPadding: 24,
       });
       if (!blob) throw new Error('图片生成失败，请重试。');
-      return { image: new File([blob], `草图-${Date.now()}.png`, { type: 'image/png' }), version };
+      return {
+        image: new File([blob], `草图-${Date.now()}.png`, { type: 'image/png' }),
+        version,
+        scene: { elements: allElements, appState, files },
+      };
     },
     destroy() {
       api = null;
+      cancelAnimationFrame(frame);
+      resize.disconnect();
+      node.removeEventListener('focusin', scheduleTextVisibility);
+      node.removeEventListener('input', scheduleTextVisibility);
+      window.visualViewport?.removeEventListener('resize', scheduleTextVisibility);
       root.unmount();
     },
   };
