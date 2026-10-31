@@ -42,7 +42,7 @@ test('attachment menu selects ordinary files, preserves drafts and sends readabl
   const add = page.getByRole('button', { name: '添加附件', exact: true });
   await add.click();
   const menu = page.getByRole('menu', { name: '添加附件' });
-  await expect(menu.getByRole('menuitem')).toHaveText(['图片', '文件']);
+  await expect(menu.getByRole('menuitem')).toHaveText(['图片', '文件', '画图']);
   const box = await menu.boundingBox();
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(320);

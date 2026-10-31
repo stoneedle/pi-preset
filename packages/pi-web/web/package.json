@@ -12,10 +12,13 @@
     "dev": "vite build --watch"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
     "lucide": "^1.17.0",
     "marked": "latest",
     "mermaid": "^12.2.0",
-    "photoswipe": "5.4.4"
+    "photoswipe": "5.4.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

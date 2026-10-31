@@ -1,18 +1,26 @@
 <script>
   import { flushSync } from 'svelte';
-  import { icon, Plus, Image, File } from '../shared/icons.js';
+  import { icon, Plus, Image, File, Pencil } from '../shared/icons.js';
   import ActionMenu from './ActionMenu.svelte';
+  import SketchEditor from './SketchEditor.svelte';
 
   let { composer, disabled = false } = $props();
   let menu;
   let input;
+  let button;
+  let sketchOpen = $state(false);
   let kind = $state('images');
   const actions = [
     { label: '图片', icon: Image, kind: 'images' },
     { label: '文件', icon: File, kind: 'files' },
+    { label: '画图', icon: Pencil, kind: 'sketch' },
   ];
   function select(selected) {
     menu.close();
+    if (selected === 'sketch') {
+      sketchOpen = true;
+      return;
+    }
     flushSync(() => (kind = selected));
     input.click();
   }
@@ -27,14 +35,15 @@
 <div class="remote-attach">
   <button
     class="attach"
+    bind:this={button}
     type="button"
     aria-label="添加附件"
     aria-haspopup="menu"
     {disabled}
     onclick={(event) => {
-      const button = event.currentTarget;
-      if (menu.isOpenFor(button)) menu.close(true);
-      else menu.open(button);
+      const source = event.currentTarget;
+      if (menu.isOpenFor(source)) menu.close(true);
+      else menu.open(source);
     }}>{@html icon(Plus, { size: 26 })}</button
   >
   <ActionMenu bind:this={menu} label="添加附件" dismissOnScroll={false}>
@@ -60,6 +69,15 @@
     onchange={(event) => add(event, kind)}
   />
 </div>
+{#if sketchOpen}
+  <SketchEditor
+    {composer}
+    onclose={() => {
+      sketchOpen = false;
+      button?.focus({ preventScroll: true });
+    }}
+  />
+{/if}
 
 <style>
   .remote-attach {

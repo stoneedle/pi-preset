@@ -1,4 +1,6 @@
 import {
+  Pencil,
+  ImagePlus,
   File,
   Image,
   Circle,
@@ -56,6 +58,8 @@ export function icon(node, { size = 20 } = {}) {
 }
 
 export {
+  Pencil,
+  ImagePlus,
   File,
   Image,
   Circle,

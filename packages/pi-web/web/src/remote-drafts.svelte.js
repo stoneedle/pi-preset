@@ -5,12 +5,37 @@ import { request } from './remote-api.js';
 const composers = new SvelteMap();
 let nextIdentity = 0;
 
+// Keep the editor's large scene outside Svelte's deep proxying.
+class SketchDraft {
+  constructor(scene, version, image = null, exportedVersion = null) {
+    this.scene = scene;
+    this.version = version;
+    this.image = image;
+    this.exportedVersion = exportedVersion;
+  }
+}
+
+export function saveSketchScene(composer, scene, version) {
+  const previous = composer.sketch;
+  composer.sketch = new SketchDraft(scene, version, previous?.image, previous?.exportedVersion);
+}
+
+export function finishSketch(composer, { image, version: exportedVersion }) {
+  const previous = composer.sketch?.image;
+  const index = composer.images.indexOf(previous);
+  if (index < 0) composer.images.push(image);
+  else composer.images[index] = image;
+  const { scene, version } = composer.sketch;
+  composer.sketch = new SketchDraft(scene, version, image, exportedVersion);
+}
+
 export const newTaskDraft = $state({
   draftId: ++nextIdentity,
   text: '',
   revision: 0,
   images: [],
   files: [],
+  sketch: null,
   recoveries: [],
   composing: false,
   picking: false,
@@ -52,6 +77,7 @@ export function sessionComposer(id) {
       revision: 0,
       images: [],
       files: [],
+      sketch: null,
       recoveries: [],
       composing: false,
       picking: false,
@@ -69,6 +95,7 @@ export function hasUnsavedDrafts() {
       draft.text.length ||
       draft.images.length ||
       draft.files.length ||
+      draft.sketch?.scene.elements.some((element) => !element.isDeleted) ||
       draft.recoveries.length ||
       draft.sending ||
       draft.composing ||
@@ -101,6 +128,7 @@ export function captureDraft(composer, settings = composer.settings || {}) {
     revision: composer.revision,
     images: [...composer.images],
     files: [...composer.files],
+    sketch: composer.sketch,
     settings: { ...settings },
   };
 }
@@ -109,6 +137,12 @@ export function completeDraft(composer, submitted) {
   if (composer.revision === submitted.revision) editDraft(composer, '');
   composer.images = composer.images.filter((image) => !submitted.images.includes(image));
   composer.files = composer.files.filter((file) => !submitted.files.includes(file));
+  if (
+    composer.sketch === submitted.sketch &&
+    submitted.images.includes(submitted.sketch?.image) &&
+    submitted.sketch.version === submitted.sketch.exportedVersion
+  )
+    composer.sketch = null;
   if (composer.settings) {
     for (const [key, value] of Object.entries(submitted.settings)) {
       if (composer.settings[key] === value) delete composer.settings[key];
@@ -122,12 +156,14 @@ export function moveNewTaskDraft(id, settings = {}) {
     editDraft(target, [target.text, newTaskDraft.text].filter(Boolean).join('\n\n'));
   target.images = [...target.images, ...newTaskDraft.images];
   target.files = [...target.files, ...newTaskDraft.files];
+  target.sketch = newTaskDraft.sketch || target.sketch;
   target.recoveries = [...target.recoveries, ...newTaskDraft.recoveries];
   target.settings = { ...target.settings, ...settings };
   editDraft(newTaskDraft, '');
   Object.assign(newTaskDraft, {
     images: [],
     files: [],
+    sketch: null,
     recoveries: [],
     error: '',
     createdId: '',
@@ -147,17 +183,19 @@ export function restoreSubmission(composer, id) {
   const unchanged =
     composer.draftId === item.draftId &&
     composer.revision === item.revision &&
+    composer.sketch === item.sketch &&
     composer.images.length === item.images.length &&
     composer.images.every((image, index) => image === item.images[index]) &&
     composer.files.length === item.files.length &&
     composer.files.every((file, index) => file === item.files[index]);
   const remaining = composer.recoveries.filter((item) => item.id !== id);
   if (!unchanged) {
-    if (composer.text.length || composer.images.length || composer.files.length)
+    if (composer.text.length || composer.images.length || composer.files.length || composer.sketch)
       remaining.push({ ...captureDraft(composer), id: ++nextIdentity, state: 'draft' });
     editDraft(composer, item.text);
     composer.images = [...item.images];
     composer.files = [...item.files];
+    composer.sketch = item.sketch;
   }
   composer.recoveries = remaining;
   return true;
@@ -177,6 +215,7 @@ export function recoverQueuedMessage(composer, item, error = '') {
     text: item.message,
     images,
     files: [],
+    sketch: null,
     settings: {},
     state: error ? 'uncertain' : 'draft',
     operation: error ? 'withdraw' : undefined,

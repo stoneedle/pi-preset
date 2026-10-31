@@ -223,6 +223,25 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
+## Pi Web 草图编辑器与字体
+
+`packages/pi-web/web/` 通过 npm 集成 [Excalidraw 0.18.1](https://github.com/excalidraw/excalidraw)（MIT，Copyright (c) 2020 Excalidraw）及 React / React DOM 18.3.1（MIT，Copyright (c) Meta Platforms, Inc. and affiliates.）。对应版权声明与本文件完整 MIT 正文共同适用；不在仓库复制库源码。
+
+编辑器使用 npm 包所附 WOFF2 字体，构建时原样生成同源、内容哈希资源，不修改字体。以下声明取自字体 name table；除 Comic Shanns 使用 MIT 正文外，其余字体使用本文件已保存的完整 SIL Open Font License 1.1 正文。字体仍受自身许可约束，不因随 Pi Web 打包而改为 MIT。
+
+| 字体 | 版权声明与许可 |
+|---|---|
+| Assistant | Copyright 2020 The Assistant Project Authors (https://github.com/hafontia/Assistant). Copyright 2010 The Source Sans Pro Authors (https://github.com/adobe-fonts/source-sans-pro), with Reserved Font Name 'Source'. Source is a trademark of Adobe Systems Incorporated in the United States and/or other countries. — OFL-1.1 |
+| Cascadia Code | © 2020 Microsoft Corporation. All Rights Reserved. — OFL-1.1，另见 [Microsoft 原始许可](https://github.com/microsoft/cascadia-code/blob/main/LICENSE) |
+| Comic Shanns | Copyright (c) 2018 Shannon Miwa; Copyright (c) 2023 Jesus Gonzalez; Copyright (c) 2023 Rodrigo Batista de Moraes; Copyright (c) 2024 Fini Jastrow; Copyright (c) 2024 Kyle Beechly — MIT |
+| Excalifont | Copyright (c) 2024 by Excalidraw. All rights reserved. — OFL-1.1，见 [官方字体说明](https://plus.excalidraw.com/excalifont) |
+| Lilita One | Copyright (c) 2011 Juan Montoreano (juan@remolacha.biz), with Reserved Font Names "Lilita One" — OFL-1.1 |
+| Nunito | Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito) — OFL-1.1 |
+| Virgil | Copyright (c) 2011 by Your Own Font Foundry. All rights reserved.；上游另注明 Copyright (c) 2021 - Present, Ellinor Rapp，Reserved Font Name: Virgil，见 [Virgil 许可](https://github.com/excalidraw/virgil/blob/main/LICENSE.md) — OFL-1.1 |
+| Xiaolai | Copyright © 2020 LXGW — OFL-1.1，见 [原始字体项目](https://github.com/lxgw/kose-font) |
+
+Excalidraw 包中的旧 Liberation Sans 1.05 是服务端导出的备用字体，本项目仅在浏览器中编辑并输出 PNG，不打包该字体。Helvetica 与 Emoji 使用操作系统字体，不分发字体文件。
+
 ## 外部依赖与本地集成
 
 - `packages/pi-web/web/` 的图片预览依赖 [PhotoSwipe 5.4.4](https://github.com/dimsemenov/PhotoSwipe/tree/v5.4.4)：MIT，Copyright (c) 2014-2022 Dmitry Semenov, https://dimsemenov.com；通过 npm 安装，适用依赖内 `LICENSE` 及上文完整 MIT 正文，不复制源码。
