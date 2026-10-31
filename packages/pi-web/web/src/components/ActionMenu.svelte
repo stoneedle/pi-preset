@@ -1,7 +1,13 @@
 <script>
   import { onMount, tick } from 'svelte';
 
-  let { label, children, dismissTargets = '', dismissOnScroll = true } = $props();
+  let {
+    label,
+    children,
+    dismissTargets = '',
+    dismissOnScroll = true,
+    dismissOnAnchor = true,
+  } = $props();
   let panel;
   let anchor;
   let expandAnchor = true;
@@ -78,7 +84,11 @@
     let dismissingRow = false;
     const outside = (event) => {
       dismissingRow = false;
-      if (panel.matches(':popover-open') && !panel.contains(event.target)) {
+      if (
+        panel.matches(':popover-open') &&
+        !panel.contains(event.target) &&
+        (dismissOnAnchor || !anchor.contains(event.target))
+      ) {
         dismissingRow = Boolean(dismissTargets && event.target.closest(dismissTargets));
         close();
         if (dismissingRow) event.stopPropagation();

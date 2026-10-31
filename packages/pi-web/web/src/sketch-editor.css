@@ -1,0 +1,7 @@
+/* Keep the engine's own history controls mounted, but all native chrome hidden. */
+.sketch-canvas .layer-ui__wrapper,
+.sketch-canvas .App-top-bar,
+.sketch-canvas .App-bottom-bar,
+.sketch-canvas .sidebar {
+  display: none;
+}

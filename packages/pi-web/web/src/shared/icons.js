@@ -1,4 +1,12 @@
 import {
+  Undo2,
+  Redo2,
+  ArrowUpRight,
+  Type,
+  Eraser,
+  Palette,
+  MousePointer2,
+  Trash2,
   Pencil,
   ImagePlus,
   File,
@@ -58,6 +66,14 @@ export function icon(node, { size = 20 } = {}) {
 }
 
 export {
+  Undo2,
+  Redo2,
+  ArrowUpRight,
+  Type,
+  Eraser,
+  Palette,
+  MousePointer2,
+  Trash2,
   Pencil,
   ImagePlus,
   File,
