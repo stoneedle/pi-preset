@@ -55,6 +55,7 @@ type Server struct {
 	appNameMu      sync.Mutex
 	push           *pushModule
 	diagnostics    *diagnosticLog
+	codexUsage     *codexUsageSource
 }
 
 func New(deps Deps) (*Server, error) {
@@ -82,6 +83,7 @@ func New(deps Deps) (*Server, error) {
 		cache: deps.Cache, now: deps.Now,
 		renderAppShell: deps.RenderAppShell,
 		diagnostics:    &diagnosticLog{dir: filepath.Join(deps.AgentDir, "pi-web", "diagnostics")},
+		codexUsage:     newCodexUsageSource(),
 		fileMod:        make(map[string]time.Time), runtimeStates: make(map[string]runtimeSnapshot), observations: make(map[string]ownerObservation),
 		stopCh: make(chan struct{}), db: db, previews: make(map[string]*previewGrant),
 	}
@@ -183,6 +185,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		"/api/push/eligibility": s.handlePushEligibility,
 		"/api/diagnostics":      s.handleDiagnostics,
 		"/api/app-name":         s.handleAppName,
+		"/api/codex-usage":      s.handleCodexUsage,
 	} {
 		mux.HandleFunc(path, s.auth.Wrap(handler))
 	}

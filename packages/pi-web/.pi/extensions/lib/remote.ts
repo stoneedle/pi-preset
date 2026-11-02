@@ -329,18 +329,21 @@ export async function openRemote(
               state.updateContext(current);
               reply(200, { status: "accepted" });
               return;
-            case "models":
+            case "models": {
+              const scoped = current.scopedModels;
+              const models = scoped.length
+                ? scoped.map(({ model }) => model)
+                : current.modelRegistry.getAvailable();
               reply(200, {
-                models: current.modelRegistry
-                  .getAvailable()
-                  .map((model) => ({
-                    id: model.id,
-                    name: model.name,
-                    provider: model.provider,
-                    thinkingLevels: getSupportedThinkingLevels(model),
-                  })),
+                models: models.map((model) => ({
+                  id: model.id,
+                  name: model.name,
+                  provider: model.provider,
+                  thinkingLevels: getSupportedThinkingLevels(model),
+                })),
               });
               return;
+            }
             case "reload": {
               state.updateContext(current);
               if (input.instanceId !== state.instanceId)

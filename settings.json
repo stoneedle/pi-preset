@@ -69,8 +69,8 @@
     "openai-codex/gpt-6.1-terra"
   ],
   "pi-codex-fast": {
-    "enabled": true,
-    "mode": "fast"
+    "enabled": false,
+    "mode": "off"
   },
   "hideThinkingBlock": true,
   "outputPad": 0,

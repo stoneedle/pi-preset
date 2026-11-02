@@ -2,6 +2,7 @@
   import { flushSync, onMount, untrack } from 'svelte';
   import { icon, Search, SquarePen, X, Archive, ArrowLeft, Bell } from '../shared/icons.js';
   import SessionList from './SessionList.svelte';
+  import CodexUsage from './CodexUsage.svelte';
   import { contextMenu } from '../shared/context-menu.js';
 
   let {
@@ -311,7 +312,10 @@
       onnew(path);
     }}
   />
-  <footer><a href="/">查看全部会话</a></footer>
+  <footer>
+    <CodexUsage active={isOpen} />
+    <a href="/">查看全部会话</a>
+  </footer>
 </dialog>
 
 <style>
@@ -389,11 +393,15 @@
     color: var(--muted);
   }
   footer {
+    display: grid;
+    grid-template-columns: minmax(44px, 1fr) auto minmax(44px, 1fr);
+    align-items: center;
     padding: 8px 12px max(8px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--dim);
     flex: none;
   }
   footer a {
+    grid-column: 2;
     display: flex;
     align-items: center;
     justify-content: center;

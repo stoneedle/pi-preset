@@ -10,6 +10,7 @@
 | Pi 偏好、模型与插件安装声明 | [settings.json](settings.json) |
 | 原生快捷键 | [keybindings.json](keybindings.json) |
 | 角色、参考约定 | [agents/](agents/)、[references/](references/) |
+| 失败模式与纠偏 | [failure-modes.md](references/failure-modes.md) |
 | 自制／修改过的技能 | [skills/](skills/) |
 | 单文件扩展、完整插件源码 | [extensions/](extensions/)、[packages/](packages/) |
 | 插件的共享偏好 | [plugin-config/](plugin-config/) |
